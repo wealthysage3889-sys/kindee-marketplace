@@ -10,22 +10,25 @@
       }
     }
   ],
-  "rewrites": [
+  "routes": [
     {
-      "source": "/api/(.*)",
-      "destination": "https://kindee-marketplace-api.onrender.com/api/$1"
+      "src": "/api/(.*)",
+      "dest": "https://kindee-marketplace-api.onrender.com/api/$1"
     },
     {
-      "source": "/socket.io/(.*)",
-      "destination": "https://kindee-marketplace-api.onrender.com/socket.io/$1"
+      "src": "/socket.io/(.*)",
+      "dest": "https://kindee-marketplace-api.onrender.com/socket.io/$1"
     },
     {
-      "source": "/uploads/(.*)",
-      "destination": "https://kindee-marketplace-api.onrender.com/uploads/$1"
+      "src": "/uploads/(.*)",
+      "dest": "https://kindee-marketplace-api.onrender.com/uploads/$1"
     },
     {
-      "source": "/(.*)",
-      "destination": "/index.html"
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
     }
   ]
 }

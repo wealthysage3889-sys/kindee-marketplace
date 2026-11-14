@@ -1,4 +1,7 @@
-const API_BASE = import.meta.env.VITE_API_BASE || "/api";
+const RAW_API_BASE = import.meta.env.VITE_API_BASE || "/api";
+const API_BASE = RAW_API_BASE.endsWith("/api")
+  ? RAW_API_BASE
+  : `${RAW_API_BASE.replace(/\/$/, "")}/api`;
 
 export function getToken(mode = "customer") {
   return localStorage.getItem(mode === "admin" ? "adminToken" : "customerToken");

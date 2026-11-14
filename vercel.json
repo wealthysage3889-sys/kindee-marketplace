@@ -1,34 +1,24 @@
-
 {
-  "version": 2,
-  "builds": [
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "npm --prefix frontend install",
+  "buildCommand": "npm --prefix frontend run build",
+  "outputDirectory": "frontend/dist",
+  "rewrites": [
     {
-      "src": "frontend/package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "distDir": "dist"
-      }
-    }
-  ],
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "https://kindee-marketplace-api.onrender.com/api/$1"
+      "source": "/api/:path*",
+      "destination": "https://kindee-marketplace-api.onrender.com/api/:path*"
     },
     {
-      "src": "/socket.io/(.*)",
-      "dest": "https://kindee-marketplace-api.onrender.com/socket.io/$1"
+      "source": "/uploads/:path*",
+      "destination": "https://kindee-marketplace-api.onrender.com/uploads/:path*"
     },
     {
-      "src": "/uploads/(.*)",
-      "dest": "https://kindee-marketplace-api.onrender.com/uploads/$1"
+      "source": "/socket.io/:path*",
+      "destination": "https://kindee-marketplace-api.onrender.com/socket.io/:path*"
     },
     {
-      "handle": "filesystem"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ]
 }

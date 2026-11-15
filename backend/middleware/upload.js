@@ -1,69 +1,124 @@
-const crypto = require("crypto");
-const multer = require("multer");
-const path = require("path");
-const { uploadsDir, ensureUploadsDir } = require("../config/uploadDir");
+import multer from 'multer';
+import { v4 as uuidv4 } from 'uuid';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-// Create the folder once on module load
-ensureUploadsDir();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-const ALLOWED_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
-
-// busboy decodes filenames as latin1, so restore UTF-8 names (e.g. Thai) when possible
-const toUtf8 = (value) => {
-  const decoded = Buffer.from(value, "latin1").toString("utf8");
-  return decoded.includes("\uFFFD") ? value : decoded;
-};
-
-const sanitizeBaseName = (originalname) => {
-  const base = path
-    .parse(toUtf8(originalname || ""))
-    .name.normalize("NFC")
-    .replace(/[^\p{L}\p{N}\p{M}]+/gu, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .toLowerCase()
-    .slice(0, 60);
-
-  return base || "image";
-};
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    try {
-      // Re-check on every upload so a deleted folder cannot break the request
-      cb(null, ensureUploadsDir());
-    } catch (err) {
-      cb(err);
-    }
-  },
-  filename: (req, file, cb) => {
-    const ext = (path.extname(toUtf8(file.originalname || "")).toLowerCase() || ".jpg").replace(
-      /[^.a-z0-9]/g,
-      ""
-    );
-    const safeExt = ALLOWED_EXTENSIONS.includes(ext) ? ext : ".jpg";
-    const unique = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-    cb(null, `${unique}-${sanitizeBaseName(file.originalname)}${safeExt}`);
-  },
-});
+// Configure multer for memory storage (for Supabase upload)
+const storage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
-  const allowedTypes = /jpeg|jpg|png|webp/;
-  const extname = ALLOWED_EXTENSIONS.includes(
-    path.extname(toUtf8(file.originalname || "")).toLowerCase()
-  );
-  const mimetype = allowedTypes.test(file.mimetype || "");
-  if (extname && mimetype) {
+  // Allowed mime types
+  const allowedTypes = {
+    'avatars': ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+    'store-logos': ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+    'store-covers': ['image/jpeg', 'image/png', 'image/webp'],
+    'product-images': ['image/jpeg', 'image/png', 'image/webp'],
+    'chat-attachments': ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    'voice-recordings': ['audio/webm', 'audio/ogg', 'audio/mpeg']
+  };
+  
+  // Get bucket from request or default
+  const bucket = req.body.bucket || 'chat-attachments';
+  const allowed = allowedTypes[bucket] || allowedTypes['chat-attachments'];
+  
+  if (allowed.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error("รองรับเฉพาะไฟล์รูปภาพเท่านั้น"));
+    cb(new Error(`File type ${file.mimetype} not allowed for ${bucket}`), false);
   }
 };
 
-const upload = multer({
+export const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: {
+    fileSize: parseInt(process.env.MAX_FILE_SIZE) || 20 * 1024 * 1024, // 20MB default
+    files: 10 // Max 10 files per request
+  }
 });
 
-module.exports = upload;
+// Single file upload
+export const uploadSingle = (fieldName, bucket = 'chat-attachments') => {
+  return (req, res, next) => {
+    req.body.bucket = bucket;
+    upload.single(fieldName)(req, res, next);
+  };
+};
+
+// Multiple files upload
+export const uploadMultiple = (fieldName, maxCount = 5, bucket = 'chat-attachments') => {
+  return (req, res, next) => {
+    req.body.bucket = bucket;
+    upload.array(fieldName, maxCount)(req, res, next);
+  };
+};
+
+// Generate unique filename
+export const generateFileName = (originalName, prefix = '') => {
+  const ext = path.extname(originalName).toLowerCase();
+  const uniqueId = uuidv4();
+  const timestamp = Date.now();
+  return `${prefix}${timestamp}-${uniqueId}${ext}`;
+};
+
+// Generate storage path
+export const generateStoragePath = (bucket, ownerId, fileName) => {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${bucket}/${ownerId}/${year}/${month}/${fileName}`;
+};
+
+// Upload to Supabase Storage
+export const uploadToSupabase = async (supabaseAdmin, bucket, filePath, fileBuffer, contentType) => {
+  const { data, error } = await supabaseAdmin.storage
+    .from(bucket)
+    .upload(filePath, fileBuffer, {
+      contentType,
+      upsert: false
+    });
+  
+  if (error) {
+    throw new Error(`Upload failed: ${error.message}`);
+  }
+  
+  // Get public URL
+  const { data: { publicUrl } } = supabaseAdmin.storage
+    .from(bucket)
+    .getPublicUrl(data.path);
+  
+  return {
+    path: data.path,
+    publicUrl,
+    fullPath: data.fullPath
+  };
+};
+
+// Delete from Supabase Storage
+export const deleteFromSupabase = async (supabaseAdmin, bucket, filePath) => {
+  const { error } = await supabaseAdmin.storage
+    .from(bucket)
+    .remove([filePath]);
+  
+  if (error) {
+    throw new Error(`Delete failed: ${error.message}`);
+  }
+  
+  return true;
+};
+
+// Get signed URL for private files
+export const getSignedUrl = async (supabaseAdmin, bucket, filePath, expiresIn = 3600) => {
+  const { data, error } = await supabaseAdmin.storage
+    .from(bucket)
+    .createSignedUrl(filePath, expiresIn);
+  
+  if (error) {
+    throw new Error(`Signed URL generation failed: ${error.message}`);
+  }
+  
+  return data.signedUrl;
+};

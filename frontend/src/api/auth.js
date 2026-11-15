@@ -8,20 +8,29 @@ export function getToken(mode = "customer") {
 }
 
 export async function request(path, options = {}, mode = "customer") {
-  const token = getToken(mode);
+  const rawToken = getToken(mode);
+  const token = rawToken ? rawToken.trim() : null;
   let response;
 
   const isFormData = options.body instanceof FormData;
-  const headers = {
-    ...(isFormData ? {} : { "Content-Type": "application/json" }),
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...options.headers,
-  };
+  const headers = new Headers();
+  if (!isFormData) {
+    headers.set("Content-Type", "application/json");
+  }
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  if (options.headers) {
+    const extra = new Headers(options.headers);
+    extra.forEach((value, key) => headers.set(key, value));
+  }
 
   try {
     response = await fetch(`${API_BASE}${path}`, {
+      method: options.method,
       headers,
-      ...options,
+      body: options.body,
+      credentials: "omit",
     });
   } catch {
     throw new Error("ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้");

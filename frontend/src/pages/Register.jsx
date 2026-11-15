@@ -17,8 +17,8 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function loadFacebookSdk(appId) {
   return new Promise((resolve, reject) => {
-    if (window.FB) { window.FB.init({ appId, cookie: false, xfbml: false, version: "v19.0" }); resolve(window.FB); return; }
-    window.fbAsyncInit = function () { window.FB.init({ appId, cookie: false, xfbml: false, version: "v19.0" }); resolve(window.FB); };
+    if (window.FB) { window.FB.init({ appId, cookie: false, xfbml: false, version: "v23.0" }); resolve(window.FB); return; }
+    window.fbAsyncInit = function () { window.FB.init({ appId, cookie: false, xfbml: false, version: "v23.0" }); resolve(window.FB); };
     const id = "facebook-jssdk";
     if (document.getElementById(id)) { const t = setInterval(() => { if (window.FB) { clearInterval(t); resolve(window.FB); } }, 50); setTimeout(() => { clearInterval(t); if (!window.FB) reject(new Error("โหลด Facebook SDK ไม่สำเร็จ")); }, 8000); return; }
     const js = document.createElement("script"); js.id = id; js.src = "https://connect.facebook.net/en_US/sdk.js"; js.async = true; js.defer = true; js.onerror = () => reject(new Error("โหลด Facebook SDK ไม่สำเร็จ")); document.body.appendChild(js);
@@ -38,7 +38,8 @@ export default function Register() {
   const [socialConfig, setSocialConfig] = useState(null);
   const navigate = useNavigate();
   const location = useLocation();
-  const lineHandled = useRef(false);
+const lineHandled = useRef(false);
+  const googleInitialized = useRef(false);
 
   const isEmail = emailOrPhone.includes("@");
 
@@ -102,7 +103,7 @@ export default function Register() {
     finally { setLoading(false); }
   };
 
-  const handleGoogle = async () => {
+const handleGoogle = async () => {
     if (!socialConfig?.google?.clientId) return;
     setMessage(""); setInfo("");
     const clientId = socialConfig.google.clientId;
@@ -112,40 +113,46 @@ export default function Register() {
       }).catch((e) => { setMessage(e.message); });
     }
     if (!window.google?.accounts?.id) return;
-    window.google.accounts.id.initialize({
-      client_id: clientId,
-      callback: async (response) => {
-        if (!response?.credential) { setMessage("ไม่สามารถรับข้อมูลจาก Google ได้"); return; }
-        setLoading(true);
-        try {
-          const data = await loginWithGoogle(response.credential, "customer");
-          if (["admin", "owner"].includes(data.user.role)) { logout("customer"); navigate("/selladmin/login", { replace: true }); return; }
-          navigate("/");
-        } catch (err) { setMessage(err.message || "สมัครด้วย Google ไม่สำเร็จ"); }
-        finally { setLoading(false); }
-      },
-    });
+    if (!googleInitialized.current) {
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        callback: async (response) => {
+          if (!response?.credential) { setMessage("ไม่สามารถรับข้อมูลจาก Google ได้"); return; }
+          setLoading(true);
+          try {
+            const data = await loginWithGoogle(response.credential, "customer");
+            if (["admin", "owner"].includes(data.user.role)) { logout("customer"); navigate("/selladmin/login", { replace: true }); return; }
+            navigate("/");
+          } catch (err) { setMessage(err.message || "สมัครด้วย Google ไม่สำเร็จ"); }
+          finally { setLoading(false); }
+        },
+      });
+      googleInitialized.current = true;
+    }
     window.google.accounts.id.prompt((notification) => {
       if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-        setInfo("ไม่สามารถแสดงหน้าต่าง Google ได้ กรุณาตรวจสอบ Authorized origins ใน Google Cloud Console");
+        const reason = notification.getNotDisplayedReason?.() || "unknown";
+        setInfo(`ไม่สามารถแสดงหน้าต่าง Google ได้ (เหตุผล: ${reason}) — โปรดเพิ่ม Origin นี้ใน Google Cloud Console: Authorized JavaScript origins`);
       }
     });
   };
 
-  const handleFacebook = async () => {
+const handleFacebook = async () => {
     if (!socialConfig?.facebook?.appId) return;
     setMessage(""); setInfo("");
     try {
       const FB = await loadFacebookSdk(socialConfig.facebook.appId);
-      FB.login(async (response) => {
+      FB.login((response) => {
         if (response.status === "connected" && response.authResponse?.accessToken) {
           setLoading(true);
-          try {
-            const data = await loginWithFacebook(response.authResponse.accessToken, "customer");
-            if (["admin", "owner"].includes(data.user.role)) { logout("customer"); navigate("/selladmin/login", { replace: true }); return; }
-            navigate("/");
-          } catch (err) { setMessage(err.message || "สมัครด้วย Facebook ไม่สำเร็จ"); }
-          finally { setLoading(false); }
+          (async () => {
+            try {
+              const data = await loginWithFacebook(response.authResponse.accessToken, "customer");
+              if (["admin", "owner"].includes(data.user.role)) { logout("customer"); navigate("/selladmin/login", { replace: true }); return; }
+              navigate("/");
+            } catch (err) { setMessage(err.message || "สมัครด้วย Facebook ไม่สำเร็จ"); }
+            finally { setLoading(false); }
+          })();
         } else { setMessage("การสมัครด้วย Facebook ถูกยกเลิก"); }
       }, { scope: "public_profile,email" });
     } catch (err) { setMessage(err.message || "Facebook login ไม่สำเร็จ"); }

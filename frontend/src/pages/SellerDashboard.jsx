@@ -20,38 +20,36 @@ export default function SellerDashboard() {
   const [error, setError] = useState("");
   const [showEditModal, setShowEditModal] = useState(false);
 
-  const loadStore = async () => {
-    const ownerId = user?._id || user?.id;
-    if (!ownerId) return;
-    try {
-      setError("");
-      setLoading(true);
-      let storeData = null;
-      try {
-        const response = await storeAPI.getStoreByOwner(ownerId);
-        storeData = response?.data || response || null;
-      } catch (err) {
-        if (err.response?.status !== 404) throw err;
-      }
-      if (!cancelled) {
-        if (storeData) {
-          setStore(storeData);
-        } else {
-          setError("ยังไม่มีร้านค้า กรุณาสร้างร้านค้าก่อน");
-        }
-      }
-    } catch (err) {
-      if (!cancelled) {
-        setError(err.message || "ไม่สามารถโหลดข้อมูลร้านค้าได้");
-      }
-    } finally {
-      if (!cancelled) setLoading(false);
-    }
-  };
-
-  let cancelled = false;
   useEffect(() => {
-    cancelled = false;
+    let cancelled = false;
+    const ownerId = user?._id || user?.id;
+    const loadStore = async () => {
+      if (!ownerId) return;
+      try {
+        setError("");
+        setLoading(true);
+        let storeData = null;
+        try {
+          const response = await storeAPI.getStoreByOwner(ownerId);
+          storeData = response?.data || response || null;
+        } catch (err) {
+          if (err.response?.status !== 404 && err.status !== 404) throw err;
+        }
+        if (!cancelled) {
+          if (storeData) {
+            setStore(storeData);
+          } else {
+            setError("ยังไม่มีร้านค้า กรุณาสร้างร้านค้าก่อน");
+          }
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err.message || "ไม่สามารถโหลดข้อมูลร้านค้าได้");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
     loadStore();
     return () => { cancelled = true; };
   }, [user?._id, user?.id]);

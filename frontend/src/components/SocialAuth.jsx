@@ -1,7 +1,4 @@
-﻿import { useEffect } from "react";
-import { useLocation } from "react-router-dom";
-
-const GoogleIcon = () => (
+﻿const GoogleIcon = () => (
   <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
     <path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.5 30.2 0 24 0 14.6 0 6.4 5.4 2.5 13.3l7.8 6.1C12.2 13.2 17.6 9.5 24 9.5Z" />
     <path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-2.8-.4-4.1H24v9h12.7c-.3 2.1-1.6 5.2-4.6 7.3l7.6 5.9c4.5-4.2 6.8-10.3 6.8-18.1Z" />

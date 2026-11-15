@@ -146,19 +146,32 @@ export default function AdminAccount() {
   const openPassword = () => { setMenuOpen(false); setFormError(""); setFormSuccess(""); setPasswordForm({ password: "", confirm: "" }); setModal("password"); };
   const openAddAdmin = () => { setMenuOpen(false); setFormError(""); setFormSuccess(""); setAdminForm({ name: "", email: "", password: "" }); setModal("addAdmin"); };
   const openSettings = () => { setMenuOpen(false); navigate("/selladmin"); };
-  const openStoreProfile = () => { setMenuOpen(false); setStoreModalOpen(true); };
+  const openStoreProfile = () => {
+    if (!store) {
+      setFormError("กำลังโหลดข้อมูลร้านค้า กรุณารอสักครู่");
+      return;
+    }
+    setMenuOpen(false);
+    setStoreModalOpen(true);
+  };
 
   const openSocialLogin = async () => {
     setMenuOpen(false); setFormError(""); setFormSuccess("");
     try {
       const response = await adminAPI.getSettings("oauth");
-      const list = response?.data || [];
-      const get = (k) => list.find((s) => s.key === k)?.value || "";
-      const on = (k) => get(k) === "true" || get(k) === "1";
+      const list = Array.isArray(response?.data) ? response.data : [];
+      const get = (k) => {
+        const row = list.find((s) => String(s.key || '').toLowerCase() === String(k).toLowerCase());
+        return row?.value ?? "";
+      };
+      const on = (k) => {
+        const v = String(get(k)).toLowerCase();
+        return v === "true" || v === "1";
+      };
       setSocialForm({
-        google: { clientId: get("GOOGLE_CLIENT_ID"), clientSecret: get("GOOGLE_CLIENT_SECRET"), enabled: on("GOOGLE_ENABLED") },
-        facebook: { appId: get("FACEBOOK_APP_ID"), appSecret: get("FACEBOOK_APP_SECRET"), enabled: on("FACEBOOK_ENABLED") },
-        line: { channelId: get("LINE_CHANNEL_ID"), channelSecret: get("LINE_CHANNEL_SECRET"), enabled: on("LINE_ENABLED") },
+        google: { clientId: get("google_client_id") || get("GOOGLE_CLIENT_ID"), clientSecret: "", enabled: on("google_enabled") || on("GOOGLE_ENABLED") },
+        facebook: { appId: get("facebook_app_id") || get("FACEBOOK_APP_ID"), appSecret: "", enabled: on("facebook_enabled") || on("FACEBOOK_ENABLED") },
+        line: { channelId: get("line_channel_id") || get("LINE_CHANNEL_ID"), channelSecret: "", enabled: on("line_enabled") || on("LINE_ENABLED") },
       });
     } catch {
       setSocialForm(emptySocial());
@@ -210,15 +223,15 @@ export default function AdminAccount() {
     setSaving(true);
     try {
       await adminAPI.bulkUpdateSettings([
-        { key: "GOOGLE_CLIENT_ID", value: socialForm.google.clientId.trim(), category: "oauth", isPublic: false },
-        { key: "GOOGLE_CLIENT_SECRET", value: socialForm.google.clientSecret.trim(), category: "oauth", isPublic: false },
-        { key: "GOOGLE_ENABLED", value: String(!!socialForm.google.enabled), category: "oauth", isPublic: false },
-        { key: "FACEBOOK_APP_ID", value: socialForm.facebook.appId.trim(), category: "oauth", isPublic: false },
-        { key: "FACEBOOK_APP_SECRET", value: socialForm.facebook.appSecret.trim(), category: "oauth", isPublic: false },
-        { key: "FACEBOOK_ENABLED", value: String(!!socialForm.facebook.enabled), category: "oauth", isPublic: false },
-        { key: "LINE_CHANNEL_ID", value: socialForm.line.channelId.trim(), category: "oauth", isPublic: false },
-        { key: "LINE_CHANNEL_SECRET", value: socialForm.line.channelSecret.trim(), category: "oauth", isPublic: false },
-        { key: "LINE_ENABLED", value: String(!!socialForm.line.enabled), category: "oauth", isPublic: false },
+        { key: "google_client_id", value: socialForm.google.clientId.trim(), category: "oauth", isPublic: false },
+        { key: "google_client_secret", value: socialForm.google.clientSecret.trim(), category: "oauth", isPublic: false },
+        { key: "google_enabled", value: String(!!socialForm.google.enabled), category: "oauth", isPublic: false },
+        { key: "facebook_app_id", value: socialForm.facebook.appId.trim(), category: "oauth", isPublic: false },
+        { key: "facebook_app_secret", value: socialForm.facebook.appSecret.trim(), category: "oauth", isPublic: false },
+        { key: "facebook_enabled", value: String(!!socialForm.facebook.enabled), category: "oauth", isPublic: false },
+        { key: "line_channel_id", value: socialForm.line.channelId.trim(), category: "oauth", isPublic: false },
+        { key: "line_channel_secret", value: socialForm.line.channelSecret.trim(), category: "oauth", isPublic: false },
+        { key: "line_enabled", value: String(!!socialForm.line.enabled), category: "oauth", isPublic: false },
       ]);
       setFormSuccess("บันทึกการตั้งค่า Social Login เรียบร้อยแล้ว");
       setTimeout(() => setModal(null), 800);
@@ -397,7 +410,7 @@ export default function AdminAccount() {
                   </div>
                   <div className="form-group">
                     <label className="form-label">Google Client Secret</label>
-                    <input type="password" className="form-input" value={socialForm.google.clientSecret} onChange={(e) => setSocialForm((p) => ({ ...p, google: { ...p.google, clientSecret: e.target.value } }))} placeholder="Client Secret (ถ้ามี)" />
+                    <input type="password" className="form-input" value={socialForm.google.clientSecret} onChange={(e) => setSocialForm((p) => ({ ...p, google: { ...p.google, clientSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
                   </div>
                   <p className="form-hint">ตั้งค่าใน Google Cloud Console &gt; APIs &amp; Services &gt; Credentials (เพิ่ม Authorized JavaScript origins: {origin})</p>
                 </ProviderSection>
@@ -414,7 +427,7 @@ export default function AdminAccount() {
                   </div>
                   <div className="form-group">
                     <label className="form-label">Facebook App Secret</label>
-                    <input type="password" className="form-input" value={socialForm.facebook.appSecret} onChange={(e) => setSocialForm((p) => ({ ...p, facebook: { ...p.facebook, appSecret: e.target.value } }))} placeholder="App Secret" />
+                    <input type="password" className="form-input" value={socialForm.facebook.appSecret} onChange={(e) => setSocialForm((p) => ({ ...p, facebook: { ...p.facebook, appSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
                   </div>
                   <p className="form-hint">ตั้งค่าใน Facebook Developers &gt; Facebook Login &gt; Settings (Valid OAuth Redirect URIs: {origin}/login และ {origin}/register)</p>
                 </ProviderSection>
@@ -431,7 +444,7 @@ export default function AdminAccount() {
                   </div>
                   <div className="form-group">
                     <label className="form-label">LINE Channel Secret</label>
-                    <input type="password" className="form-input" value={socialForm.line.channelSecret} onChange={(e) => setSocialForm((p) => ({ ...p, line: { ...p.line, channelSecret: e.target.value } }))} placeholder="Channel Secret" />
+                    <input type="password" className="form-input" value={socialForm.line.channelSecret} onChange={(e) => setSocialForm((p) => ({ ...p, line: { ...p.line, channelSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
                   </div>
                   <p className="form-hint">ตั้งค่าใน LINE Developers Console &gt; LINE Login &gt; Callback URL เพิ่ม: {origin}/login และ {origin}/register (เปิด scope: profile, openid, email)</p>
                 </ProviderSection>
@@ -446,7 +459,7 @@ export default function AdminAccount() {
         </div>
       )}
 
-      {storeModalOpen && (
+      {storeModalOpen && store && (
         <StoreProfileEditModal store={store} mode="admin" onClose={() => setStoreModalOpen(false)} onSaved={setStore} />
       )}
     </div>

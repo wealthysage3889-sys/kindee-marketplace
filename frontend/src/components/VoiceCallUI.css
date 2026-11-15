@@ -1,0 +1,301 @@
+.voice-call-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.call-content {
+  background: #1a1a2e;
+  border-radius: 20px;
+  padding: 40px;
+  text-align: center;
+  max-width: 360px;
+  width: 90%;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  color: #fff;
+}
+
+.call-avatar {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  margin: 0 auto 24px;
+  overflow: hidden;
+  border: 4px solid #2196f3;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 48px;
+  font-weight: bold;
+  color: #fff;
+  position: relative;
+}
+
+.call-avatar.large {
+  width: 140px;
+  height: 140px;
+  font-size: 56px;
+}
+
+.call-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.call-avatar span {
+  line-height: 1;
+}
+
+.call-content h3 {
+  margin: 0 0 8px;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.call-content p {
+  margin: 0 0 32px;
+  color: #aaa;
+  font-size: 16px;
+}
+
+.call-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.call-info {
+  text-align: left;
+}
+
+.call-info h3 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
+.call-info .status-connected {
+  font-size: 13px;
+  color: #4caf50;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.call-info .status-connected::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4caf50;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.call-error {
+  background: #c62828;
+  color: #fff;
+  padding: 12px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  font-size: 14px;
+}
+
+.call-controls {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+}
+
+.control-btn {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: #2a2a4a;
+  color: #fff;
+}
+
+.control-btn:hover {
+  transform: scale(1.1);
+  background: #3a3a5a;
+}
+
+.control-btn.active {
+  background: #e53935;
+}
+
+.control-btn.end-call {
+  background: #c62828;
+}
+
+.control-btn.end-call:hover {
+  background: #b71c1c;
+}
+
+.control-btn svg {
+  width: 24px;
+  height: 24px;
+}
+
+.call-actions {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+}
+
+.call-actions button {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: #fff;
+}
+
+.btn-accept {
+  background: #2e7d32;
+}
+
+.btn-accept:hover {
+  background: #388e3c;
+  transform: scale(1.1);
+}
+
+.btn-reject {
+  background: #c62828;
+}
+
+.btn-reject:hover {
+  background: #b71c1c;
+  transform: scale(1.1);
+}
+
+.call-actions svg {
+  width: 28px;
+  height: 28px;
+}
+
+/* Incoming Call Overlay (for when app is in background) */
+.voice-call-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  color: #fff;
+  padding: 20px;
+}
+
+.overlay-avatar {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  margin-bottom: 24px;
+  border: 4px solid rgba(255,255,255,0.3);
+  overflow: hidden;
+}
+
+.overlay-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.overlay-info h1 {
+  margin: 0 0 8px;
+  font-size: 32px;
+}
+
+.overlay-info p {
+  margin: 0;
+  font-size: 18px;
+  opacity: 0.9;
+}
+
+.overlay-actions {
+  display: flex;
+  gap: 24px;
+  margin-top: 48px;
+}
+
+.overlay-btn {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 28px;
+  transition: transform 0.2s;
+}
+
+.overlay-btn.accept {
+  background: #4caf50;
+}
+
+.overlay-btn.reject {
+  background: #f44336;
+}
+
+.overlay-btn:hover {
+  transform: scale(1.1);
+}
+
+/* Responsive */
+@media (max-width: 480px) {
+  .call-content {
+    padding: 24px 16px;
+  }
+  
+  .call-avatar {
+    width: 100px;
+    height: 100px;
+  }
+  
+  .call-avatar.large {
+    width: 120px;
+    height: 120px;
+  }
+  
+  .control-btn {
+    width: 56px;
+    height: 56px;
+  }
+}

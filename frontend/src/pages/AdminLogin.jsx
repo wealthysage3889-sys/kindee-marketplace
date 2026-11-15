@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
 export default function AdminLogin() {
-  const { admin, loading: authLoading, login, logout } = useAuth();
+  const { isAdmin, loading: authLoading, login, logout } = useAuth();
   const [form, setForm] = useState({ email: "", password: "" });
   const [errors, setErrors] = useState({});
   const [message, setMessage] = useState("");
@@ -11,11 +11,11 @@ export default function AdminLogin() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (authLoading || !admin.user) return;
-    if (["admin", "owner"].includes(admin.user.role)) {
+    if (authLoading) return;
+    if (isAdmin) {
       navigate("/selladmin", { replace: true });
     }
-  }, [admin.user, authLoading, navigate]);
+  }, [isAdmin, authLoading, navigate]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -39,15 +39,15 @@ export default function AdminLogin() {
     setLoading(true);
     setMessage("");
     try {
-      const data = await login(form.email, form.password, "admin");
-      if (!["admin", "owner"].includes(data.user.role)) {
-        logout("admin");
-        setMessage("บัญชีนี้ไม่มีสิทธิ์เข้าสู่ระบบแอดมิน");
+      const data = await login(form.email, form.password);
+      if (!["admin", "owner"].includes(data.user?.role)) {
+        await logout();
+        setMessage("บัญชีนี้ไม่มีสิทธิ์เข้าสู่ระบบแอดมิน (ต้องมี role admin/owner ในฐานข้อมูล)");
         return;
       }
       navigate("/selladmin", { replace: true });
     } catch (err) {
-      if (err.data && err.data.message) {
+      if (err?.data?.message) {
         setMessage(err.data.message);
       } else {
         setMessage("เข้าสู่ระบบแอดมินไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");

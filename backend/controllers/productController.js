@@ -1,69 +1,40 @@
-const asyncHandler = require("express-async-handler");
-const Product = require("../models/Product");
-const path = require("path");
+import asyncHandler from "express-async-handler";
+import * as productService from "../services/productService.js";
+import * as storeService from "../services/storeService.js";
+import { AppError, NotFoundError, ValidationError } from "../middleware/errorHandler.js";
+import { supabaseAdmin } from "../config/supabase.js";
 
 const getProducts = asyncHandler(async (req, res) => {
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 10;
-  const startIndex = (page - 1) * limit;
+  const filters = {
+    store_id: req.query.store_id,
+    category_id: req.query.category,
+    search: req.query.keyword,
+    min_price: req.query.minPrice ? Number(req.query.minPrice) : undefined,
+    max_price: req.query.maxPrice ? Number(req.query.maxPrice) : undefined,
+    sort_by: req.query.sort_by || 'relevance'
+  };
+  const pagination = { page, limit };
 
-  let query = Product.find({ isActive: true });
-
-  if (req.query.category) {
-    query = query.where("category").equals(req.query.category);
-  }
-
-  if (req.query.keyword) {
-    query = query.find({
-      $or: [
-        { name: { $regex: req.query.keyword, $options: "i" } },
-        { description: { $regex: req.query.keyword, $options: "i" } },
-      ],
-    });
-  }
-
-  if (req.query.minPrice || req.query.maxPrice) {
-    const filter = {};
-    if (req.query.minPrice) filter.price = { $gte: Number(req.query.minPrice) };
-    if (req.query.maxPrice) {
-      if (!filter.price) filter.price = {};
-      filter.price.$lte = Number(req.query.maxPrice);
-    }
-    query = query.find(filter);
-  }
-
-  const total = await Product.countDocuments(query);
-  const products = await query
-    .skip(startIndex)
-    .limit(limit)
-    .populate("category", "name slug")
-    .populate("seller", "name avatar")
-    .sort("-createdAt");
-
-  res.json({
-    success: true,
-    count: products.length,
-    total,
-    page,
-    pages: Math.ceil(total / limit),
-    data: products,
-  });
+  const result = await productService.getPublicProducts(filters, pagination);
+  res.json({ success: true, ...result });
 });
 
 const getProductById = asyncHandler(async (req, res) => {
-  const product = await Product.findById(req.params.id)
-    .populate("category", "name slug description")
-    .populate("seller", "name avatar phone");
-
-  if (!product) {
-    res.status(404).json({ success: false, message: "ไม่พบสินค้า" });
-    return;
-  }
-
+  const product = await productService.getProductById(req.params.id);
   res.json({ success: true, data: product });
 });
 
 const createProduct = asyncHandler(async (req, res) => {
+  const store = await storeService.getStoresByOwner(req.user.id);
+  const storeId = store[0]?.id;
+  
+  if (!storeId) {
+    res.status(400).json({ success: false, message: "คุณยังไม่มีร้านค้า กรุณาสร้างร้านค้าก่อน" });
+    return;
+  }
+
   const { name, description, price, discountPrice, stock, category, tags } = req.body;
 
   if (!name || !description || !price || !stock || !category) {
@@ -71,7 +42,6 @@ const createProduct = asyncHandler(async (req, res) => {
     return;
   }
 
-  // Handle uploaded files
   const uploadedImages = req.files ? req.files.map((file) => `/uploads/${file.filename}`) : [];
   
   if (uploadedImages.length === 0) {
@@ -79,108 +49,85 @@ const createProduct = asyncHandler(async (req, res) => {
     return;
   }
 
-  const baseSlug = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)+/g, "");
-
-  let slug = baseSlug;
-  let counter = 1;
-  while (await Product.exists({ slug })) {
-    slug = `${baseSlug}-${counter}`;
-    counter++;
-  }
-
-  const product = await Product.create({
+  const product = await productService.createProduct(storeId, req.user.id, {
     name,
-    slug,
     description,
     price,
     discountPrice,
     stock,
-    category,
+    categoryId: category,
     images: uploadedImages,
-    tags,
-    seller: req.user.id,
+    tags
   });
 
   res.status(201).json({ success: true, data: product });
 });
 
 const updateProduct = asyncHandler(async (req, res) => {
-  let product = await Product.findById(req.params.id);
-  if (!product) {
-    res.status(404).json({ success: false, message: "ไม่พบสินค้า" });
-    return;
-  }
+  const { name, description, price, discountPrice, stock, category, tags, isActive, existingImages } = req.body;
 
-  if (product.seller.toString() !== req.user.id && !["admin", "owner"].includes(req.user.role)) {
+  const product = await productService.getProductById(req.params.id, true);
+  
+  const store = await storeService.getStoresByOwner(req.user.id);
+  const storeId = store[0]?.id;
+  
+  if (!storeId || product.store_id !== storeId) {
     res.status(403).json({ success: false, message: "คุณไม่มีสิทธิ์แก้ไขสินค้านี้" });
     return;
   }
 
-  const { name, description, price, discountPrice, stock, category, tags, isActive, existingImages } = req.body;
+  const updates = {};
+  if (name) updates.name = name;
+  if (description) updates.description = description;
+  if (price !== undefined) updates.price = price;
+  if (discountPrice !== undefined) updates.discount_price = discountPrice;
+  if (stock !== undefined) updates.stock = stock;
+  if (category) updates.category_id = category;
+  if (tags) updates.tags = tags;
+  if (isActive !== undefined) updates.is_active = isActive;
 
-  if (name) {
-    product.name = name;
-    const baseSlug = name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)+/g, "");
-    let slug = baseSlug;
-    let counter = 1;
-    while (await Product.exists({ slug, _id: { $ne: product._id } })) {
-      slug = `${baseSlug}-${counter}`;
-      counter++;
-    }
-    product.slug = slug;
-  }
-  if (description) product.description = description;
-  if (price !== undefined) product.price = price;
-  if (discountPrice !== undefined) product.discountPrice = discountPrice;
-  if (stock !== undefined) product.stock = stock;
-  if (category) product.category = category;
-  if (tags) product.tags = tags;
-  if (isActive !== undefined) product.isActive = isActive;
-
-  // Handle images: combine existingImages with newly uploaded files
   const existingImagesArray = existingImages ? (Array.isArray(existingImages) ? existingImages : [existingImages]) : [];
   const newUploadedImages = req.files ? req.files.map((file) => `/uploads/${file.filename}`) : [];
-  product.images = [...existingImagesArray, ...newUploadedImages];
+  updates.images = [...existingImagesArray, ...newUploadedImages];
 
-  // Ensure at least one image
-  if (product.images.length === 0) {
+  if (updates.images.length === 0) {
     res.status(400).json({ success: false, message: "กรุณามีรูปสินค้าอย่างน้อย 1 รูป" });
     return;
   }
 
-  await product.save();
-
-  res.json({ success: true, data: product });
+  const updatedProduct = await productService.updateProduct(req.params.id, storeId, req.user.id, updates);
+  res.json({ success: true, data: updatedProduct });
 });
 
 const deleteProduct = asyncHandler(async (req, res) => {
-  const product = await Product.findById(req.params.id);
-  if (!product) {
-    res.status(404).json({ success: false, message: "ไม่พบสินค้า" });
-    return;
-  }
-
-  if (product.seller.toString() !== req.user.id && !["admin", "owner"].includes(req.user.role)) {
+  const product = await productService.getProductById(req.params.id, true);
+  
+  const store = await storeService.getStoresByOwner(req.user.id);
+  const storeId = store[0]?.id;
+  
+  if (!storeId || product.store_id !== storeId) {
     res.status(403).json({ success: false, message: "คุณไม่มีสิทธิ์ลบสินค้านี้" });
     return;
   }
 
-  await product.deleteOne();
+  await productService.deleteProduct(req.params.id, storeId, req.user.id);
   res.json({ success: true, message: "ลบสินค้าเรียบร้อย" });
 });
 
 const getSellerProducts = asyncHandler(async (req, res) => {
-  const products = await Product.find({ seller: req.user.id }).sort("-createdAt");
-  res.json({ success: true, count: products.length, data: products });
+  const store = await storeService.getStoresByOwner(req.user.id);
+  const storeId = store[0]?.id;
+  
+  if (!storeId) {
+    res.json({ success: true, count: 0, data: [] });
+    return;
+  }
+
+  const result = await productService.getProductsByStore(storeId, req.user.id, {}, { page: 1, limit: 100 });
+  res.json({ success: true, count: result.products.length, data: result.products });
 });
 
-module.exports = {
+export {
   getProducts,
   getProductById,
   createProduct,

@@ -34,7 +34,7 @@ export const productAPI = {
 export const storeAPI = {
   getStoreById: (id, mode = "customer") => request(`/stores/${id}`, {}, mode),
 
-  getStoreByOwner: (ownerId, mode = "customer") => request(`/stores/owner/${ownerId}`, {}, mode),
+  getStoreByOwner: (_ownerId, mode = "customer") => request(`/stores/owner/me`, {}, mode),
 
   createStore: (data, mode = "customer") =>
     request("/stores", {
@@ -63,4 +63,16 @@ export const storeAPI = {
       method: "PUT",
       body: data instanceof FormData ? data : JSON.stringify(data),
     }, mode),
+
+  uploadStoreLogo: (id, file, mode = "customer") => {
+    const formData = new FormData();
+    formData.append("logo", file);
+    return request(`/stores/${id}/logo`, { method: "POST", body: formData }, mode);
+  },
+
+  uploadStoreCover: (id, file, mode = "customer") => {
+    const formData = new FormData();
+    formData.append("cover", file);
+    return request(`/stores/${id}/cover`, { method: "POST", body: formData }, mode);
+  },
 };

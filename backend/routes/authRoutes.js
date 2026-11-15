@@ -1,81 +1,157 @@
-const express = require("express");
-const { body } = require("express-validator");
-const validate = require("../middleware/validate");
-const { register, login, refreshToken, getProfile, updateProfile, logout, googleLogin, facebookLogin, lineLogin } = require("../controllers/authController");
-const { protect } = require("../middleware/auth");
+import express from 'express';
+import { body, query } from 'express-validator';
+import { validate } from '../middleware/validate.js';
+import { verifyToken, optionalAuth } from '../middleware/auth.js';
+import * as authService from '../services/authService.js';
+import { asyncHandler, AppError } from '../middleware/errorHandler.js';
 
 const router = express.Router();
 
-const isEmailOrPhone = (value) => {
-  if (typeof value !== "string") return false;
-  const v = value.trim();
-  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return true;
-  return /^[0-9+\-\s]{8,20}$/.test(v);
-};
+// Register
+router.post('/register', [
+  body('email').optional().isEmail().normalizeEmail().withMessage('Invalid email'),
+  body('phone').optional().isMobilePhone('th-TH').withMessage('Invalid phone number'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  body('name').optional().trim().notEmpty().withMessage('Name cannot be empty'),
+  body('role').optional().isIn(['customer', 'seller']).withMessage('Invalid role')
+], validate, asyncHandler(async (req, res) => {
+  const { email, phone, password, name, role } = req.body;
+  
+  if (!email && !phone) {
+    throw new AppError('Email or phone is required', 400);
+  }
+  
+  const result = await authService.registerUser({ email, phone, password, name, role });
+  
+  res.status(201).json({
+    success: true,
+    message: 'Registration successful',
+    data: result
+  });
+}));
 
-router.post(
-  "/register",
-  [
-    body("emailOrPhone").optional().trim(),
-    body("email").optional().isEmail().normalizeEmail().withMessage("กรุณากรอกอีเมลให้ถูกต้อง"),
-    body("password").optional().isLength({ min: 6 }).withMessage("รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร"),
-    body("name").optional().trim(),
-    body("phone").optional().trim(),
-    body("role").optional().isIn(["customer", "seller"]).withMessage("role สำหรับสมัครสมาชิกได้ต้องเป็น customer หรือ seller"),
-  ],
-  validate,
-  register
-);
+// Login
+router.post('/login', [
+  body('emailOrPhone').notEmpty().withMessage('Email or phone is required'),
+  body('password').notEmpty().withMessage('Password is required')
+], validate, asyncHandler(async (req, res) => {
+  const { emailOrPhone, password } = req.body;
+  
+  const result = await authService.loginUser(emailOrPhone, password);
+  
+  res.json({
+    success: true,
+    message: 'Login successful',
+    data: result
+  });
+}));
 
-router.post(
-  "/login",
-  [
-    body("email").custom(isEmailOrPhone).withMessage("กรุณากรอกเบอร์โทรศัพท์หรืออีเมลให้ถูกต้อง"),
-    body("password").notEmpty().withMessage("กรุณากรอกรหัสผ่าน"),
-  ],
-  validate,
-  login
-);
+// Refresh token
+router.post('/refresh', asyncHandler(async (req, res) => {
+  const { refreshToken } = req.body;
+  
+  if (!refreshToken) {
+    throw new AppError('Refresh token required', 400);
+  }
+  
+  const result = await authService.refreshAccessToken(refreshToken);
+  
+  res.json({
+    success: true,
+    data: result
+  });
+}));
 
-router.post("/refresh", refreshToken);
+// Google login
+router.post('/google', [
+  body('credential').notEmpty().withMessage('Google credential required')
+], validate, asyncHandler(async (req, res) => {
+  const { credential } = req.body;
+  
+  const result = await authService.socialLogin('google', credential);
+  
+  res.json({
+    success: true,
+    message: 'Google login successful',
+    data: result
+  });
+}));
 
-router.post(
-  "/google",
-  [body("credential").notEmpty().withMessage("กรุณาระบุ Google credential")],
-  validate,
-  googleLogin
-);
+// Facebook login
+router.post('/facebook', [
+  body('accessToken').notEmpty().withMessage('Facebook access token required')
+], validate, asyncHandler(async (req, res) => {
+  const { accessToken } = req.body;
+  
+  const result = await authService.socialLogin('facebook', accessToken);
+  
+  res.json({
+    success: true,
+    message: 'Facebook login successful',
+    data: result
+  });
+}));
 
-router.post(
-  "/facebook",
-  [body("accessToken").notEmpty().withMessage("กรุณาระบุ Facebook access token")],
-  validate,
-  facebookLogin
-);
+// Get profile
+router.get('/profile', verifyToken, asyncHandler(async (req, res) => {
+  const profile = await authService.getProfile(req.user.id);
+  
+  res.json({
+    success: true,
+    data: profile
+  });
+}));
 
-router.post(
-  "/line",
-  [body("code").notEmpty().withMessage("กรุณาระบุ LINE authorization code")],
-  validate,
-  lineLogin
-);
+// Update profile
+router.put('/profile', verifyToken, [
+  body('email').optional().isEmail().normalizeEmail().withMessage('Invalid email'),
+  body('phone').optional().isMobilePhone('th-TH').withMessage('Invalid phone number'),
+  body('name').optional().trim().notEmpty().withMessage('Name cannot be empty'),
+  body('address').optional().trim(),
+  body('avatar_url').optional().isURL().withMessage('Invalid avatar URL')
+], validate, asyncHandler(async (req, res) => {
+  const profile = await authService.updateProfile(req.user.id, req.body);
+  
+  res.json({
+    success: true,
+    message: 'Profile updated',
+    data: profile
+  });
+}));
 
-router.get("/profile", protect, getProfile);
-router.put(
-  "/profile",
-  protect,
-  [
-    body("email").optional({ nullable: true }).isEmail().normalizeEmail().withMessage("กรุณากรอกอีเมลให้ถูกต้อง"),
-    body("password").optional({ nullable: true }).isLength({ min: 6 }).withMessage("รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร"),
-    body("name").optional({ nullable: true }).trim().notEmpty().withMessage("ชื่อต้องไม่ว่าง"),
-    body("phone").optional({ nullable: true }).trim(),
-    body("address").optional({ nullable: true }).trim(),
-    body("avatar").optional({ nullable: true }).trim(),
-  ],
-  validate,
-  updateProfile
-);
+// Change password
+router.put('/password', verifyToken, [
+  body('currentPassword').notEmpty().withMessage('Current password required'),
+  body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters')
+], validate, asyncHandler(async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  
+  await authService.changePassword(req.user.id, currentPassword, newPassword);
+  
+  res.json({
+    success: true,
+    message: 'Password changed successfully'
+  });
+}));
 
-router.post("/logout", protect, logout);
+// Logout
+router.post('/logout', verifyToken, asyncHandler(async (req, res) => {
+  await authService.logoutUser(req.body.refreshToken);
+  
+  res.json({
+    success: true,
+    message: 'Logged out successfully'
+  });
+}));
 
-module.exports = router;
+// Deactivate account
+router.delete('/account', verifyToken, asyncHandler(async (req, res) => {
+  await authService.deactivateAccount(req.user.id);
+  
+  res.json({
+    success: true,
+    message: 'Account deactivated'
+  });
+}));
+
+export default router;

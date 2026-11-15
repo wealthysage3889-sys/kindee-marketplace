@@ -4,7 +4,7 @@ const adminRequest = (path, options) => request(path, options, "admin");
 
 export const adminAPI = {
   // Dashboard
-  getDashboardStats: () => adminRequest("/admin/dashboard"),
+  getDashboardStats: () => adminRequest("/admin/stats"),
 
   // Image upload for products
   uploadProductImages: (formData) =>

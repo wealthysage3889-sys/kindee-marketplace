@@ -66,6 +66,8 @@ export function CartProvider({ children }) {
       }
       const stock = resolveStock(product);
       const max = stock != null ? stock : Infinity;
+      const storeId = product.store_id || product.store?._id || product.store?.id || null;
+      const storeName = product.store?.name || product.storeName || "";
       return [
         ...prev,
         {
@@ -73,7 +75,8 @@ export function CartProvider({ children }) {
           name: product.name,
           price: resolvePrice(product),
           image: resolveImage(product),
-          sellerName: resolveSellerName(product),
+          sellerName: resolveSellerName(product) || storeName,
+          storeId,
           stock,
           quantity: Math.min(qty, max),
         },

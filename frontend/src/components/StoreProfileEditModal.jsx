@@ -71,7 +71,7 @@ const buildInitialForm = (store) => ({
 });
 
 export default function StoreProfileEditModal({ store, mode = "customer", onClose, onSaved }) {
-  const [isCreateMode] = useState(!store);
+  const isCreateMode = !store;
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const [formSuccess, setFormSuccess] = useState("");
@@ -191,40 +191,95 @@ export default function StoreProfileEditModal({ store, mode = "customer", onClos
       return;
     }
 
-    setSaving(true);
-    try {
-      const formData = new FormData();
-      formData.append("name", editForm.name.trim());
-      if (editForm.description) formData.append("description", editForm.description.trim());
-      if (editForm.phone) formData.append("phone", editForm.phone.trim());
-      if (editForm.email) formData.append("email", editForm.email.trim().toLowerCase());
-      const coordinates = editForm.address?.coordinates;
-      formData.append("address", JSON.stringify({
+    const storeId = isCreateMode ? null : (store?._id || store?.id);
+    if (!isCreateMode && !storeId) {
+      setFormError("ไม่พบรหัสร้านค้า ไม่สามารถบันทึกข้อมูลได้");
+      return;
+    }
+
+    // Store fields are sent as JSON with the snake_case column names used by
+    // storeService. Empty values are omitted so existing data is not wiped.
+    const payload = {
+      name: editForm.name.trim(),
+      address: {
         street: editForm.address?.street?.trim() || "",
         district: editForm.address?.district?.trim() || "",
         province: editForm.address?.province?.trim() || "",
         postalCode: editForm.address?.postalCode?.trim() || "",
-        ...(coordinates?.lat != null && coordinates?.lng != null
-          ? { coordinates: { lat: Number(coordinates.lat), lng: Number(coordinates.lng) } }
-          : {}),
-      }));
-      formData.append("categories", JSON.stringify(editForm.categories || []));
-      if (editForm.openingHours) formData.append("openingHours", JSON.stringify(editForm.openingHours));
-      if (editForm.deliveryFee) formData.append("deliveryFee", editForm.deliveryFee);
-      if (editForm.minimumOrder) formData.append("minimumOrder", editForm.minimumOrder);
-      if (editForm.estimatedDeliveryTime) formData.append("estimatedDeliveryTime", editForm.estimatedDeliveryTime);
-      if (editForm.logoFile) formData.append("logo", editForm.logoFile);
-      if (editForm.coverFile) formData.append("coverImage", editForm.coverFile);
+      },
+      categories: editForm.categories || [],
+      opening_hours: editForm.openingHours || {},
+    };
+    const coordinates = editForm.address?.coordinates;
+    if (coordinates?.lat != null && coordinates?.lng != null) {
+      payload.address.coordinates = { lat: Number(coordinates.lat), lng: Number(coordinates.lng) };
+    }
+    if (editForm.description?.trim()) payload.description = editForm.description.trim();
+    if (editForm.phone?.trim()) payload.phone = editForm.phone.trim();
+    if (editForm.email?.trim()) payload.email = editForm.email.trim().toLowerCase();
+    const deliveryFee = String(editForm.deliveryFee ?? "").trim();
+    if (deliveryFee !== "") payload.delivery_fee = deliveryFee;
+    const minimumOrder = String(editForm.minimumOrder ?? "").trim();
+    if (minimumOrder !== "") payload.minimum_order = minimumOrder;
+    const estimatedDeliveryTime = String(editForm.estimatedDeliveryTime ?? "").trim();
+    if (estimatedDeliveryTime !== "") payload.estimated_delivery_time = estimatedDeliveryTime;
 
+    setSaving(true);
+    try {
       const response = isCreateMode
-        ? await storeAPI.createStore(formData, mode)
-        : await storeAPI.updateStore(store._id, formData, mode);
-      const savedStore = response?.data || response;
+        ? await storeAPI.createStore(payload, mode)
+        : await storeAPI.updateStore(storeId, payload, mode);
+      let savedStore = response?.data || response;
 
-      setLogoPreview(savedStore.logo || null);
-      setCoverPreview(savedStore.coverImage || null);
+      // Logo/cover are uploaded through their own endpoints; PUT /stores/:id
+      // has no multer and only accepts JSON.
+      const uploadErrors = [];
+      const savedStoreId = savedStore?._id || savedStore?.id || storeId;
+
+      if (editForm.logoFile) {
+        if (!savedStoreId) {
+          uploadErrors.push("ไม่พบรหัสร้านค้าสำหรับอัปโหลดโลโก้");
+        } else {
+          try {
+            const uploaded = await storeAPI.uploadStoreLogo(savedStoreId, editForm.logoFile, mode);
+            const url = uploaded?.data?.url;
+            if (url) savedStore = { ...savedStore, logo: url, logo_url: url };
+          } catch (err) {
+            uploadErrors.push(`โลโก้ไม่สำเร็จ (${err.message || "อัปโหลดไม่สำเร็จ"})`);
+          }
+        }
+      }
+
+      if (editForm.coverFile) {
+        if (!savedStoreId) {
+          uploadErrors.push("ไม่พบรหัสร้านค้าสำหรับอัปโหลดรูปปก");
+        } else {
+          try {
+            const uploaded = await storeAPI.uploadStoreCover(savedStoreId, editForm.coverFile, mode);
+            const url = uploaded?.data?.url;
+            if (url) savedStore = { ...savedStore, coverImage: url, cover_image_url: url };
+          } catch (err) {
+            uploadErrors.push(`รูปปกไม่สำเร็จ (${err.message || "อัปโหลดไม่สำเร็จ"})`);
+          }
+        }
+      }
+
+      const nextStore = savedStore || store || null;
+
+      if (uploadErrors.length > 0) {
+        // Data was stored but at least one image failed: never report full success.
+        setLogoPreview(nextStore?.logo || nextStore?.logo_url || null);
+        setCoverPreview(nextStore?.coverImage || nextStore?.cover_image_url || null);
+        setFormError(`บันทึกข้อมูลร้านค้าแล้ว แต่${uploadErrors.join(" และ ")} กรุณาลองอัปโหลดรูปอีกครั้ง`);
+        if (onSaved && nextStore) onSaved(nextStore);
+        return;
+      }
+
+      setEditForm((prev) => ({ ...prev, logoFile: null, coverFile: null }));
+      setLogoPreview(nextStore?.logo || nextStore?.logo_url || null);
+      setCoverPreview(nextStore?.coverImage || nextStore?.cover_image_url || null);
       setFormSuccess(isCreateMode ? "สร้างร้านค้าเรียบร้อยแล้ว" : "บันทึกข้อมูลร้านค้าเรียบร้อยแล้ว");
-      if (onSaved) onSaved(savedStore);
+      if (onSaved && nextStore) onSaved(nextStore);
       closeTimerRef.current = setTimeout(() => onClose(), 1000);
     } catch (err) {
       setFormError(err.message || "บันทึกข้อมูลไม่สำเร็จ");

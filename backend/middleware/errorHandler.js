@@ -1,45 +1,143 @@
-const errorHandler = (err, req, res, next) => {
-  let error = { ...err };
-  error.message = err.message;
+import { supabaseAdmin } from '../config/supabase.js';
 
-  // Multer / upload errors
-  if (err.code === "LIMIT_FILE_SIZE") {
-    error = { message: "ไฟล์รูปภาพมีขนาดใหญ่เกินไป (สูงสุด 5 MB)", statusCode: 400 };
-  } else if (err.code === "LIMIT_FILE_COUNT" || err.code === "LIMIT_UNEXPECTED_FILE") {
-    error = { message: "อัปโหลดรูปภาพได้ไม่เกิน 3 รูป", statusCode: 400 };
-  } else if (err.code === "ENOENT" || err.code === "EACCES") {
-    error = { message: "ไม่สามารถบันทึกไฟล์ได้ กรุณาตรวจสอบโฟลเดอร์ uploads", statusCode: 500 };
+export class AppError extends Error {
+  constructor(message, statusCode = 500, code = 'INTERNAL_ERROR') {
+    super(message);
+    this.statusCode = statusCode;
+    this.code = code;
+    this.isOperational = true;
+    
+    Error.captureStackTrace(this, this.constructor);
   }
+}
 
-  if (err.name === "CastError") {
-    const message = "ทรัพยากรไม่พบ";
-    error = { message, statusCode: 404 };
+export class ValidationError extends AppError {
+  constructor(message, errors = []) {
+    super(message, 400, 'VALIDATION_ERROR');
+    this.errors = errors;
   }
+}
 
-  if (err.code === 11000) {
-    const field = Object.keys(err.keyValue)[0];
-    const message = `${field} นี้มีอยู่แล้วในระบบ`;
-    error = { message, statusCode: 400 };
+export class AuthorizationError extends AppError {
+  constructor(message = 'Access denied') {
+    super(message, 403, 'AUTHORIZATION_ERROR');
   }
+}
 
-  if (err.name === "ValidationError") {
-    const message = Object.values(err.errors).map((val) => val.message);
-    error = { message, statusCode: 400 };
+export class NotFoundError extends AppError {
+  constructor(resource = 'Resource') {
+    super(`${resource} not found`, 404, 'NOT_FOUND');
   }
+}
 
-  if (err.name === "JsonWebTokenError") {
-    error = { message: "โทเค็นไม่ถูกต้อง", statusCode: 401 };
+export class ConflictError extends AppError {
+  constructor(message) {
+    super(message, 409, 'CONFLICT');
   }
+}
 
-  if (err.name === "TokenExpiredError") {
-    error = { message: "โทเค็นหมดอายุ", statusCode: 401 };
+const handleSupabaseError = (error) => {
+  // Handle Supabase/PostgreSQL specific errors
+  if (error.code === '23505') { // Unique violation
+    const constraint = error.constraint;
+    let message = 'Duplicate entry';
+    
+    if (constraint?.includes('email')) message = 'Email already exists';
+    else if (constraint?.includes('phone')) message = 'Phone number already exists';
+    else if (constraint?.includes('slug')) message = 'Slug already exists';
+    else if (constraint?.includes('order_number')) message = 'Order number already exists';
+    
+    return new AppError(message, 409, 'DUPLICATE_ENTRY');
   }
+  
+  if (error.code === '23503') { // Foreign key violation
+    return new AppError('Referenced resource not found', 400, 'INVALID_REFERENCE');
+  }
+  
+  if (error.code === '23514') { // Check constraint violation
+    return new AppError('Invalid data provided', 400, 'CONSTRAINT_VIOLATION');
+  }
+  
+  if (error.code === '42P01') { // Undefined table
+    return new AppError('Database table not found', 500, 'TABLE_MISSING');
+  }
+  
+  if (error.code === '42703') { // Undefined column
+    return new AppError('Invalid database column', 500, 'COLUMN_MISSING');
+  }
+  
+  return new AppError(error.message || 'Database error', 500, 'DATABASE_ERROR');
+};
 
-  res.status(error.statusCode || 500).json({
+const handleJWTError = (error) => {
+  if (error.name === 'JsonWebTokenError') {
+    return new AppError('Invalid token', 401, 'INVALID_TOKEN');
+  }
+  if (error.name === 'TokenExpiredError') {
+    return new AppError('Token expired', 401, 'TOKEN_EXPIRED');
+  }
+  return new AppError('Authentication error', 401, 'AUTH_ERROR');
+};
+
+const sendErrorDev = (err, res) => {
+  res.status(err.statusCode).json({
     success: false,
-    message: error.message || "เกิดข้อผิดพลาดในเซิร์ฟเวอร์",
-    stack: process.env.NODE_ENV === "production" ? undefined : err.stack,
+    error: err,
+    message: err.message,
+    code: err.code,
+    stack: err.stack,
+    errors: err.errors
   });
 };
 
-module.exports = errorHandler;
+const sendErrorProd = (err, res) => {
+  // Operational, trusted error: send message to client
+  if (err.isOperational) {
+    res.status(err.statusCode).json({
+      success: false,
+      message: err.message,
+      code: err.code,
+      errors: err.errors
+    });
+  } else {
+    // Programming or other unknown error: don't leak details
+    console.error('ERROR 💥', err);
+    
+    res.status(500).json({
+      success: false,
+      message: 'Something went wrong',
+      code: 'INTERNAL_ERROR'
+    });
+  }
+};
+
+export const errorHandler = (err, req, res, next) => {
+  err.statusCode = err.statusCode || 500;
+  err.code = err.code || 'INTERNAL_ERROR';
+  
+  // Handle specific error types
+  let error = err;
+  
+  if (err.code && err.code.startsWith('23')) {
+    error = handleSupabaseError(err);
+  } else if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
+    error = handleJWTError(err);
+  } else if (err.name === 'ValidationError') {
+    error = new ValidationError('Validation failed', err.errors);
+  }
+  
+  if (process.env.NODE_ENV === 'development') {
+    sendErrorDev(error, res);
+  } else {
+    sendErrorProd(error, res);
+  }
+};
+
+export const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
+};
+
+export const notFound = (req, res, next) => {
+  const error = new NotFoundError(`Route ${req.originalUrl}`);
+  next(error);
+};

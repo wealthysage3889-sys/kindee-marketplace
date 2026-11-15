@@ -122,20 +122,20 @@ export default function StoreProfile() {
         setLoading(true);
         
         let storeData = null;
-        
+
         try {
           const response = await storeAPI.getStoreById(id);
           storeData = response?.data || response || null;
         } catch (err) {
-          if (err.response?.status !== 404) throw err;
+          if (err.response?.status !== 404 && err.status !== 404) throw err;
         }
 
-        if (!storeData) {
+        if (!storeData && id === 'me') {
           try {
             const response = await storeAPI.getStoreByOwner(id);
             storeData = response?.data || response || null;
           } catch (err) {
-            if (err.response?.status !== 404) throw err;
+            if (err.response?.status !== 404 && err.status !== 404) throw err;
           }
         }
 
@@ -228,8 +228,8 @@ export default function StoreProfile() {
     );
   }
 
-  const images = store.images && store.images.length > 0 ? store.images : [PLACEHOLDER_IMAGE];
-  const coverImage = images[0];
+  const coverImage =
+    store.coverImage || store.coverImageUrl || store.cover || store.logo || store.logoUrl || PLACEHOLDER_IMAGE;
 
   return (
     <div className="page customer-page store-profile-page">
@@ -265,8 +265,8 @@ export default function StoreProfile() {
           <img src={coverImage} alt={store.name} className="store-cover" />
           <div className="store-info">
             <span className="store-avatar">
-              {store.logo ? (
-                <img src={store.logo} alt={store.name} />
+              {store.logo || store.logoUrl ? (
+                <img src={store.logo || store.logoUrl} alt={store.name} />
               ) : (
                 store.name ? store.name.charAt(0).toUpperCase() : "?"
               )}

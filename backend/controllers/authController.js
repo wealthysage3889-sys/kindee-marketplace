@@ -1,15 +1,19 @@
-const asyncHandler = require("express-async-handler");
-const User = require("../models/User");
-const Setting = require("../models/Setting");
-const { sendTokenResponse } = require("../services/authService");
-const { OAuth2Client } = require("google-auth-library");
-const jwt = require("jsonwebtoken");
+import asyncHandler from "express-async-handler";
+import * as authService from "../services/authService.js";
+import { AppError, ConflictError, NotFoundError } from "../middleware/errorHandler.js";
+import { OAuth2Client } from "google-auth-library";
+import jwt from "jsonwebtoken";
+import { supabaseAdmin } from "../config/supabase.js";
 
 const toBool = (v) => v === true || v === "true" || v === "1";
 
 const getSettingOrEnv = async (key, envKey) => {
-  const val = await Setting.getSetting(key);
-  if (val !== null && val !== undefined && String(val).trim() !== "") return String(val);
+  const { data } = await supabaseAdmin
+    .from('settings')
+    .select('value')
+    .eq('key', key)
+    .single();
+  if (data?.value !== null && data?.value !== undefined && String(data.value).trim() !== "") return String(data.value);
   return process.env[envKey || key] || "";
 };
 
@@ -17,7 +21,7 @@ const getGoogleConfig = async () => {
   const [clientId, clientSecret, enabled] = await Promise.all([
     getSettingOrEnv("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_ID"),
     getSettingOrEnv("GOOGLE_CLIENT_SECRET", "GOOGLE_CLIENT_SECRET"),
-    Setting.getSetting("GOOGLE_ENABLED"),
+    getSettingOrEnv("GOOGLE_ENABLED"),
   ]);
   return { clientId, clientSecret, enabled: toBool(enabled) };
 };
@@ -26,7 +30,7 @@ const getFacebookConfig = async () => {
   const [appId, appSecret, enabled] = await Promise.all([
     getSettingOrEnv("FACEBOOK_APP_ID", "FACEBOOK_APP_ID"),
     getSettingOrEnv("FACEBOOK_APP_SECRET", "FACEBOOK_APP_SECRET"),
-    Setting.getSetting("FACEBOOK_ENABLED"),
+    getSettingOrEnv("FACEBOOK_ENABLED"),
   ]);
   return { appId, appSecret, enabled: toBool(enabled) };
 };
@@ -35,7 +39,7 @@ const getLineConfig = async () => {
   const [channelId, channelSecret, enabled] = await Promise.all([
     getSettingOrEnv("LINE_CHANNEL_ID", "LINE_CHANNEL_ID"),
     getSettingOrEnv("LINE_CHANNEL_SECRET", "LINE_CHANNEL_SECRET"),
-    Setting.getSetting("LINE_ENABLED"),
+    getSettingOrEnv("LINE_ENABLED"),
   ]);
   return { channelId, channelSecret, enabled: toBool(enabled) };
 };
@@ -50,34 +54,16 @@ const register = asyncHandler(async (req, res) => {
   }
 
   const isEmail = identifier.includes("@");
-  const lookups = isEmail ? [{ email: identifier.toLowerCase() }] : [{ phone: identifier }];
-
-  const userExists = await User.findOne({ $or: lookups });
-  if (userExists) {
-    res.status(400).json({ success: false, message: "บัญชีนี้มีผู้ใช้งานแล้ว" });
-    return;
-  }
-
-  const allowedRoles = ["customer", "seller"];
-  const safeRole = allowedRoles.includes(role) ? role : "customer";
-  const finalPassword = password || Math.random().toString(36).slice(-12);
-
-  const userData = {
-    name: name || "",
-    password: finalPassword,
-    role: safeRole,
-  };
-
-  if (isEmail) {
-    userData.email = identifier.toLowerCase();
-  } else {
-    userData.phone = identifier;
-  }
-
-  if (address) userData.address = address;
-
-  const user = await User.create(userData);
-  sendTokenResponse(user, 201, res);
+  const result = await authService.registerUser({ 
+    email: isEmail ? identifier.toLowerCase() : undefined,
+    phone: isEmail ? undefined : identifier,
+    password,
+    name,
+    role 
+  });
+  
+  const { sendTokenResponse } = await import("../services/authService.js");
+  sendTokenResponse(result.user, 201, res);
 });
 
 const login = asyncHandler(async (req, res) => {
@@ -85,21 +71,10 @@ const login = asyncHandler(async (req, res) => {
   const identifier = String(email || "").trim();
   const looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
 
-  const user = await User.findOne(
-    looksLikeEmail ? { email: identifier.toLowerCase() } : { phone: identifier }
-  ).select("+password");
-
-  if (!user || !(await user.matchPassword(password))) {
-    res.status(401).json({ success: false, message: "เบอร์โทรศัพท์/อีเมล หรือรหัสผ่านไม่ถูกต้อง" });
-    return;
-  }
-
-  if (!user.isActive) {
-    res.status(403).json({ success: false, message: "บัญชีถูกระงับการใช้งาน" });
-    return;
-  }
-
-  sendTokenResponse(user, 200, res);
+  const result = await authService.loginUser(identifier, password);
+  
+  const { sendTokenResponse } = await import("../services/authService.js");
+  sendTokenResponse(result.user, 200, res);
 });
 
 const refreshToken = asyncHandler(async (req, res) => {
@@ -110,44 +85,23 @@ const refreshToken = asyncHandler(async (req, res) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select("-password");
-    if (!user || !user.isActive) {
-      res.status(401).json({ success: false, message: "ผู้ใช้งานไม่ถูกต้องหรือถูกระงับ" });
-      return;
-    }
-    sendTokenResponse(user, 200, res);
+    const result = await authService.refreshAccessToken(token);
+    
+    const { sendTokenResponse } = await import("../services/authService.js");
+    sendTokenResponse({ ...result.user, id: result.user.id }, 200, res);
   } catch (error) {
     res.status(401).json({ success: false, message: "refresh token หมดอายุหรือไม่ถูกต้อง" });
   }
 });
 
 const getProfile = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user.id);
-  res.json({ success: true, data: user });
+  const profile = await authService.getProfile(req.user.id);
+  res.json({ success: true, data: profile });
 });
 
 const updateProfile = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user.id);
-
-  if (!user) {
-    res.status(404).json({ success: false, message: "ไม่พบผู้ใช้งาน" });
-    return;
-  }
-
-  user.name = req.body.name || user.name;
-  user.email = req.body.email || user.email;
-  user.phone = req.body.phone || user.phone;
-  user.address = req.body.address || user.address;
-  user.avatar = req.body.avatar || user.avatar;
-
-  if (req.body.password) {
-    user.password = req.body.password;
-  }
-
-  await user.save();
-
-  res.json({ success: true, data: user });
+  const profile = await authService.updateProfile(req.user.id, req.body);
+  res.json({ success: true, data: profile });
 });
 
 const logout = asyncHandler(async (req, res) => {
@@ -169,8 +123,14 @@ const googleLogin = asyncHandler(async (req, res) => {
   }
 
   const client = new OAuth2Client(clientId);
-  const ticket = await client.verifyIdToken({ idToken: credential, audience: clientId });
-  const payload = ticket.getPayload();
+  let payload;
+  try {
+    const ticket = await client.verifyIdToken({ idToken: credential, audience: clientId });
+    payload = ticket.getPayload();
+  } catch (err) {
+    res.status(400).json({ success: false, message: "Google credential ไม่ถูกต้อง" });
+    return;
+  }
   const { email, name, picture, sub: googleId } = payload || {};
 
   if (!email) {
@@ -178,28 +138,10 @@ const googleLogin = asyncHandler(async (req, res) => {
     return;
   }
 
-  let user = await User.findOne({ $or: [{ googleId }, { email: email.toLowerCase() }] });
-  if (!user) {
-    user = await User.create({
-      name: name || "",
-      email: email.toLowerCase(),
-      role: "customer",
-      password: Math.random().toString(36).slice(-12),
-      googleId,
-      avatar: picture || "",
-    });
-  } else {
-    if (!user.googleId) user.googleId = googleId;
-    if (!user.avatar && picture) user.avatar = picture;
-    if (!user.name && name) user.name = name;
-    if (!user.isActive) {
-      res.status(403).json({ success: false, message: "บัญชีถูกระงับการใช้งาน" });
-      return;
-    }
-    await user.save();
-  }
-
-  sendTokenResponse(user, 200, res);
+  const result = await authService.socialLogin('google', credential);
+  
+  const { sendTokenResponse } = await import("../services/authService.js");
+  sendTokenResponse(result.user, 200, res);
 });
 
 const facebookLogin = asyncHandler(async (req, res) => {
@@ -233,33 +175,10 @@ const facebookLogin = asyncHandler(async (req, res) => {
     return;
   }
 
-  const facebookId = profile.id;
-  const email = profile.email ? profile.email.toLowerCase() : null;
-  const name = profile.name || "";
-  const avatar = profile.picture?.data?.url || "";
-
-  let user = await User.findOne(email ? { $or: [{ facebookId }, { email }] } : { facebookId });
-  if (!user) {
-    user = await User.create({
-      name,
-      email: email || undefined,
-      role: "customer",
-      password: Math.random().toString(36).slice(-12),
-      facebookId,
-      avatar,
-    });
-  } else {
-    if (!user.facebookId) user.facebookId = facebookId;
-    if (!user.avatar && avatar) user.avatar = avatar;
-    if (!user.name && name) user.name = name;
-    if (!user.isActive) {
-      res.status(403).json({ success: false, message: "บัญชีถูกระงับการใช้งาน" });
-      return;
-    }
-    await user.save();
-  }
-
-  sendTokenResponse(user, 200, res);
+  const result = await authService.socialLogin('facebook', accessToken);
+  
+  const { sendTokenResponse } = await import("../services/authService.js");
+  sendTokenResponse(result.user, 200, res);
 });
 
 const lineLogin = asyncHandler(async (req, res) => {
@@ -325,28 +244,10 @@ const lineLogin = asyncHandler(async (req, res) => {
     return;
   }
 
-  let user = await User.findOne(email ? { $or: [{ lineId }, { email }] } : { lineId });
-  if (!user) {
-    user = await User.create({
-      name,
-      email: email || undefined,
-      role: "customer",
-      password: Math.random().toString(36).slice(-12),
-      lineId,
-      avatar,
-    });
-  } else {
-    if (!user.lineId) user.lineId = lineId;
-    if (!user.avatar && avatar) user.avatar = avatar;
-    if (!user.name && name) user.name = name;
-    if (!user.isActive) {
-      res.status(403).json({ success: false, message: "บัญชีถูกระงับการใช้งาน" });
-      return;
-    }
-    await user.save();
-  }
-
-  sendTokenResponse(user, 200, res);
+  const result = await authService.socialLogin('line', { code, redirectUri, channelId, channelSecret });
+  
+  const { sendTokenResponse } = await import("../services/authService.js");
+  sendTokenResponse(result.user, 200, res);
 });
 
-module.exports = { register, login, refreshToken, getProfile, updateProfile, logout, googleLogin, facebookLogin, lineLogin };
+export { register, login, refreshToken, getProfile, updateProfile, logout, googleLogin, facebookLogin, lineLogin };

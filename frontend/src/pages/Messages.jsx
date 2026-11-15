@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { storeAPI } from "../api/product";
+import { chatAPI } from "../api";
 
 const ChevronLeftIcon = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -12,6 +13,7 @@ export default function Messages() {
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [openingId, setOpeningId] = useState("");
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -19,12 +21,32 @@ export default function Messages() {
   const openStore = new URLSearchParams(location.search).get("openStore");
   const storeId = fromStore || openStore;
 
+  const openConversation = async (id) => {
+    if (!id || openingId) return;
+    setOpeningId(id);
+    setError("");
+    try {
+      const result = await chatAPI.getOrCreateConversation(id);
+      const conversation = result?.data || result;
+      if (conversation?.id) {
+        navigate(`/messages/${conversation.id}`);
+      } else {
+        setError("ไม่สามารถเปิดการสนทนาได้");
+      }
+    } catch (err) {
+      setError(err.message || "ไม่สามารถเปิดการสนทนาได้");
+    } finally {
+      setOpeningId("");
+    }
+  };
+
   // ถ้ามีการระบุ openStore ให้เด้งไปยังห้องแชทกับร้านค้านั้นทันที
   useEffect(() => {
     if (openStore) {
-      navigate(`/messages/${openStore}`);
+      openConversation(openStore);
     }
-  }, [openStore, navigate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openStore]);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,10 +89,14 @@ export default function Messages() {
                 to={`/messages/${store._id}`}
                 className="chat-card"
                 key={store._id}
+                onClick={(event) => {
+                  event.preventDefault();
+                  openConversation(store._id);
+                }}
               >
                 <span className="chat-avatar">
-                  {store.logo ? (
-                    <img src={store.logo} alt={store.name} />
+                  {store.logo || store.logo_url ? (
+                    <img src={store.logo || store.logo_url} alt={store.name} />
                   ) : (
                     (store.name || "ร้านค้า").charAt(0)
                   )}
@@ -78,7 +104,11 @@ export default function Messages() {
                 <div className="chat-info">
                   <strong className="chat-name">{store.name || "ร้านค้า"}</strong>
                   <span className="chat-status">
-                    {store.isActive === false ? "ร้านค้าปิดทำการ" : "เปิดร้าน"}
+                    {openingId === store._id
+                      ? "กำลังเปิดแชท..."
+                      : store.isActive === false || store.is_active === false
+                        ? "ร้านค้าปิดทำการ"
+                        : "เปิดร้าน"}
                   </span>
                 </div>
                 <span className="chat-time">แชท</span>

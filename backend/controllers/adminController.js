@@ -1,17 +1,26 @@
-const asyncHandler = require("express-async-handler");
-const User = require("../models/User");
-const Product = require("../models/Product");
-const Order = require("../models/Order");
+import asyncHandler from "express-async-handler";
+import * as authService from "../services/authService.js";
+import * as productService from "../services/productService.js";
+import * as orderService from "../services/orderService.js";
+import * as storeService from "../services/storeService.js";
+import { AppError, NotFoundError, ValidationError } from "../middleware/errorHandler.js";
+import { supabaseAdmin } from "../config/supabase.js";
 
-const VALID_ROLES = ["customer", "seller", "admin", "owner"];
+const VALID_ROLES = ["customer", "seller", "admin", "owner", "courier"];
 
 const getAllUsers = asyncHandler(async (req, res) => {
-  const users = await User.find().select("-password").sort("-createdAt");
-  res.json({ success: true, count: users.length, data: users });
+  const { role, is_active, search, page = 1, limit = 20 } = req.query;
+  
+  const result = await authService.getAllUsers(
+    { role, is_active: is_active === 'true' ? true : is_active === 'false' ? false : undefined, search },
+    { page: parseInt(page), limit: parseInt(limit) }
+  );
+  
+  res.json({ success: true, count: result.users.length, data: result.users });
 });
 
 const getUserById = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.params.id).select("-password");
+  const user = await authService.getProfile(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "ไม่พบผู้ใช้งาน" });
     return;
@@ -32,13 +41,8 @@ const createUser = asyncHandler(async (req, res) => {
     return;
   }
 
-  const exists = await User.exists({ email });
-  if (exists) {
-    res.status(400).json({ success: false, message: "อีเมลนี้มีอยู่แล้วในระบบ" });
-    return;
-  }
-  const user = await User.create({ name, email, password, role, phone, address });
-  const safeUser = user.toObject();
+  const result = await authService.registerUser({ email, password, name, role, phone, address });
+  const safeUser = { ...result.user };
   delete safeUser.password;
   res.status(201).json({ success: true, data: safeUser });
 });
@@ -55,7 +59,7 @@ const updateUserRole = asyncHandler(async (req, res) => {
     return;
   }
 
-  const targetUser = await User.findById(req.params.id);
+  const targetUser = await authService.getProfile(req.params.id);
   if (!targetUser) {
     res.status(404).json({ success: false, message: "ไม่พบผู้ใช้งาน" });
     return;
@@ -66,16 +70,12 @@ const updateUserRole = asyncHandler(async (req, res) => {
     return;
   }
 
-  const user = await User.findByIdAndUpdate(
-    req.params.id,
-    { role },
-    { new: true, runValidators: true }
-  ).select("-password");
+  const user = await authService.updateUserRole(req.params.id, role, req.user.id);
   res.json({ success: true, data: user });
 });
 
 const deleteUser = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.params.id);
+  const user = await authService.getProfile(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "ไม่พบผู้ใช้งาน" });
     return;
@@ -86,36 +86,32 @@ const deleteUser = asyncHandler(async (req, res) => {
     return;
   }
 
-  if (user._id.toString() === req.user.id) {
+  if (user.id === req.user.id) {
     res.status(400).json({ success: false, message: "ไม่สามารถลบบัญชีของตนเองได้" });
     return;
   }
 
-  await user.deleteOne();
+  await authService.deactivateAccount(req.params.id);
   res.json({ success: true, message: "ลบผู้ใช้งานเรียบร้อย" });
 });
 
 const getDashboardStats = asyncHandler(async (req, res) => {
-  const [users, products, orders] = await Promise.all([
-    User.countDocuments(),
-    Product.countDocuments(),
-    Order.countDocuments().catch(() => 0),
+  const [{ count: users }, { count: products }, { count: orders }] = await Promise.all([
+    supabaseAdmin.from('profiles').select('*', { count: 'exact', head: true }),
+    supabaseAdmin.from('products').select('*', { count: 'exact', head: true }),
+    supabaseAdmin.from('orders').select('*', { count: 'exact', head: true }).catch(() => ({ count: 0 })),
   ]);
-  res.json({ success: true, data: { users, products, orders } });
+  
+  res.json({ success: true, data: { users: users || 0, products: products || 0, orders: orders || 0 } });
 });
 
 const getAllProducts = asyncHandler(async (req, res) => {
-  const products = await Product.find()
-    .populate("seller", "name email")
-    .populate("category", "name slug")
-    .sort("-createdAt");
-  res.json({ success: true, count: products.length, data: products });
+  const result = await productService.getAllProducts({}, { page: 1, limit: 100 });
+  res.json({ success: true, count: result.products.length, data: result.products });
 });
 
 const getProductById = asyncHandler(async (req, res) => {
-  const product = await Product.findById(req.params.id)
-    .populate("seller", "name email")
-    .populate("category", "name slug");
+  const product = await productService.getProductById(req.params.id, true);
   if (!product) {
     res.status(404).json({ success: false, message: "ไม่พบสินค้า" });
     return;
@@ -124,15 +120,28 @@ const getProductById = asyncHandler(async (req, res) => {
 });
 
 const createProduct = asyncHandler(async (req, res) => {
-  const product = await Product.create({ ...req.body, seller: req.user.id });
+  const store = await storeService.getStoresByOwner(req.user.id);
+  const storeId = store[0]?.id;
+  
+  if (!storeId) {
+    res.status(400).json({ success: false, message: "คุณยังไม่มีร้านค้า กรุณาสร้างร้านค้าก่อน" });
+    return;
+  }
+
+  const product = await productService.createProduct(storeId, req.user.id, req.body);
   res.status(201).json({ success: true, data: product });
 });
 
 const updateProduct = asyncHandler(async (req, res) => {
-  const product = await Product.findByIdAndUpdate(req.params.id, req.body, {
-    new: true,
-    runValidators: true,
-  });
+  const store = await storeService.getStoresByOwner(req.user.id);
+  const storeId = store[0]?.id;
+  
+  if (!storeId) {
+    res.status(400).json({ success: false, message: "คุณยังไม่มีร้านค้า" });
+    return;
+  }
+
+  const product = await productService.updateProduct(req.params.id, storeId, req.user.id, req.body);
   if (!product) {
     res.status(404).json({ success: false, message: "ไม่พบสินค้า" });
     return;
@@ -141,27 +150,31 @@ const updateProduct = asyncHandler(async (req, res) => {
 });
 
 const deleteProduct = asyncHandler(async (req, res) => {
-  const product = await Product.findById(req.params.id);
-  if (!product) {
-    res.status(404).json({ success: false, message: "ไม่พบสินค้า" });
+  const store = await storeService.getStoresByOwner(req.user.id);
+  const storeId = store[0]?.id;
+  
+  if (!storeId) {
+    res.status(400).json({ success: false, message: "คุณยังไม่มีร้านค้า" });
     return;
   }
-  await product.deleteOne();
+
+  await productService.deleteProduct(req.params.id, storeId, req.user.id);
   res.json({ success: true, message: "ลบสินค้าเรียบร้อย" });
 });
 
 const getReports = asyncHandler(async (req, res) => {
-  const [users, products, orders] = await Promise.all([
-    User.countDocuments(),
-    Product.countDocuments(),
-    Order.countDocuments().catch(() => 0),
+  const [{ count: users }, { count: products }, { count: orders }] = await Promise.all([
+    supabaseAdmin.from('profiles').select('*', { count: 'exact', head: true }),
+    supabaseAdmin.from('products').select('*', { count: 'exact', head: true }),
+    supabaseAdmin.from('orders').select('*', { count: 'exact', head: true }).catch(() => ({ count: 0 })),
   ]);
-  res.json({ success: true, data: { users, products, orders } });
+  
+  res.json({ success: true, data: { users: users || 0, products: products || 0, orders: orders || 0 } });
 });
 
 const uploadProductImages = asyncHandler(async (req, res) => {
   if (!req.files || req.files.length === 0) {
-    res.status(400).json({ success: false, message: "กรุณาอัป加载รูปภาพสินค้าอย่างน้อย 1 รูป" });
+    res.status(400).json({ success: false, message: "กรุณาอัปโหลดรูปภาพสินค้าอย่างน้อย 1 รูป" });
     return;
   }
 
@@ -169,7 +182,7 @@ const uploadProductImages = asyncHandler(async (req, res) => {
   res.json({ success: true, data: images });
 });
 
-module.exports = {
+export {
   getDashboardStats,
   getAllUsers,
   getUserById,

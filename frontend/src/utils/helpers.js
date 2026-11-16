@@ -7,6 +7,55 @@ export const formatCurrency = (amount, currency = 'THB') => {
   }).format(amount);
 };
 
+// Parses a price-like value coming from the API, which may be a number, a
+// numeric string ("80"), null, undefined, "" or an invalid value.
+// Returns a finite number, or null when no usable number was supplied.
+const toFiniteNumber = (value) => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed === "") return null;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  return null;
+};
+
+// Mirrors backend utils/productPricing.js#resolveEffectivePrice and the cart's
+// resolvePrice so the price shown on Home / ProductDetail always matches what
+// the backend and the cart charge.
+//   discount null/undefined/"" -> regular price
+//   discount <= 0 (incl. 0)    -> regular price (never show a free item)
+//   discount >= price          -> regular price
+//   0 < discount < price       -> discount price + strikethrough original
+// Accepts both `discountPrice` (camelCase) and `discount_price` (snake_case).
+export const resolveProductPricing = (product) => {
+  const price = toFiniteNumber(product?.price);
+  const rawDiscount = product?.discountPrice ?? product?.discount_price;
+  const discount = toFiniteNumber(rawDiscount);
+
+  const regularPrice = price ?? 0;
+  const hasDiscount =
+    discount !== null &&
+    regularPrice > 0 &&
+    discount > 0 &&
+    discount < regularPrice;
+
+  const displayPrice = hasDiscount ? discount : regularPrice;
+  const discountPercent = hasDiscount
+    ? Math.round((1 - displayPrice / regularPrice) * 100)
+    : 0;
+
+  return {
+    price: regularPrice,
+    displayPrice,
+    originalPrice: regularPrice,
+    hasDiscount,
+    discountPercent,
+  };
+};
+
 export const formatDate = (dateStr, options = {}) => {
   if (!dateStr) return '-';
   const defaultOptions = {
@@ -120,6 +169,20 @@ export const parseQueryString = (queryString) => {
     result[key] = value;
   }
   return result;
+};
+
+// Backend list endpoints respond with { success, data: { <listKey>, pagination } }
+// and the response formatter also mirrors the array at data.data. Accept every
+// documented shape so a valid payload is never dropped because of nesting.
+export const extractList = (payload, listKey) => {
+  const candidates = [
+    payload?.[listKey],
+    payload?.data?.[listKey],
+    payload?.data?.data,
+    Array.isArray(payload?.data) ? payload.data : undefined,
+    Array.isArray(payload) ? payload : undefined,
+  ];
+  return candidates.find(Array.isArray) || [];
 };
 
 export const buildQueryString = (params) => {

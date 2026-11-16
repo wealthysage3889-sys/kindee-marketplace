@@ -5,7 +5,7 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import { createServer } from 'http';
 import { ensureUploadsDir, uploadsDir } from './config/uploadDir.js';
-import { errorHandler } from './middleware/errorHandler.js';
+import { errorHandler, notFound } from './middleware/errorHandler.js';
 import { responseFormatter } from './middleware/responseFormatter.js';
 import apiRoutes from './routes/index.js';
 import { initialize as initSocket } from './services/socketService.js';
@@ -84,6 +84,10 @@ app.get("/", (req, res) => {
 });
 
 app.use("/api", apiRoutes);
+
+// Unmatched /api routes must return a JSON 404 instead of falling through with
+// no response (Express default HTML handler), which surfaced as a generic error.
+app.use(notFound);
 
 app.use(errorHandler);
 

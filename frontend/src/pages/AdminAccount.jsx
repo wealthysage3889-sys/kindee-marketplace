@@ -85,9 +85,9 @@ const ADMIN_STORE_TILES = [
 ];
 
 const emptySocial = () => ({
-  google: { clientId: "", clientSecret: "", enabled: false },
-  facebook: { appId: "", appSecret: "", enabled: false },
-  line: { channelId: "", channelSecret: "", enabled: false },
+  google: { clientId: "", clientSecret: "", enabled: false, hasSecret: false },
+  facebook: { appId: "", appSecret: "", enabled: false, hasSecret: false },
+  line: { channelId: "", channelSecret: "", enabled: false, hasSecret: false },
 });
 
 export default function AdminAccount() {
@@ -164,14 +164,18 @@ export default function AdminAccount() {
         const row = list.find((s) => String(s.key || '').toLowerCase() === String(k).toLowerCase());
         return row?.value ?? "";
       };
+      const getHasSecret = (k) => {
+        const row = list.find((s) => String(s.key || '').toLowerCase() === String(k).toLowerCase());
+        return row?.hasValue === true;
+      };
       const on = (k) => {
         const v = String(get(k)).toLowerCase();
         return v === "true" || v === "1";
       };
       setSocialForm({
-        google: { clientId: get("google_client_id") || get("GOOGLE_CLIENT_ID"), clientSecret: "", enabled: on("google_enabled") || on("GOOGLE_ENABLED") },
-        facebook: { appId: get("facebook_app_id") || get("FACEBOOK_APP_ID"), appSecret: "", enabled: on("facebook_enabled") || on("FACEBOOK_ENABLED") },
-        line: { channelId: get("line_channel_id") || get("LINE_CHANNEL_ID"), channelSecret: "", enabled: on("line_enabled") || on("LINE_ENABLED") },
+        google: { clientId: get("google_client_id") || get("GOOGLE_CLIENT_ID"), clientSecret: "", enabled: on("google_enabled") || on("GOOGLE_ENABLED"), hasSecret: getHasSecret("google_client_secret") },
+        facebook: { appId: get("facebook_app_id") || get("FACEBOOK_APP_ID"), appSecret: "", enabled: on("facebook_enabled") || on("FACEBOOK_ENABLED"), hasSecret: getHasSecret("facebook_app_secret") },
+        line: { channelId: get("line_channel_id") || get("LINE_CHANNEL_ID"), channelSecret: "", enabled: on("line_enabled") || on("LINE_ENABLED"), hasSecret: getHasSecret("line_channel_secret") },
       });
     } catch {
       setSocialForm(emptySocial());
@@ -222,17 +226,27 @@ export default function AdminAccount() {
     e.preventDefault(); setFormError(""); setFormSuccess("");
     setSaving(true);
     try {
-      await adminAPI.bulkUpdateSettings([
+      const settings = [
         { key: "google_client_id", value: socialForm.google.clientId.trim(), category: "oauth", isPublic: false },
-        { key: "google_client_secret", value: socialForm.google.clientSecret.trim(), category: "oauth", isPublic: false },
         { key: "google_enabled", value: String(!!socialForm.google.enabled), category: "oauth", isPublic: false },
         { key: "facebook_app_id", value: socialForm.facebook.appId.trim(), category: "oauth", isPublic: false },
-        { key: "facebook_app_secret", value: socialForm.facebook.appSecret.trim(), category: "oauth", isPublic: false },
         { key: "facebook_enabled", value: String(!!socialForm.facebook.enabled), category: "oauth", isPublic: false },
         { key: "line_channel_id", value: socialForm.line.channelId.trim(), category: "oauth", isPublic: false },
-        { key: "line_channel_secret", value: socialForm.line.channelSecret.trim(), category: "oauth", isPublic: false },
         { key: "line_enabled", value: String(!!socialForm.line.enabled), category: "oauth", isPublic: false },
-      ]);
+      ];
+
+      // Only include secret if user entered a new value (non-empty)
+      if (socialForm.google.clientSecret.trim() !== "") {
+        settings.push({ key: "google_client_secret", value: socialForm.google.clientSecret.trim(), category: "oauth", isPublic: false });
+      }
+      if (socialForm.facebook.appSecret.trim() !== "") {
+        settings.push({ key: "facebook_app_secret", value: socialForm.facebook.appSecret.trim(), category: "oauth", isPublic: false });
+      }
+      if (socialForm.line.channelSecret.trim() !== "") {
+        settings.push({ key: "line_channel_secret", value: socialForm.line.channelSecret.trim(), category: "oauth", isPublic: false });
+      }
+
+      await adminAPI.bulkUpdateSettings(settings);
       setFormSuccess("บันทึกการตั้งค่า Social Login เรียบร้อยแล้ว");
       setTimeout(() => setModal(null), 800);
     } catch (err) { setFormError(err.message || "บันทึกการตั้งค่าไม่สำเร็จ"); }
@@ -257,7 +271,7 @@ export default function AdminAccount() {
     </Link>
   );
 
-  const ProviderSection = ({ title, enabled, onToggle, callbackUrl, children }) => (
+  const ProviderSection = ({ title, enabled, onToggle, callbackUrl, callbackLabel, children }) => (
     <div className="form-group" style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: 12, marginBottom: 12 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
         <strong>{title}</strong>
@@ -268,7 +282,7 @@ export default function AdminAccount() {
       </div>
       {children}
       <div style={{ marginTop: 8 }}>
-        <label className="form-label" style={{ fontSize: 12 }}>Callback URL (คัดลอกไปวางในระบบของ {title})</label>
+        <label className="form-label" style={{ fontSize: 12 }}>{callbackLabel || `Callback URL (คัดลอกไปวางในระบบของ ${title})`}</label>
         <div style={{ display: "flex", gap: 8 }}>
           <input className="form-input" readOnly value={callbackUrl} style={{ fontSize: 12 }} onFocus={(e) => e.target.select()} />
           <button type="button" className="btn-outline" onClick={() => copyText(callbackUrl)} style={{ whiteSpace: "nowrap" }}>คัดลอก</button>
@@ -342,19 +356,21 @@ export default function AdminAccount() {
               <button type="button" className="account-modal-close" onClick={closeModal} aria-label="ปิด">×</button>
             </div>
 
-            {formError && <div className="alert alert-error">{formError}</div>}
-            {formSuccess && <div className="alert alert-success">{formSuccess}</div>}
+            {formError && <div className="alert alert-error account-modal-alert">{formError}</div>}
+            {formSuccess && <div className="alert alert-success account-modal-alert">{formSuccess}</div>}
 
             {modal === "profile" && (
               <form onSubmit={handleProfileSubmit} className="account-modal-form">
-                <div className="form-group"><label className="form-label" htmlFor="account-name">ชื่อ</label>
-                  <input id="account-name" className="form-input" value={profileForm.name} onChange={(e) => setProfileForm((p) => ({ ...p, name: e.target.value }))} autoComplete="name" />
-                </div>
-                <div className="form-group"><label className="form-label" htmlFor="account-phone">โทรศัพท์</label>
-                  <input id="account-phone" className="form-input" value={profileForm.phone} onChange={(e) => setProfileForm((p) => ({ ...p, phone: e.target.value }))} autoComplete="tel" />
-                </div>
-                <div className="form-group"><label className="form-label" htmlFor="account-address">ที่อยู่</label>
-                  <textarea id="account-address" className="form-input" rows="3" value={profileForm.address} onChange={(e) => setProfileForm((p) => ({ ...p, address: e.target.value }))} autoComplete="street-address" />
+                <div className="account-modal-body">
+                  <div className="form-group"><label className="form-label" htmlFor="account-name">ชื่อ</label>
+                    <input id="account-name" className="form-input" value={profileForm.name} onChange={(e) => setProfileForm((p) => ({ ...p, name: e.target.value }))} autoComplete="name" />
+                  </div>
+                  <div className="form-group"><label className="form-label" htmlFor="account-phone">โทรศัพท์</label>
+                    <input id="account-phone" className="form-input" value={profileForm.phone} onChange={(e) => setProfileForm((p) => ({ ...p, phone: e.target.value }))} autoComplete="tel" />
+                  </div>
+                  <div className="form-group"><label className="form-label" htmlFor="account-address">ที่อยู่</label>
+                    <textarea id="account-address" className="form-input" rows="3" value={profileForm.address} onChange={(e) => setProfileForm((p) => ({ ...p, address: e.target.value }))} autoComplete="street-address" />
+                  </div>
                 </div>
                 <div className="account-modal-actions">
                   <button type="button" className="btn-outline" onClick={closeModal} disabled={saving}>ยกเลิก</button>
@@ -365,11 +381,13 @@ export default function AdminAccount() {
 
             {modal === "password" && (
               <form onSubmit={handlePasswordSubmit} className="account-modal-form">
-                <div className="form-group"><label className="form-label" htmlFor="account-password">รหัสผ่านใหม่</label>
-                  <input id="account-password" type="password" className="form-input" value={passwordForm.password} onChange={(e) => setPasswordForm((p) => ({ ...p, password: e.target.value }))} autoComplete="new-password" />
-                </div>
-                <div className="form-group"><label className="form-label" htmlFor="account-password-confirm">ยืนยันรหัสผ่านใหม่</label>
-                  <input id="account-password-confirm" type="password" className="form-input" value={passwordForm.confirm} onChange={(e) => setPasswordForm((p) => ({ ...p, confirm: e.target.value }))} autoComplete="new-password" />
+                <div className="account-modal-body">
+                  <div className="form-group"><label className="form-label" htmlFor="account-password">รหัสผ่านใหม่</label>
+                    <input id="account-password" type="password" className="form-input" value={passwordForm.password} onChange={(e) => setPasswordForm((p) => ({ ...p, password: e.target.value }))} autoComplete="new-password" />
+                  </div>
+                  <div className="form-group"><label className="form-label" htmlFor="account-password-confirm">ยืนยันรหัสผ่านใหม่</label>
+                    <input id="account-password-confirm" type="password" className="form-input" value={passwordForm.confirm} onChange={(e) => setPasswordForm((p) => ({ ...p, confirm: e.target.value }))} autoComplete="new-password" />
+                  </div>
                 </div>
                 <div className="account-modal-actions">
                   <button type="button" className="btn-outline" onClick={closeModal} disabled={saving}>ยกเลิก</button>
@@ -380,14 +398,16 @@ export default function AdminAccount() {
 
             {modal === "addAdmin" && (
               <form onSubmit={handleAddAdminSubmit} className="account-modal-form">
-                <div className="form-group"><label className="form-label" htmlFor="add-admin-name">ชื่อ</label>
-                  <input id="add-admin-name" className="form-input" value={adminForm.name} onChange={(e) => setAdminForm((p) => ({ ...p, name: e.target.value }))} autoComplete="name" />
-                </div>
-                <div className="form-group"><label className="form-label" htmlFor="add-admin-email">อีเมล</label>
-                  <input id="add-admin-email" type="email" className="form-input" value={adminForm.email} onChange={(e) => setAdminForm((p) => ({ ...p, email: e.target.value }))} autoComplete="email" />
-                </div>
-                <div className="form-group"><label className="form-label" htmlFor="add-admin-password">รหัสผ่าน</label>
-                  <input id="add-admin-password" type="password" className="form-input" value={adminForm.password} onChange={(e) => setAdminForm((p) => ({ ...p, password: e.target.value }))} autoComplete="new-password" />
+                <div className="account-modal-body">
+                  <div className="form-group"><label className="form-label" htmlFor="add-admin-name">ชื่อ</label>
+                    <input id="add-admin-name" className="form-input" value={adminForm.name} onChange={(e) => setAdminForm((p) => ({ ...p, name: e.target.value }))} autoComplete="name" />
+                  </div>
+                  <div className="form-group"><label className="form-label" htmlFor="add-admin-email">อีเมล</label>
+                    <input id="add-admin-email" type="email" className="form-input" value={adminForm.email} onChange={(e) => setAdminForm((p) => ({ ...p, email: e.target.value }))} autoComplete="email" />
+                  </div>
+                  <div className="form-group"><label className="form-label" htmlFor="add-admin-password">รหัสผ่าน</label>
+                    <input id="add-admin-password" type="password" className="form-input" value={adminForm.password} onChange={(e) => setAdminForm((p) => ({ ...p, password: e.target.value }))} autoComplete="new-password" />
+                  </div>
                 </div>
                 <div className="account-modal-actions">
                   <button type="button" className="btn-outline" onClick={closeModal} disabled={saving}>ยกเลิก</button>
@@ -398,57 +418,64 @@ export default function AdminAccount() {
 
             {modal === "socialLogin" && (
               <form onSubmit={handleSocialSubmit} className="account-modal-form">
-                <ProviderSection
-                  title="Google"
-                  enabled={socialForm.google.enabled}
-                  onToggle={(v) => setSocialForm((p) => ({ ...p, google: { ...p.google, enabled: v } }))}
-                  callbackUrl={`${origin}/login`}
-                >
-                  <div className="form-group">
-                    <label className="form-label">Google Client ID</label>
-                    <input className="form-input" value={socialForm.google.clientId} onChange={(e) => setSocialForm((p) => ({ ...p, google: { ...p.google, clientId: e.target.value } }))} placeholder="Client ID จาก Google Cloud Console" />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Google Client Secret</label>
-                    <input type="password" className="form-input" value={socialForm.google.clientSecret} onChange={(e) => setSocialForm((p) => ({ ...p, google: { ...p.google, clientSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
-                  </div>
-                  <p className="form-hint">ตั้งค่าใน Google Cloud Console &gt; APIs &amp; Services &gt; Credentials (เพิ่ม Authorized JavaScript origins: {origin})</p>
-                </ProviderSection>
+                <div className="account-modal-body">
+                  <ProviderSection
+                    title="Google"
+                    enabled={socialForm.google.enabled}
+                    onToggle={(v) => setSocialForm((p) => ({ ...p, google: { ...p.google, enabled: v } }))}
+                    callbackUrl={origin}
+                    callbackLabel="Authorized JavaScript origins (คัดลอกไปวางใน Google Cloud Console)"
+                  >
+                    <div className="form-group">
+                      <label className="form-label">Google Client ID</label>
+                      <input className="form-input" value={socialForm.google.clientId} onChange={(e) => setSocialForm((p) => ({ ...p, google: { ...p.google, clientId: e.target.value } }))} placeholder="Client ID จาก Google Cloud Console" />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Google Client Secret</label>
+                      <input type="password" className="form-input" value={socialForm.google.clientSecret} onChange={(e) => setSocialForm((p) => ({ ...p, google: { ...p.google, clientSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
+                      {socialForm.google.hasSecret && <p className="form-hint" style={{ color: "#059669", fontSize: 12, marginTop: 4 }}>✓ ตั้งค่า Secret ไว้แล้ว — เว้นว่างเพื่อคงค่าเดิม</p>}
+                    </div>
+                    <p className="form-hint">ตั้งค่าใน Google Cloud Console &gt; APIs &amp; Services &gt; Credentials (เพิ่ม Authorized JavaScript origins: {origin})</p>
+                  </ProviderSection>
 
-                <ProviderSection
-                  title="Facebook"
-                  enabled={socialForm.facebook.enabled}
-                  onToggle={(v) => setSocialForm((p) => ({ ...p, facebook: { ...p.facebook, enabled: v } }))}
-                  callbackUrl={`${origin}/login`}
-                >
-                  <div className="form-group">
-                    <label className="form-label">Facebook App ID</label>
-                    <input className="form-input" value={socialForm.facebook.appId} onChange={(e) => setSocialForm((p) => ({ ...p, facebook: { ...p.facebook, appId: e.target.value } }))} placeholder="App ID จาก Facebook Developers" />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Facebook App Secret</label>
-                    <input type="password" className="form-input" value={socialForm.facebook.appSecret} onChange={(e) => setSocialForm((p) => ({ ...p, facebook: { ...p.facebook, appSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
-                  </div>
-                  <p className="form-hint">ตั้งค่าใน Facebook Developers &gt; Facebook Login &gt; Settings (Valid OAuth Redirect URIs: {origin}/login และ {origin}/register)</p>
-                </ProviderSection>
+                  <ProviderSection
+                    title="Facebook"
+                    enabled={socialForm.facebook.enabled}
+                    onToggle={(v) => setSocialForm((p) => ({ ...p, facebook: { ...p.facebook, enabled: v } }))}
+                    callbackUrl={`${origin}/login`}
+                    callbackLabel="Valid OAuth Redirect URIs (คัดลอกไปวางใน Facebook Developers)"
+                  >
+                    <div className="form-group">
+                      <label className="form-label">Facebook App ID</label>
+                      <input className="form-input" value={socialForm.facebook.appId} onChange={(e) => setSocialForm((p) => ({ ...p, facebook: { ...p.facebook, appId: e.target.value } }))} placeholder="App ID จาก Facebook Developers" />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Facebook App Secret</label>
+                      <input type="password" className="form-input" value={socialForm.facebook.appSecret} onChange={(e) => setSocialForm((p) => ({ ...p, facebook: { ...p.facebook, appSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
+                      {socialForm.facebook.hasSecret && <p className="form-hint" style={{ color: "#059669", fontSize: 12, marginTop: 4 }}>✓ ตั้งค่า Secret ไว้แล้ว — เว้นว่างเพื่อคงค่าเดิม</p>}
+                    </div>
+                    <p className="form-hint">ตั้งค่าใน Facebook Developers &gt; Facebook Login &gt; Settings (Valid OAuth Redirect URIs: {origin}/login และ {origin}/register)</p>
+                  </ProviderSection>
 
-                <ProviderSection
-                  title="LINE"
-                  enabled={socialForm.line.enabled}
-                  onToggle={(v) => setSocialForm((p) => ({ ...p, line: { ...p.line, enabled: v } }))}
-                  callbackUrl={`${origin}/login`}
-                >
-                  <div className="form-group">
-                    <label className="form-label">LINE Channel ID</label>
-                    <input className="form-input" value={socialForm.line.channelId} onChange={(e) => setSocialForm((p) => ({ ...p, line: { ...p.line, channelId: e.target.value } }))} placeholder="Channel ID จาก LINE Developers" />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">LINE Channel Secret</label>
-                    <input type="password" className="form-input" value={socialForm.line.channelSecret} onChange={(e) => setSocialForm((p) => ({ ...p, line: { ...p.line, channelSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
-                  </div>
-                  <p className="form-hint">ตั้งค่าใน LINE Developers Console &gt; LINE Login &gt; Callback URL เพิ่ม: {origin}/login และ {origin}/register (เปิด scope: profile, openid, email)</p>
-                </ProviderSection>
-
+                  <ProviderSection
+                    title="LINE"
+                    enabled={socialForm.line.enabled}
+                    onToggle={(v) => setSocialForm((p) => ({ ...p, line: { ...p.line, enabled: v } }))}
+                    callbackUrl={`${origin}/oauth/line/callback`}
+                    callbackLabel="Callback URL (คัดลอกไปวางใน LINE Developers Console)"
+                  >
+                    <div className="form-group">
+                      <label className="form-label">LINE Channel ID</label>
+                      <input className="form-input" value={socialForm.line.channelId} onChange={(e) => setSocialForm((p) => ({ ...p, line: { ...p.line, channelId: e.target.value } }))} placeholder="Channel ID จาก LINE Developers" />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">LINE Channel Secret</label>
+                      <input type="password" className="form-input" value={socialForm.line.channelSecret} onChange={(e) => setSocialForm((p) => ({ ...p, line: { ...p.line, channelSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
+                      {socialForm.line.hasSecret && <p className="form-hint" style={{ color: "#059669", fontSize: 12, marginTop: 4 }}>✓ ตั้งค่า Secret ไว้แล้ว — เว้นว่างเพื่อคงค่าเดิม</p>}
+                    </div>
+                    <p className="form-hint">ตั้งค่าใน LINE Developers Console &gt; LINE Login &gt; Callback URL: {origin}/oauth/line/callback (เปิด scope: profile, openid, email)</p>
+                  </ProviderSection>
+                </div>
                 <div className="account-modal-actions">
                   <button type="button" className="btn-outline" onClick={closeModal} disabled={saving}>ยกเลิก</button>
                   <button type="submit" className="btn" disabled={saving}>{saving ? "กำลังบันทึก..." : "บันทึกการตั้งค่า"}</button>

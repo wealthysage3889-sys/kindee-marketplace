@@ -197,7 +197,7 @@ const lineLogin = asyncHandler(async (req, res) => {
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     code,
-    redirect_uri: redirectUri || `${process.env.CLIENT_URL || "http://localhost:3000"}/login`,
+    redirect_uri: redirectUri || `${process.env.CLIENT_URL || "http://localhost:3000"}/oauth/line/callback`,
     client_id: channelId,
     client_secret: channelSecret,
   });

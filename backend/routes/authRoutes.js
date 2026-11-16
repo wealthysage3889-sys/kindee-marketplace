@@ -4,13 +4,14 @@ import { validate } from '../middleware/validate.js';
 import { verifyToken, optionalAuth } from '../middleware/auth.js';
 import * as authService from '../services/authService.js';
 import { asyncHandler, AppError } from '../middleware/errorHandler.js';
+import { validateThaiPhone } from '../utils/phone.js';
 
 const router = express.Router();
 
 // Register
 router.post('/register', [
   body('email').optional().isEmail().normalizeEmail().withMessage('Invalid email'),
-  body('phone').optional().isMobilePhone('th-TH').withMessage('Invalid phone number'),
+  body('phone').optional().custom(validateThaiPhone).withMessage('Invalid phone number'),
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
   body('name').optional().trim().notEmpty().withMessage('Name cannot be empty'),
   body('role').optional().isIn(['customer', 'seller']).withMessage('Invalid role')
@@ -92,6 +93,22 @@ router.post('/facebook', [
   });
 }));
 
+// LINE login (server-side authorization code exchange)
+router.post('/line', [
+  body('code').notEmpty().withMessage('LINE authorization code required'),
+  body('redirectUri').optional().isString()
+], validate, asyncHandler(async (req, res) => {
+  const { code, redirectUri } = req.body;
+
+  const result = await authService.lineLogin(code, redirectUri);
+
+  res.json({
+    success: true,
+    message: 'LINE login successful',
+    data: result
+  });
+}));
+
 // Get profile
 router.get('/profile', verifyToken, asyncHandler(async (req, res) => {
   const profile = await authService.getProfile(req.user.id);
@@ -105,7 +122,7 @@ router.get('/profile', verifyToken, asyncHandler(async (req, res) => {
 // Update profile
 router.put('/profile', verifyToken, [
   body('email').optional().isEmail().normalizeEmail().withMessage('Invalid email'),
-  body('phone').optional().isMobilePhone('th-TH').withMessage('Invalid phone number'),
+  body('phone').optional().custom(validateThaiPhone).withMessage('Invalid phone number'),
   body('name').optional().trim().notEmpty().withMessage('Name cannot be empty'),
   body('address').optional().trim(),
   body('avatar_url').optional().isURL().withMessage('Invalid avatar URL')
@@ -136,8 +153,12 @@ router.put('/password', verifyToken, [
 
 // Logout
 router.post('/logout', verifyToken, asyncHandler(async (req, res) => {
-  await authService.logoutUser(req.body.refreshToken);
-  
+  const { refreshToken, revokeAllSessions, scope } = req.body || {};
+  // Default: sign out the current device only ('local'). revokeAllSessions=true
+  // (or scope='global') signs out every device.
+  const resolvedScope = scope || (revokeAllSessions ? 'global' : 'local');
+  await authService.logoutUser(req.accessToken, refreshToken, resolvedScope);
+
   res.json({
     success: true,
     message: 'Logged out successfully'

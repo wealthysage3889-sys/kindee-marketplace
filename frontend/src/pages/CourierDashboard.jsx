@@ -282,7 +282,7 @@ export default function CourierDashboard() {
           <button className={`btn-toggle ${isAvailable ? "on" : "off"}`} onClick={toggleAvailability}>
             {isAvailable ? "ออฟไลน์" : "ออนไลน์"}
           </button>
-          <button className="btn-logout" onClick={logout}>ออกจากระบบ</button>
+          <button className="btn-logout" onClick={() => logout("customer")}>ออกจากระบบ</button>
         </div>
       </header>
 

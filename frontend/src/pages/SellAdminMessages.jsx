@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { useSocket } from "../context/SocketContext";
-import { messageAPI } from "../api/message";
+import { chatAPI } from "../api";
 
 const formatTime = (iso) => {
   try {
@@ -23,22 +22,30 @@ const formatDate = (iso) => {
 export default function SellAdminMessages() {
   const { admin } = useAuth();
   const user = admin?.user;
-  const { joinStore, leaveStore, on, off, connected } = useSocket();
   const [chats, setChats] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const navigate = useNavigate();
 
-  const currentUserId = user?._id || user?.id;
+  const currentUserId = user?.id;
 
   useEffect(() => {
     let cancelled = false;
     const loadChats = async () => {
       try {
         setError("");
-        const data = await messageAPI.getChatList("admin");
+        // GET /api/chat/conversations  (with admin token) -> all conversations
+        // the admin/seller is a member of.
+        const data = await chatAPI.getConversations({}, "admin");
+        const list = Array.isArray(data?.data) ? data.data : [];
         if (!cancelled) {
-          setChats(Array.isArray(data?.data) ? data.data : []);
+          setChats(list.map((c) => ({
+            id: c.id,
+            storeId: c.store_id,
+            store: c.store || null,
+            lastMessage: c.last_message || null,
+            unreadCount: c.members?.find((m) => String(m.profile_id) === String(currentUserId))?.unread_count || 0,
+          })));
         }
       } catch (err) {
         if (!cancelled) setError(err.message || "ไม่สามารถโหลดรายการแชทได้");
@@ -50,59 +57,8 @@ export default function SellAdminMessages() {
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => {
-    if (!connected) return;
-    const storeIds = chats.map((c) => c.storeId || c.store?._id).filter(Boolean);
-    storeIds.forEach((id) => joinStore(id));
-    return () => {
-      storeIds.forEach((id) => leaveStore(id));
-    };
-  }, [connected, chats, joinStore, leaveStore]);
-
-  useEffect(() => {
-    const handleNewMessage = (msg) => {
-      const storeId = msg.store?._id || msg.store;
-      if (!storeId) return;
-      const receiverId = msg.receiver?._id || msg.receiver;
-      const storeObj = msg.store && typeof msg.store === "object" ? msg.store : null;
-
-      setChats((prev) => {
-        const idx = prev.findIndex((c) => (c.storeId || c.store?._id) === storeId);
-        if (idx !== -1) {
-          const existing = prev[idx];
-          const isIncomingUnread = receiverId && receiverId === currentUserId && !msg.isRead;
-          const updated = {
-            ...existing,
-            storeId,
-            store: storeObj || existing.store,
-            lastMessage: msg,
-            unreadCount: isIncomingUnread ? (existing.unreadCount || 0) + 1 : existing.unreadCount || 0,
-          };
-          const next = [...prev];
-          next[idx] = updated;
-          next.sort((a, b) => new Date(b.lastMessage?.createdAt || 0) - new Date(a.lastMessage?.createdAt || 0));
-          return next;
-        }
-
-        const isIncomingUnread = receiverId && receiverId === currentUserId && !msg.isRead;
-        const newChat = {
-          storeId,
-          store: storeObj || undefined,
-          lastMessage: msg,
-          unreadCount: isIncomingUnread ? 1 : 0,
-        };
-        return [newChat, ...prev];
-      });
-
-      if (connected) joinStore(storeId);
-    };
-
-    on("newMessage", handleNewMessage);
-    return () => off("newMessage", handleNewMessage);
-  }, [on, off, currentUserId, connected, joinStore]);
-
-  const handleChatClick = (storeId) => {
-    navigate(`/selladmin/messages/${storeId}`);
+  const handleChatClick = (conversationId) => {
+    navigate(`/selladmin/messages/${conversationId}`);
   };
 
   if (loading) {
@@ -141,13 +97,13 @@ export default function SellAdminMessages() {
               const lastMsg = chat.lastMessage;
               const unreadCount = chat.unreadCount || 0;
               const storeName = store?.name || "ร้านค้า";
-              const storeLogo = store?.logo;
+              const storeLogo = store?.logo_url;
 
               return (
                 <div
-                  key={chat.storeId}
+                  key={chat.id}
                   className="chat-card"
-                  onClick={() => handleChatClick(chat.storeId)}
+                  onClick={() => handleChatClick(chat.id)}
                   style={{ cursor: "pointer" }}
                 >
                   <span className="chat-avatar">
@@ -160,16 +116,16 @@ export default function SellAdminMessages() {
                   <div className="chat-info">
                     <div className="chat-info-top">
                       <strong className="chat-name">{storeName}</strong>
-                      {lastMsg?.createdAt && (
+                      {lastMsg?.created_at && (
                         <span className="chat-time">
-                          {formatDate(lastMsg.createdAt)} {formatTime(lastMsg.createdAt)}
+                          {formatDate(lastMsg.created_at)} {formatTime(lastMsg.created_at)}
                         </span>
                       )}
                     </div>
                     <div className="chat-info-bottom">
                       <span className="chat-preview">
-                        {lastMsg?.senderRole === "seller" || lastMsg?.senderRole === "admin" ? "คุณ: " : ""}
-                        {lastMsg?.text || "ไม่มีข้อความ"}
+                        {lastMsg?.sender_id === currentUserId ? "คุณ: " : ""}
+                        {lastMsg?.content || "ไม่มีข้อความ"}
                       </span>
                       {unreadCount > 0 && (
                         <span className="chat-badge">{unreadCount}</span>

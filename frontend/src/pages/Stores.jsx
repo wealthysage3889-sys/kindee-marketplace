@@ -12,7 +12,10 @@ export default function Stores() {
     const loadStores = async () => {
       try {
         const data = await storeAPI.getStores({ limit: 50, isActive: true });
-        if (!cancelled) setStores(Array.isArray(data?.data) ? data.data : []);
+        if (!cancelled) {
+          const storesList = data?.data?.stores || data?.stores || (Array.isArray(data?.data) ? data.data : []);
+          setStores(Array.isArray(storesList) ? storesList : []);
+        }
       } catch (err) {
         if (!cancelled) setError(err.message || "ไม่สามารถโหลดร้านค้าได้");
       } finally {

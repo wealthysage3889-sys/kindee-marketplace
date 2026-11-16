@@ -15,9 +15,11 @@ router.post('/conversations', verifyToken, [
   body('storeOrderId').optional().isUUID()
 ], validate, asyncHandler(async (req, res) => {
   const { storeId, storeOrderId } = req.body;
-  
-  const conversation = await chatService.getOrCreateConversation(req.user.id, storeId, storeOrderId);
-  
+
+  const conversation = await chatService.getOrCreateConversation(req.user.id, storeId, storeOrderId, {
+    role: req.user.role
+  });
+
   res.json({
     success: true,
     data: conversation
@@ -227,7 +229,7 @@ router.post('/messages/:id/attachments', validateId(), verifyToken, uploadMultip
       file_name: file.originalname,
       file_size: file.size,
       mime_type: file.mimetype
-    });
+    }, req.user.id);
     
     uploadedAttachments.push(attachment);
   }
@@ -240,7 +242,7 @@ router.post('/messages/:id/attachments', validateId(), verifyToken, uploadMultip
 }));
 
 // Get store conversations (seller)
-router.get('/store/:storeId/conversations', validateId('storeId'), verifyToken, authorize('seller'), [
+router.get('/store/:storeId/conversations', validateId('storeId'), verifyToken, authorize('seller', 'owner', 'admin'), [
   query('status').optional().isIn(['all', 'unread']),
   query('page').optional().isInt({ min: 1 }),
   query('limit').optional().isInt({ min: 1, max: 50 })

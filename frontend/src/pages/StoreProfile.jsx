@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
-import { storeAPI } from "../api/product";
+import { productAPI, storeAPI } from "../api/product";
+import { extractList } from "../utils/helpers";
 import StoreBottomNav from "../components/StoreBottomNav";
 import StoreLocationMap from "../components/StoreLocationMap";
 
@@ -105,10 +106,8 @@ export default function StoreProfile() {
 
   const loadFallbackStores = async () => {
     try {
-      const data = await storeAPI.getStoreProducts(id, { limit: 1 });
       const storesData = await storeAPI.getStores({ limit: 10 });
-      const stores = Array.isArray(storesData?.data) ? storesData.data : [];
-      setFallbackStores(stores);
+      setFallbackStores(extractList(storesData, "stores"));
     } catch (err) {
       console.warn("Failed to load fallback stores:", err);
     }
@@ -142,8 +141,8 @@ export default function StoreProfile() {
         if (!cancelled) {
           if (storeData) {
             setStore(storeData);
-            const productsData = await storeAPI.getStoreProducts(storeData._id, { limit: 50 });
-            setProducts(Array.isArray(productsData?.data) ? productsData.data : Array.isArray(productsData) ? productsData : []);
+            const productsData = await productAPI.getProducts({ storeId: storeData._id || storeData.id, limit: 50 });
+            setProducts(extractList(productsData, "products"));
           } else {
             await loadFallbackStores();
             setStore(null);

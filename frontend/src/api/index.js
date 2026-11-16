@@ -3,25 +3,37 @@ const API_BASE = RAW_API_BASE.endsWith("/api")
   ? RAW_API_BASE
   : `${RAW_API_BASE.replace(/\/$/, "")}/api`;
 
-export function getToken() {
-  return (
-    localStorage.getItem("token") ||
-    localStorage.getItem("customerToken") ||
-    localStorage.getItem("adminToken")
-  );
+const STORAGE_KEYS = {
+  customer: {
+    token: "kindee:customer:token",
+    user: "kindee:customer:user",
+    refreshToken: "kindee:customer:refreshToken",
+  },
+  admin: {
+    token: "kindee:admin:token",
+    user: "kindee:admin:user",
+    refreshToken: "kindee:admin:refreshToken",
+  },
+};
+
+function keysFor(mode) {
+  return STORAGE_KEYS[mode] || STORAGE_KEYS.customer;
 }
 
-export function setToken(token) {
-  localStorage.setItem("token", token);
-  localStorage.setItem("customerToken", token);
+export function getToken(mode = "customer") {
+  return localStorage.getItem(keysFor(mode).token);
 }
 
-export function removeToken() {
-  ["token", "customerToken", "adminToken"].forEach((key) => localStorage.removeItem(key));
+export function setToken(token, mode = "customer") {
+  localStorage.setItem(keysFor(mode).token, token);
 }
 
-export async function request(path, options = {}) {
-  const token = getToken();
+export function removeToken(mode = "customer") {
+  localStorage.removeItem(keysFor(mode).token);
+}
+
+export async function request(path, options = {}, mode = "customer") {
+  const token = getToken(mode);
   const isFormData = options.body instanceof FormData;
   const headers = new Headers();
   
@@ -66,67 +78,67 @@ export const apiRequest = request;
 
 // Auth API
 export const authAPI = {
-  login: (emailOrPhone, password) =>
+  login: (emailOrPhone, password, mode = "customer") =>
     request("/auth/login", {
       method: "POST",
       body: JSON.stringify({ emailOrPhone, password }),
-    }),
+    }, mode),
 
-  register: (data) =>
+  register: (data, mode = "customer") =>
     request("/auth/register", {
       method: "POST",
       body: JSON.stringify(data),
-    }),
+    }, mode),
 
-  googleLogin: (credential) =>
+  googleLogin: (credential, mode = "customer") =>
     request("/auth/google", {
       method: "POST",
       body: JSON.stringify({ credential }),
-    }),
+    }, mode),
 
-  facebookLogin: (accessToken) =>
+  facebookLogin: (accessToken, mode = "customer") =>
     request("/auth/facebook", {
       method: "POST",
       body: JSON.stringify({ accessToken }),
-    }),
+    }, mode),
 
-  lineLogin: (code, redirectUri) =>
+  lineLogin: (code, redirectUri, mode = "customer") =>
     request("/auth/line", {
       method: "POST",
       body: JSON.stringify({ code, redirectUri }),
-    }),
+    }, mode),
 
-  getProfile: () =>
-    request("/auth/profile"),
+  getProfile: (mode = "customer") =>
+    request("/auth/profile", undefined, mode),
 
-  updateProfile: (data) =>
+  updateProfile: (data, mode = "customer") =>
     request("/auth/profile", {
       method: "PUT",
       body: JSON.stringify(data),
-    }),
+    }, mode),
 
-  changePassword: (currentPassword, newPassword) =>
+  changePassword: (currentPassword, newPassword, mode = "customer") =>
     request("/auth/password", {
       method: "PUT",
       body: JSON.stringify({ currentPassword, newPassword }),
-    }),
+    }, mode),
 
-  refreshToken: (refreshToken) =>
+  refreshToken: (refreshToken, mode = "customer") =>
     request("/auth/refresh", {
       method: "POST",
       body: JSON.stringify({ refreshToken }),
-    }),
+    }, mode),
 
-  logout: (refreshToken) =>
+  logout: (refreshToken, mode = "customer") =>
     request("/auth/logout", {
       method: "POST",
       body: JSON.stringify({ refreshToken }),
-    }),
+    }, mode),
 
-  deactivateAccount: () =>
+  deactivateAccount: (mode = "customer") =>
     request("/auth/account", {
       method: "DELETE",
-    }),
+    }, mode),
 };
 
 // Stores API
@@ -290,86 +302,86 @@ export const orderAPI = {
 
 // Chat API
 export const chatAPI = {
-  getOrCreateConversation: (storeId, storeOrderId) =>
+  getOrCreateConversation: (storeId, storeOrderId, mode = "customer") =>
     request("/chat/conversations", {
       method: "POST",
       body: JSON.stringify({ storeId, storeOrderId }),
-    }),
+    }, mode),
 
-  getConversations: (params = {}) => {
+  getConversations: (params = {}, mode = "customer") => {
     const query = new URLSearchParams(params).toString();
-    return request(`/chat/conversations?${query}`);
+    return request(`/chat/conversations?${query}`, {}, mode);
   },
 
-  getConversation: (id) =>
-    request(`/chat/conversations/${id}`),
+  getConversation: (id, mode = "customer") =>
+    request(`/chat/conversations/${id}`, {}, mode),
 
-  getMessages: (conversationId, params = {}) => {
+  getMessages: (conversationId, params = {}, mode = "customer") => {
     const query = new URLSearchParams(params).toString();
-    return request(`/chat/conversations/${conversationId}/messages?${query}`);
+    return request(`/chat/conversations/${conversationId}/messages?${query}`, {}, mode);
   },
 
-  sendMessage: (conversationId, data) =>
+  sendMessage: (conversationId, data, mode = "customer") =>
     request(`/chat/conversations/${conversationId}/messages`, {
       method: "POST",
       body: JSON.stringify(data),
-    }),
+    }, mode),
 
-  markAsRead: (conversationId, lastReadMessageId) =>
+  markAsRead: (conversationId, lastReadMessageId, mode = "customer") =>
     request(`/chat/conversations/${conversationId}/read`, {
       method: "POST",
       body: JSON.stringify({ lastReadMessageId }),
-    }),
+    }, mode),
 
-  getUnreadCount: () =>
-    request("/chat/unread-count"),
+  getUnreadCount: (mode = "customer") =>
+    request("/chat/unread-count", {}, mode),
 
-  editMessage: (messageId, content) =>
+  editMessage: (messageId, content, mode = "customer") =>
     request(`/chat/messages/${messageId}`, {
       method: "PUT",
       body: JSON.stringify({ content }),
-    }),
+    }, mode),
 
-  deleteMessage: (messageId) =>
+  deleteMessage: (messageId, mode = "customer") =>
     request(`/chat/messages/${messageId}`, {
       method: "DELETE",
-    }),
+    }, mode),
 
-  createGroup: (data) =>
+  createGroup: (data, mode = "customer") =>
     request("/chat/conversations/group", {
       method: "POST",
       body: JSON.stringify(data),
-    }),
+    }, mode),
 
-  addMember: (conversationId, memberId, role) =>
+  addMember: (conversationId, memberId, role, mode = "customer") =>
     request(`/chat/conversations/${conversationId}/members`, {
       method: "POST",
       body: JSON.stringify({ memberId, role }),
-    }),
+    }, mode),
 
-  removeMember: (conversationId, memberId) =>
+  removeMember: (conversationId, memberId, mode = "customer") =>
     request(`/chat/conversations/${conversationId}/members/${memberId}`, {
       method: "DELETE",
-    }),
+    }, mode),
 
-  muteConversation: (conversationId, muted) =>
+  muteConversation: (conversationId, muted, mode = "customer") =>
     request(`/chat/conversations/${conversationId}/mute`, {
       method: "PATCH",
       body: JSON.stringify({ muted }),
-    }),
+    }, mode),
 
-  uploadAttachment: (messageId, files) => {
+  uploadAttachment: (messageId, files, mode = "customer") => {
     const formData = new FormData();
     files.forEach(file => formData.append("attachments", file));
     return request(`/chat/messages/${messageId}/attachments`, {
       method: "POST",
       body: formData,
-    });
+    }, mode);
   },
 
-  getStoreConversations: (storeId, params = {}) => {
+  getStoreConversations: (storeId, params = {}, mode = "customer") => {
     const query = new URLSearchParams(params).toString();
-    return request(`/chat/store/${storeId}/conversations?${query}`);
+    return request(`/chat/store/${storeId}/conversations?${query}`, {}, mode);
   },
 };
 
@@ -571,6 +583,25 @@ export const settingsAPI = {
     request(`/settings/${key}`),
 };
 
+// The upload endpoint answers with { url, path, fileName, fileSize, mimeType },
+// while POST /chat/conversations/:id/messages expects the message_attachments
+// column names (file_url, file_name, file_size, mime_type). Normalising here
+// keeps both sides (customer + seller/admin) able to attach files in one call.
+export function normalizeAttachment(file = {}) {
+  const fileUrl = file.file_url || file.fileUrl || file.url;
+  const fileName = file.file_name || file.fileName || file.name;
+  const fileSize = file.file_size ?? file.fileSize ?? file.size ?? 0;
+  const mimeType = file.mime_type || file.mimeType || file.type || "application/octet-stream";
+
+  return {
+    ...file,
+    file_url: fileUrl,
+    file_name: fileName,
+    file_size: fileSize,
+    mime_type: mimeType,
+  };
+}
+
 // Upload API
 export const uploadAPI = {
   uploadAvatar: (file) => {
@@ -582,12 +613,15 @@ export const uploadAPI = {
     });
   },
 
-  uploadChatAttachment: (conversationId, files) => {
+  uploadChatAttachment: (conversationId, files, mode = "customer") => {
     const formData = new FormData();
     files.forEach(file => formData.append("attachments", file));
     return request(`/upload/chat/${conversationId}`, {
       method: "POST",
       body: formData,
+    }, mode).then((res) => {
+      const list = Array.isArray(res?.data) ? res.data : [];
+      return { ...res, data: list.map(normalizeAttachment) };
     });
   },
 

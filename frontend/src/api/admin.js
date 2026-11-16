@@ -29,7 +29,7 @@ export const adminAPI = {
     }),
   updateUserRole: (id, role) =>
     adminRequest(`/admin/users/${id}/role`, {
-      method: "PUT",
+      method: "PATCH",
       body: JSON.stringify({ role }),
     }),
   deleteUser: (id) =>
@@ -89,6 +89,4 @@ export const adminAPI = {
       method: "POST",
       body: JSON.stringify({ settings }),
     }),
-  initDefaultSettings: () =>
-    adminRequest("/settings/init", { method: "POST" }),
 };

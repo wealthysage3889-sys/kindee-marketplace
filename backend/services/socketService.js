@@ -157,19 +157,19 @@ const initialize = (server) => {
       socket.leave(`delivery_${deliveryId}`);
     });
     
-    // Typing indicators
-    socket.on('typing', ({ conversationId, userId: typingUserId, name }) => {
+    // Typing indicators (user id comes from the socket's verified token)
+    socket.on('typing', ({ conversationId, name }) => {
       if (!conversationId) return;
-      socket.to(`conversation_${conversationId}`).emit('typing', { 
-        userId: typingUserId, 
-        name 
+      socket.to(`conversation_${conversationId}`).emit('typing', {
+        userId,
+        name
       });
     });
     
-    socket.on('stopTyping', ({ conversationId, userId: typingUserId }) => {
+    socket.on('stopTyping', ({ conversationId }) => {
       if (!conversationId) return;
-      socket.to(`conversation_${conversationId}`).emit('stopTyping', { 
-        userId: typingUserId 
+      socket.to(`conversation_${conversationId}`).emit('stopTyping', {
+        userId
       });
     });
     

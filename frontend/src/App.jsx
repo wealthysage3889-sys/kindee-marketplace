@@ -10,6 +10,7 @@ import Home from "./pages/Home";
 import ProductDetail from "./pages/ProductDetail";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
+import LineCallback from "./pages/LineCallback";
 import AdminLogin from "./pages/AdminLogin";
 import SellerDashboard from "./pages/SellerDashboard";
 import AdminDashboard from "./pages/AdminDashboard";
@@ -51,11 +52,12 @@ const router = createBrowserRouter([
       { path: "home", element: <Home /> },
       { path: "login", element: <Login /> },
       { path: "register", element: <Register /> },
+      { path: "oauth/line/callback", element: <LineCallback /> },
       { path: "products/:id", element: <ProductDetail /> },
       { path: "stores", element: <Stores /> },
       { path: "stores/:id", element: <StoreProfile /> },
       { path: "messages", element: <ProtectedRoute><Messages /></ProtectedRoute> },
-      { path: "messages/:conversationId", element: <ProtectedRoute><ChatRoom /></ProtectedRoute> },
+      { path: "messages/:conversationId", element: <ProtectedRoute><ChatRoom mode="customer" /></ProtectedRoute> },
       { path: "cart", element: <ProtectedRoute><Cart /></ProtectedRoute> },
       { path: "checkout", element: <ProtectedRoute><Checkout /></ProtectedRoute> },
       { path: "orders", element: <ProtectedRoute><OrderHistory /></ProtectedRoute> },
@@ -88,7 +90,7 @@ const router = createBrowserRouter([
       { path: "products", element: <ProtectedRoute mode="admin"><AdminProducts /></ProtectedRoute> },
       { path: "reports", element: <ProtectedRoute mode="admin"><div className="page">reports</div></ProtectedRoute> },
       { path: "messages", element: <ProtectedRoute mode="admin"><SellAdminMessages /></ProtectedRoute> },
-      { path: "messages/:conversationId", element: <ProtectedRoute mode="admin"><ChatRoom /></ProtectedRoute> },
+      { path: "messages/:conversationId", element: <ProtectedRoute mode="admin"><ChatRoom mode="admin" /></ProtectedRoute> },
       { path: "account", element: <ProtectedRoute mode="admin"><AdminAccount /></ProtectedRoute> },
     ],
   },

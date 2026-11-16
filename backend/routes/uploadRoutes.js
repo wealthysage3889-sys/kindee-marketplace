@@ -60,10 +60,14 @@ router.post('/chat/:conversationId', validateId('conversationId'), verifyToken, 
     const result = await uploadToSupabase(supabaseAdmin, 'chat-attachments', filePath, file.buffer, file.mimetype);
     uploadedFiles.push({
       url: result.publicUrl,
+      file_url: result.publicUrl,
       path: result.path,
       fileName: file.originalname,
+      file_name: file.originalname,
       fileSize: file.size,
-      mimeType: file.mimetype
+      file_size: file.size,
+      mimeType: file.mimetype,
+      mime_type: file.mimetype
     });
   }
   

@@ -1,8 +1,9 @@
 ﻿import { useEffect, useRef, useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { authAPI } from "../api/auth";
 import SocialAuth from "../components/SocialAuth";
+import { createLineState } from "../utils/lineState";
 
 const EyeIcon = ({ open }) => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -23,17 +24,15 @@ function loadFacebookSdk(appId) {
 }
 
 export default function Login() {
-  const { customer, loading: authLoading, login, logout, loginWithGoogle, loginWithFacebook, loginWithLine } = useAuth();
+  const { customer, loading: authLoading, login, loginWithGoogle, loginWithFacebook } = useAuth();
   const [form, setForm] = useState({ email: "", password: "" });
   const [errors, setErrors] = useState({});
   const [message, setMessage] = useState("");
   const [info, setInfo] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [socialConfig, setSocialConfig] = useState(null);
+const [socialConfig, setSocialConfig] = useState(null);
   const navigate = useNavigate();
-  const location = useLocation();
-  const lineHandled = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -41,28 +40,10 @@ export default function Login() {
     return () => { active = false; };
   }, []);
 
-  useEffect(() => {
+useEffect(() => {
     if (authLoading || !customer.user) return;
-    if (["admin", "owner"].includes(customer.user.role)) { logout("customer"); navigate("/selladmin/login", { replace: true }); return; }
     navigate("/", { replace: true });
-  }, [customer.user, authLoading, navigate, logout]);
-
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const code = params.get("code");
-    const state = params.get("state");
-    if (code && state === "line_login" && !lineHandled.current) {
-      lineHandled.current = true;
-      setLoading(true); setMessage("");
-      loginWithLine(code, window.location.origin + "/login", "customer")
-        .then((data) => {
-          if (["admin", "owner"].includes(data.user.role)) { logout("customer"); navigate("/selladmin/login", { replace: true }); }
-          else navigate("/", { replace: true });
-        })
-        .catch((err) => { setMessage(err.message || "เข้าสู่ระบบด้วย LINE ไม่สำเร็จ"); navigate("/login", { replace: true }); })
-        .finally(() => setLoading(false));
-    }
-  }, [location.search, loginWithLine, logout, navigate]);
+  }, [customer.user, authLoading, navigate]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -84,7 +65,6 @@ export default function Login() {
     setLoading(true); setMessage(""); setInfo("");
     try {
       const data = await login(form.email.trim(), form.password, "customer");
-      if (["admin", "owner"].includes(data.user.role)) { logout("customer"); navigate("/selladmin/login", { replace: true }); return; }
       navigate("/");
     } catch (err) { setMessage(err?.data?.message || err.message || "เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง"); }
     finally { setLoading(false); }
@@ -110,7 +90,6 @@ export default function Login() {
           setLoading(true);
           try {
             const data = await loginWithGoogle(response.credential, "customer");
-            if (["admin", "owner"].includes(data.user.role)) { logout("customer"); navigate("/selladmin/login", { replace: true }); return; }
             navigate("/");
           } catch (err) { setMessage(err.message || "เข้าสู่ระบบด้วย Google ไม่สำเร็จ"); }
           finally { setLoading(false); }
@@ -137,7 +116,6 @@ const handleFacebook = async () => {
           (async () => {
             try {
               const data = await loginWithFacebook(response.authResponse.accessToken, "customer");
-              if (["admin", "owner"].includes(data.user.role)) { logout("customer"); navigate("/selladmin/login", { replace: true }); return; }
               navigate("/");
             } catch (err) { setMessage(err.message || "เข้าสู่ระบบด้วย Facebook ไม่สำเร็จ"); }
             finally { setLoading(false); }
@@ -152,8 +130,10 @@ const handleFacebook = async () => {
   const handleLine = () => {
     if (!socialConfig?.line?.channelId) return;
     setMessage(""); setInfo("");
-    const redirectUri = window.location.origin + "/login";
-    const state = "line_login";
+    // Use the unified callback page so the redirect_uri matches the value
+    // registered in the LINE Developers Console (single URL for all flows).
+    const redirectUri = window.location.origin + "/oauth/line/callback";
+    const state = createLineState("login");
     const params = new URLSearchParams({
       response_type: "code",
       client_id: socialConfig.line.channelId,

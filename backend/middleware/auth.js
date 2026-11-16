@@ -1,83 +1,104 @@
 import { supabaseAuth, supabaseAdmin, createUserClient } from '../config/supabase.js';
 import jwt from 'jsonwebtoken';
 
+// LEGACY custom-JWT support.
+// These helpers and the fallback branch in verifyToken() exist ONLY so that
+// accounts created before the Supabase Auth migration keep working until every
+// legacy account has been migrated (see PHASE_2_AUTH_IMPLEMENTATION_REPORT.md).
+// Do NOT remove until the legacy fallback has been proven unused in production.
 export const JWT_SECRET = process.env.JWT_SECRET;
 
 if (!JWT_SECRET) {
   throw new Error('JWT_SECRET environment variable is required');
 }
 
-// Verify Supabase JWT token
+// Load the profile row that backs an auth user id, enforce is_active, and
+// attach a normalized req.user. Role ALWAYS comes from profiles.role, never
+// from a token claim (custom or Supabase). Returns { profile } or sends an
+// error response and returns null.
+const attachProfileContext = async (req, res, userId, token) => {
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from('profiles')
+    .select('*')
+    .eq('id', userId)
+    .single();
+
+  if (profileError || !profile) {
+    res.status(401).json({
+      success: false,
+      message: 'User profile not found'
+    });
+    return null;
+  }
+
+  if (!profile.is_active) {
+    res.status(403).json({
+      success: false,
+      message: 'Account is deactivated'
+    });
+    return null;
+  }
+
+  req.user = {
+    id: profile.id,
+    email: profile.email,
+    name: profile.name,
+    role: profile.role,
+    avatar_url: profile.avatar_url,
+    phone: profile.phone
+  };
+  req.accessToken = token;
+  req.supabase = createUserClient(token);
+
+  return profile;
+};
+
+// Verify Supabase JWT token (primary path).
+// Falls back to the legacy custom JWT ONLY for accounts not yet migrated.
 export const verifyToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'No token provided' 
+      return res.status(401).json({
+        success: false,
+        message: 'No token provided'
       });
     }
-    
+
     const token = authHeader.split(' ')[1];
-    
-    // Verify with Supabase
+
+    // Primary: verify the token with Supabase Auth.
     const { data: { user }, error } = await supabaseAuth.auth.getUser(token);
-    
-    if (error || !user) {
-      // Fallback to custom JWT verification
-      try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        req.user = decoded;
-        req.accessToken = token;
-        req.supabase = createUserClient(token);
-        return next();
-      } catch (jwtError) {
-        return res.status(401).json({ 
-          success: false, 
-          message: 'Invalid or expired token' 
-        });
+
+    if (!error && user) {
+      const profile = await attachProfileContext(req, res, user.id, token);
+      if (!profile) return; // response already sent
+      return next();
+    }
+
+    // Fallback: legacy custom JWT (accounts not yet migrated to Supabase Auth).
+    // Role is still read from profiles.role below — the JWT payload is trusted
+    // only for the user id, never for authorization.
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      if (!decoded || !decoded.id) {
+        throw new Error('missing subject');
       }
-    }
-    
-    // Get user profile
-    const { data: profile, error: profileError } = await supabaseAdmin
-      .from('profiles')
-      .select('*')
-      .eq('id', user.id)
-      .single();
-    
-    if (profileError || !profile) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'User profile not found' 
+      const profile = await attachProfileContext(req, res, decoded.id, token);
+      if (!profile) return; // response already sent
+      return next();
+    } catch (jwtError) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired token'
       });
     }
-    
-    if (!profile.is_active) {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Account is deactivated' 
-      });
-    }
-    
-    req.user = {
-      id: profile.id,
-      email: profile.email,
-      name: profile.name,
-      role: profile.role,
-      avatar_url: profile.avatar_url,
-      phone: profile.phone
-    };
-    req.accessToken = token;
-    req.supabase = createUserClient(token);
-    
-    next();
   } catch (error) {
     console.error('Auth middleware error:', error);
-    return res.status(500).json({ 
-      success: false, 
-      message: 'Authentication error' 
+    return res.status(500).json({
+      success: false,
+      message: 'Authentication error'
     });
   }
 };
@@ -93,28 +114,11 @@ export const optionalAuth = async (req, res, next) => {
     
     const token = authHeader.split(' ')[1];
     const { data: { user }, error } = await supabaseAuth.auth.getUser(token);
-    
+
     if (!error && user) {
-      const { data: profile } = await supabaseAdmin
-        .from('profiles')
-        .select('*')
-        .eq('id', user.id)
-        .single();
-      
-      if (profile && profile.is_active) {
-        req.user = {
-          id: profile.id,
-          email: profile.email,
-          name: profile.name,
-          role: profile.role,
-          avatar_url: profile.avatar_url,
-          phone: profile.phone
-        };
-        req.accessToken = token;
-        req.supabase = createUserClient(token);
-      }
+      await attachProfileContext(req, res, user.id, token);
     }
-    
+
     next();
   } catch (error) {
     // Silently continue without auth

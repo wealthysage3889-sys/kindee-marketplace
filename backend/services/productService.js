@@ -1,6 +1,12 @@
 import { supabaseAdmin } from '../config/supabase.js';
 import { AppError, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
 import { slugify } from '../utils/helpers.js';
+import {
+  STOCK_INVALID_MESSAGE,
+  parseStockInput,
+  validateProductPricing,
+  validateUpdatedProductPricing
+} from '../utils/productPricing.js';
 
 // Create product
 export const createProduct = async (storeId, ownerId, productData) => {
@@ -17,15 +23,24 @@ export const createProduct = async (storeId, ownerId, productData) => {
   }
   
   const { name, description, price, discountPrice, stock, categoryId, images, tags } = productData;
-  
-  // Validate price
-  if (price < 0) {
-    throw new ValidationError('Price cannot be negative');
+
+  // FormData/multipart clients send prices as strings, JSON clients may send
+  // numbers. Parse them to numbers first so the discount comparison below is
+  // numeric ('99' >= '100' is true for strings, 99 >= 100 is not).
+  const pricing = validateProductPricing({ price, discount: discountPrice });
+  if (pricing.errors.length > 0) {
+    throw new ValidationError(pricing.errors[0]);
   }
-  
-  if (discountPrice !== undefined && discountPrice >= price) {
-    throw new ValidationError('Discount price must be less than regular price');
+
+  const stockResult = parseStockInput(stock);
+  const numericStock = stockResult.value === null ? 0 : stockResult.value;
+  if (!stockResult.ok || numericStock < 0) {
+    throw new ValidationError(STOCK_INVALID_MESSAGE);
   }
+
+  const numericPrice = pricing.price;
+  // null means "no discount": the column is stored as NULL, not as 0.
+  const numericDiscountPrice = pricing.discount;
   
   // Generate slug
   const baseSlug = slugify(name);
@@ -52,9 +67,9 @@ export const createProduct = async (storeId, ownerId, productData) => {
       name,
       slug,
       description,
-      price,
-      discount_price: discountPrice,
-      stock: stock || 0,
+      price: numericPrice,
+      discount_price: numericDiscountPrice,
+      stock: numericStock,
       images: images || [],
       tags: tags || [],
       is_active: true
@@ -175,17 +190,32 @@ export const updateProduct = async (productId, storeId, ownerId, updates) => {
       filteredUpdates[field] = updates[field];
     }
   }
-  
-  // Validate price
-  if (filteredUpdates.price !== undefined && filteredUpdates.price < 0) {
-    throw new ValidationError('Price cannot be negative');
+
+  // Normalize and validate the numeric fields. The discount is checked against
+  // the price that will be stored: a new price, or the current one when the
+  // request only changes the discount (and the other way around), so a partial
+  // update cannot leave discount_price >= price behind.
+  const pricing = validateUpdatedProductPricing({
+    price: filteredUpdates.price,
+    discount: filteredUpdates.discount_price,
+    currentPrice: product.price,
+    currentDiscount: product.discount_price
+  });
+
+  if (pricing.errors.length > 0) {
+    throw new ValidationError(pricing.errors[0]);
   }
-  
-  if (filteredUpdates.discount_price !== undefined && 
-      filteredUpdates.price !== undefined && 
-      filteredUpdates.discount_price >= filteredUpdates.price) {
-    throw new ValidationError('Discount price must be less than regular price');
+
+  const stockResult = filteredUpdates.stock !== undefined
+    ? parseStockInput(filteredUpdates.stock)
+    : { ok: true, value: undefined };
+  if (filteredUpdates.stock !== undefined && (!stockResult.ok || stockResult.value === null || stockResult.value < 0)) {
+    throw new ValidationError(STOCK_INVALID_MESSAGE);
   }
+
+  if (pricing.hasPrice) filteredUpdates.price = pricing.price;
+  if (pricing.hasDiscount) filteredUpdates.discount_price = pricing.discount;
+  if (filteredUpdates.stock !== undefined) filteredUpdates.stock = stockResult.value;
   
   // Handle slug update
   if (filteredUpdates.name && filteredUpdates.name !== product.name) {

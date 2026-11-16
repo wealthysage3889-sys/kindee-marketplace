@@ -3,9 +3,11 @@ import { body, query, param } from 'express-validator';
 import { validate, validateId } from '../middleware/validate.js';
 import { verifyToken, authorize, authorizeOwner, optionalAuth } from '../middleware/auth.js';
 import * as storeService from '../services/storeService.js';
+import * as productService from '../services/productService.js';
 import { asyncHandler, AppError, NotFoundError } from '../middleware/errorHandler.js';
 import { uploadSingle, uploadMultiple, uploadToSupabase, generateFileName, generateStoragePath } from '../middleware/upload.js';
 import { supabaseAdmin } from '../config/supabase.js';
+import { validateThaiPhone } from '../utils/phone.js';
 
 const router = express.Router();
 
@@ -49,7 +51,7 @@ router.post('/', normalizeStoreBody, verifyToken, authorize('seller'), [
   body('address.coordinates').isObject().withMessage('Coordinates required'),
   body('address.coordinates.lat').isFloat({ min: -90, max: 90 }).withMessage('Invalid latitude'),
   body('address.coordinates.lng').isFloat({ min: -180, max: 180 }).withMessage('Invalid longitude'),
-  body('phone').optional().isMobilePhone('th-TH').withMessage('Invalid phone'),
+  body('phone').optional().custom(validateThaiPhone).withMessage('Invalid phone'),
   body('email').optional().isEmail().withMessage('Invalid email'),
   body('openingHours').optional().isObject(),
   body('categories').optional().isArray(),
@@ -149,7 +151,7 @@ router.put('/:id', normalizeStoreBody, validateId(), verifyToken, authorize('sel
   body('address.coordinates').optional().isObject(),
   body('address.coordinates.lat').optional().isFloat({ min: -90, max: 90 }),
   body('address.coordinates.lng').optional().isFloat({ min: -180, max: 180 }),
-  body('phone').optional().isMobilePhone('th-TH'),
+  body('phone').optional().custom(validateThaiPhone),
   body('email').optional().isEmail(),
   body('openingHours').optional().isObject(),
   body('categories').optional().isArray(),

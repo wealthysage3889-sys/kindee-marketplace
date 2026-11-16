@@ -1,6 +1,7 @@
 ﻿import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { productAPI } from "../api/product";
+import { extractList, resolveProductPricing } from "../utils/helpers";
 
 const CATEGORY_ICONS = ["🛍️", "📱", "👕", "🍔", "🏠", "💄", "🎮", "📚", "⚽", "💡"];
 
@@ -24,7 +25,8 @@ export default function Home() {
         setError("");
         const data = await productAPI.getProducts({ limit: 50 });
         if (!cancelled) {
-          setProducts(Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
+          // API responds { success, data: { products, pagination } }
+          setProducts(extractList(data, "products"));
         }
       } catch (err) {
         if (!cancelled) {
@@ -119,8 +121,7 @@ export default function Home() {
             {filteredProducts.length === 0 ? (
               <p className="product-empty">ไม่พบสินค้าที่ตรงกับเงื่อนไข</p>
             ) : filteredProducts.map((product, index) => {
-              const displayPrice = product.discountPrice ?? product.price;
-              const hasDiscount = product.discountPrice != null && product.discountPrice < product.price;
+              const { displayPrice, originalPrice, hasDiscount } = resolveProductPricing(product);
               const image = product.images?.[0] || "https://via.placeholder.com/600x600?text=No+Image";
               const stock = product.stock;
               const stockLabel = stock != null && stock !== ""
@@ -144,8 +145,8 @@ export default function Home() {
                       <p className="product-category">{getCategoryName(product) || "ไม่ระบุ category"}</p>
                       <h3 className="product-name">{product.name}</h3>
                       <div className="product-price">
-                        <span className="price-current">{Number(displayPrice || 0).toLocaleString()} บาท</span>
-                        {hasDiscount && <span className="price-original">{Number(product.price).toLocaleString()} บาท</span>}
+                        <span className="price-current">{displayPrice.toLocaleString()} บาท</span>
+                        {hasDiscount && <span className="price-original">{originalPrice.toLocaleString()} บาท</span>}
                       </div>
                       <p className="product-stock">{stockLabel}</p>
                     </div>

@@ -1,6 +1,16 @@
 import { supabaseAdmin } from '../config/supabase.js';
 import { AppError, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
+import { resolveEffectivePrice, roundMoney } from '../utils/productPricing.js';
 import { v4 as uuidv4 } from 'uuid';
+
+// Price charged for one unit. Rules live in utils/productPricing.js so the
+// product forms and the checkout can never disagree.
+//   NULL/undefined -> regular price, 0 -> regular price (legacy rows are never
+//   turned into free items), 0 < d < price -> discount price.
+export const calculateEffectivePrice = (price, discountPrice) =>
+  resolveEffectivePrice(price, discountPrice);
+
+const MAX_QUANTITY = 9999;
 
 // Create order from cart (Parent Order + Store Orders)
 export const createOrder = async (customerId, orderData) => {
@@ -13,6 +23,14 @@ export const createOrder = async (customerId, orderData) => {
   // Group items by store
   const itemsByStore = {};
   for (const item of items) {
+    // Only product_id and quantity are ever read from the client. Prices always
+    // come from the products row below, so a tampered price in the request body
+    // can never lower the amount charged.
+    const quantity = Number(item.quantity);
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QUANTITY) {
+      throw new ValidationError(`Invalid quantity for product ${item.product_id}`);
+    }
+
     const { data: product } = await supabaseAdmin
       .from('products')
       .select('id, store_id, name, price, discount_price, stock, images, is_active')
@@ -27,15 +45,24 @@ export const createOrder = async (customerId, orderData) => {
       throw new ValidationError(`Product ${product.name} is not available`);
     }
     
-    if (product.stock < item.quantity) {
+    if (product.stock < quantity) {
       throw new ValidationError(`Insufficient stock for ${product.name}`);
+    }
+
+    // Never price an item at 0. A zero total cannot be paid (payments.amount
+    // requires > 0) and would leave a pending order holding reserved stock.
+    const unitPrice = roundMoney(calculateEffectivePrice(product.price, product.discount_price));
+    if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+      throw new ValidationError(
+        `Product ${product.name} has an invalid price (${product.price}) and cannot be ordered`
+      );
     }
     
     const storeId = product.store_id;
     if (!itemsByStore[storeId]) {
       itemsByStore[storeId] = [];
     }
-    itemsByStore[storeId].push({ ...item, product });
+    itemsByStore[storeId].push({ ...item, quantity, unitPrice, product });
   }
   
   // Get customer snapshot
@@ -70,21 +97,21 @@ export const createOrder = async (customerId, orderData) => {
     }
     
     // Check minimum order
-    const storeSubtotal = storeItems.reduce((sum, item) => {
-      const price = item.product.discount_price || item.product.price;
-      return sum + price * item.quantity;
-    }, 0);
+    const storeSubtotal = roundMoney(storeItems.reduce(
+      (sum, item) => sum + item.unitPrice * item.quantity,
+      0
+    ));
     
     if (store.minimum_order && storeSubtotal < store.minimum_order) {
       throw new ValidationError(`Minimum order for ${store.name} is ${store.minimum_order}`);
     }
     
-    const shippingFee = store.delivery_fee || 0;
-    const taxAmount = storeSubtotal * 0.07; // 7% VAT
+    const shippingFee = roundMoney(store.delivery_fee || 0);
+    const taxAmount = roundMoney(storeSubtotal * 0.07); // 7% VAT
     
-    totalSubtotal += storeSubtotal;
-    totalShippingFee += shippingFee;
-    totalTax += taxAmount;
+    totalSubtotal = roundMoney(totalSubtotal + storeSubtotal);
+    totalShippingFee = roundMoney(totalShippingFee + shippingFee);
+    totalTax = roundMoney(totalTax + taxAmount);
     
     storeOrdersData.push({
       store_id: storeId,
@@ -93,14 +120,23 @@ export const createOrder = async (customerId, orderData) => {
       subtotal: storeSubtotal,
       shipping_fee: shippingFee,
       tax_amount: taxAmount,
-      total_amount: storeSubtotal + shippingFee + taxAmount,
+      total_amount: roundMoney(storeSubtotal + shippingFee + taxAmount),
       delivery_type: store.delivery_type,
       estimated_delivery_time: store.estimated_delivery_time
     });
   }
   
   const discountAmount = 0; // TODO: Apply coupons
-  const totalAmount = totalSubtotal + totalShippingFee + totalTax - discountAmount;
+  const totalAmount = roundMoney(totalSubtotal + totalShippingFee + totalTax - discountAmount);
+
+  // A zero (or negative) total cannot be paid: payments.amount is CHECK (amount > 0).
+  // Reject before anything is written so no order row and no stock reservation is
+  // left behind for an order that could never be completed.
+  if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
+    throw new ValidationError(
+      'Order total must be greater than 0. This usually means a product is priced at 0.'
+    );
+  }
   
   // Generate order number
   const orderNumber = await generateOrderNumber('ORD');
@@ -129,62 +165,70 @@ export const createOrder = async (customerId, orderData) => {
   if (orderError) {
     throw new AppError(`Order creation failed: ${orderError.message}`, 500);
   }
-  
-  // Create customer destination if coordinates provided
-  if (customer_coordinates) {
-    await supabaseAdmin
-      .from('customer_destinations')
-      .insert({
-        order_id: order.id,
-        coordinates: `POINT(${customer_coordinates.lng} ${customer_coordinates.lat})`,
-        address: delivery_address,
-        place_name: delivery_address?.name
-      });
-  }
-  
-  // Create store orders and order items
-  for (const storeOrderData of storeOrdersData) {
-    const storeOrderNumber = await generateStoreOrderNumber('SO');
-    
-    const { data: storeOrder, error: soError } = await supabaseAdmin
-      .from('store_orders')
-      .insert({
-        parent_order_id: order.id,
-        store_id: storeOrderData.store_id,
-        store_order_number: storeOrderNumber,
-        status: 'pending',
-        subtotal: storeOrderData.subtotal,
-        shipping_fee: storeOrderData.shipping_fee,
-        tax_amount: storeOrderData.tax_amount,
-        discount_amount: 0,
-        total_amount: storeOrderData.total_amount,
-        delivery_type: storeOrderData.delivery_type,
-        estimated_delivery_time: storeOrderData.estimated_delivery_time,
-        store_snapshot: {
-          name: storeOrderData.store.name,
-          address: storeOrderData.store.address,
-          phone: storeOrderData.store.phone
-        }
-      })
-      .select()
-      .single();
-    
-    if (soError) {
-      throw new AppError(`Store order creation failed: ${soError.message}`, 500);
+
+  const createdStoreOrderIds = [];
+
+  // Every step below writes rows. If one of them fails (for example the payment
+  // insert, which rejects amount <= 0), release the stock that was already
+  // reserved and cancel the order, so a failed checkout never leaves reserved
+  // stock or a pending order that can never be paid.
+  try {
+    // Create customer destination if coordinates provided
+    if (customer_coordinates) {
+      await supabaseAdmin
+        .from('customer_destinations')
+        .insert({
+          order_id: order.id,
+          coordinates: `POINT(${customer_coordinates.lng} ${customer_coordinates.lat})`,
+          address: delivery_address,
+          place_name: delivery_address?.name
+        });
     }
-    
-    // Create order items
-    const orderItems = storeOrderData.items.map(item => {
-      const price = item.product.discount_price || item.product.price;
-      return {
+
+    // Create store orders and order items
+    for (const storeOrderData of storeOrdersData) {
+      const storeOrderNumber = await generateStoreOrderNumber('SO');
+
+      const { data: storeOrder, error: soError } = await supabaseAdmin
+        .from('store_orders')
+        .insert({
+          parent_order_id: order.id,
+          store_id: storeOrderData.store_id,
+          store_order_number: storeOrderNumber,
+          status: 'pending',
+          subtotal: storeOrderData.subtotal,
+          shipping_fee: storeOrderData.shipping_fee,
+          tax_amount: storeOrderData.tax_amount,
+          discount_amount: 0,
+          total_amount: storeOrderData.total_amount,
+          delivery_type: storeOrderData.delivery_type,
+          estimated_delivery_time: storeOrderData.estimated_delivery_time,
+          store_snapshot: {
+            name: storeOrderData.store.name,
+            address: storeOrderData.store.address,
+            phone: storeOrderData.store.phone
+          }
+        })
+        .select()
+        .single();
+
+      if (soError) {
+        throw new AppError(`Store order creation failed: ${soError.message}`, 500);
+      }
+
+      createdStoreOrderIds.push(storeOrder.id);
+
+      // Create order items. unitPrice was resolved from the products row earlier,
+      // so the charged price and the displayed price share one rule.
+      const orderItems = storeOrderData.items.map(item => ({
         store_order_id: storeOrder.id,
         product_id: item.product.id,
         product_name: item.product.name,
         product_image: item.product.images?.[0],
         quantity: item.quantity,
-        unit_price: price,
+        unit_price: item.unitPrice,
         discount_price: item.product.discount_price,
-        total_price: price * item.quantity,
+        total_price: roundMoney(item.unitPrice * item.quantity),
         product_snapshot: {
           name: item.product.name,
           description: item.product.description,
@@ -192,8 +236,7 @@ export const createOrder = async (customerId, orderData) => {
           discount_price: item.product.discount_price,
           images: item.product.images
         }
-      };
-    });
+      }));
     
     const { error: itemsError } = await supabaseAdmin
       .from('order_items')
@@ -208,15 +251,31 @@ export const createOrder = async (customerId, orderData) => {
       product_id: item.product.id,
       quantity: item.quantity
     }));
-    
+
     await reserveStock(storeOrder.id, reservationItems);
   }
-  
-  // Create payment record
-  if (payment_method !== 'cod') {
-    await createPaymentRecord(order.id, null, totalAmount, payment_method);
+
+    // Create payment record (COD is paid on delivery, so no payment row yet)
+    if (payment_method !== 'cod') {
+      await createPaymentRecord(order.id, null, totalAmount, payment_method);
+    }
+  } catch (error) {
+    for (const storeOrderId of createdStoreOrderIds) {
+      await releaseStockReservation(storeOrderId);
+    }
+
+    try {
+      await supabaseAdmin
+        .from('orders')
+        .update({ status: 'cancelled' })
+        .eq('id', order.id);
+    } catch (cancelError) {
+      console.error('Failed to cancel the order after a failed checkout:', cancelError);
+    }
+
+    throw error;
   }
-  
+
   // Return full order with store orders
   return getOrderById(order.id);
 };
@@ -297,6 +356,14 @@ const generateStoreOrderNumber = async (prefix) => {
 
 // Create payment record
 export const createPaymentRecord = async (orderId, storeOrderId, amount, method) => {
+  const numericAmount = roundMoney(amount);
+
+  // payments.amount is CHECK (amount > 0). Fail with a clear message instead of
+  // letting the database raise a constraint error after the order was created.
+  if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+    throw new AppError('Payment amount must be greater than 0', 400);
+  }
+
   const paymentNumber = await generatePaymentNumber();
   
   const { data: payment, error } = await supabaseAdmin
@@ -305,7 +372,7 @@ export const createPaymentRecord = async (orderId, storeOrderId, amount, method)
       order_id: orderId,
       store_order_id: storeOrderId,
       payment_number: paymentNumber,
-      amount,
+      amount: numericAmount,
       method,
       status: 'pending'
     })

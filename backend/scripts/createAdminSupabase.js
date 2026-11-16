@@ -6,12 +6,19 @@ dotenv.config();
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const ADMIN_EMAIL = 'wealthysage3889@gmail.com';
-const ADMIN_PASSWORD = 'Ngune038318';
-const ADMIN_ROLE = 'admin';
+// Admin credentials MUST come from environment variables, never hardcoded.
+// Set ADMIN_EMAIL and ADMIN_PASSWORD in .env (or the deploy secret store).
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const ADMIN_ROLE = process.env.ADMIN_ROLE || 'admin';
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error('ERROR: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in .env');
+  process.exit(1);
+}
+
+if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
+  console.error('ERROR: ADMIN_EMAIL and ADMIN_PASSWORD must be set in .env (or the secret store).');
   process.exit(1);
 }
 
@@ -71,6 +78,7 @@ async function createAdmin() {
 
     const authUserId = authData?.user?.id;
 
+    let fallbackUserId = null;
     if (!authUserId) {
       const { data: users } = await supabaseAdmin.auth.admin.listUsers();
       const found = users.users.find(u => u.email === ADMIN_EMAIL);
@@ -78,10 +86,11 @@ async function createAdmin() {
         console.error('Could not determine auth user ID after creation.');
         process.exit(1);
       }
-      console.log(`Found existing auth user ID: ${found.id}`);
+      fallbackUserId = found.id;
+      console.log(`Found existing auth user ID: ${fallbackUserId}`);
     }
 
-    const finalUserId = authUserId || (users.users.find(u => u.email === ADMIN_EMAIL)?.id);
+    const finalUserId = authUserId || fallbackUserId;
 
     console.log(`Creating profile in public.profiles with role='${ADMIN_ROLE}'...`);
 
@@ -114,7 +123,8 @@ async function createAdmin() {
     console.log('');
     console.log('You can now log in at http://localhost:3000/selladmin/login');
     console.log(`Email: ${ADMIN_EMAIL}`);
-    console.log(`Password: ${ADMIN_PASSWORD}`);
+    console.log('Password: (read from ADMIN_PASSWORD env; not printed for security)');
+    console.log('IMPORTANT: rotate this admin password if it was ever committed or shared.');
   } catch (err) {
     console.error(`Unexpected error: ${err.message}`);
     process.exit(1);

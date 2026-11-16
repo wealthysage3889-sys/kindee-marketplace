@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { storeAPI } from "../api/product";
 import { chatAPI } from "../api";
+import { useAuth } from "../context/AuthContext";
 
 const ChevronLeftIcon = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -16,10 +17,22 @@ export default function Messages() {
   const [openingId, setOpeningId] = useState("");
   const location = useLocation();
   const navigate = useNavigate();
+  const { customer } = useAuth();
+  const currentUserId = customer?.user?.id || customer?.user?._id || null;
 
   const fromStore = new URLSearchParams(location.search).get("fromStore");
   const openStore = new URLSearchParams(location.search).get("openStore");
   const storeId = fromStore || openStore;
+
+  const visibleStores = useMemo(
+    () =>
+      stores.filter(
+        (store) =>
+          !currentUserId ||
+          String(store.owner_id || store.ownerId || "") !== String(currentUserId)
+      ),
+    [stores, currentUserId]
+  );
 
   const openConversation = async (id) => {
     if (!id || openingId) return;
@@ -40,13 +53,18 @@ export default function Messages() {
     }
   };
 
-  // ถ้ามีการระบุ openStore ให้เด้งไปยังห้องแชทกับร้านค้านั้นทันที
   useEffect(() => {
-    if (openStore) {
-      openConversation(openStore);
+    if (!openStore) return;
+    if (stores.length === 0) return;
+    const target = stores.find((s) => String(s._id || s.id) === String(openStore));
+    if (!target) return;
+    if (currentUserId && String(target.owner_id || target.ownerId || "") === String(currentUserId)) {
+      setError("ไม่สามารถเริ่มแชทกับร้านของตัวเองได้");
+      return;
     }
+    openConversation(openStore);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openStore]);
+  }, [openStore, stores, currentUserId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,7 +79,9 @@ export default function Messages() {
       }
     };
     loadStores();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
@@ -81,10 +101,10 @@ export default function Messages() {
       {error && <div className="home-error">{error}</div>}
       {!loading && !error && (
         <div className="store-grid">
-          {stores.length === 0 ? (
+          {visibleStores.length === 0 ? (
             <p className="product-empty">ยังไม่มีร้านค้าให้ส่งข้อความ</p>
           ) : (
-            stores.map((store) => (
+            visibleStores.map((store) => (
               <Link
                 to={`/messages/${store._id}`}
                 className="chat-card"

@@ -1,54 +1,62 @@
-import { createContext, useContext, useState, useEffect } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
 import { authAPI } from "../api";
 
+const MODE_CUSTOMER = "customer";
+const MODE_ADMIN = "admin";
+
 const STORAGE_KEYS = {
-  token: "token",
-  user: "user",
-  refreshToken: "refreshToken",
-  customerToken: "customerToken",
-  adminToken: "adminToken"
+  [MODE_CUSTOMER]: {
+    token: "kindee:customer:token",
+    user: "kindee:customer:user",
+    refreshToken: "kindee:customer:refreshToken",
+  },
+  [MODE_ADMIN]: {
+    token: "kindee:admin:token",
+    user: "kindee:admin:user",
+    refreshToken: "kindee:admin:refreshToken",
+  },
 };
 
-function readSession() {
+function keysFor(mode) {
+  return STORAGE_KEYS[mode] || STORAGE_KEYS[MODE_CUSTOMER];
+}
+
+function readSession(mode) {
+  const k = keysFor(mode);
   try {
-    const token =
-      localStorage.getItem(STORAGE_KEYS.token) ||
-      localStorage.getItem(STORAGE_KEYS.customerToken) ||
-      localStorage.getItem(STORAGE_KEYS.adminToken);
-    const user = localStorage.getItem(STORAGE_KEYS.user);
-    const refreshToken = localStorage.getItem(STORAGE_KEYS.refreshToken);
+    const token = localStorage.getItem(k.token);
+    const user = localStorage.getItem(k.user);
+    const refreshToken = localStorage.getItem(k.refreshToken);
     return {
       token: token || null,
       user: user ? JSON.parse(user) : null,
-      refreshToken: refreshToken || null
+      refreshToken: refreshToken || null,
     };
   } catch {
     return { token: null, user: null, refreshToken: null };
   }
 }
 
-function writeSession(token, user, refreshToken) {
-  localStorage.setItem(STORAGE_KEYS.token, token);
-  localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(user));
-  // Legacy API modules (api/auth.js) read these keys.
-  localStorage.setItem(STORAGE_KEYS.customerToken, token);
-  if (["admin", "owner"].includes(user?.role)) {
-    localStorage.setItem(STORAGE_KEYS.adminToken, token);
-  } else {
-    localStorage.removeItem(STORAGE_KEYS.adminToken);
+function writeSession(token, user, refreshToken, mode) {
+  const k = keysFor(mode);
+  if (token !== undefined && token !== null) {
+    localStorage.setItem(k.token, token);
   }
-  if (refreshToken) {
-    localStorage.setItem(STORAGE_KEYS.refreshToken, refreshToken);
+  if (user !== undefined) {
+    localStorage.setItem(k.user, JSON.stringify(user));
+  }
+  if (refreshToken !== undefined && refreshToken !== null) {
+    localStorage.setItem(k.refreshToken, refreshToken);
   }
 }
 
-function clearSession() {
-  Object.values(STORAGE_KEYS).forEach((key) => localStorage.removeItem(key));
+function clearSession(mode) {
+  const k = keysFor(mode);
+  Object.values(k).forEach((key) => localStorage.removeItem(key));
 }
 
 export const AuthContext = createContext(null);
 
-// Backend responses are wrapped as { success, data }; auth pages expect the payload.
 function unwrapPayload(payload) {
   if (payload && typeof payload === "object" && !Array.isArray(payload) && "data" in payload) {
     return payload.data;
@@ -65,148 +73,264 @@ export function useAuth() {
 }
 
 export function AuthProvider({ children }) {
-  const [session, setSession] = useState(() => readSession());
+  const [customerSession, setCustomerSession] = useState(() => readSession(MODE_CUSTOMER));
+  const [adminSession, setAdminSession] = useState(() => readSession(MODE_ADMIN));
   const [loading, setLoading] = useState(false);
 
-  const applySession = (token, user, refreshToken) => {
-    writeSession(token, user, refreshToken);
-    setSession({ token, user, refreshToken });
-  };
-
-  const login = async (emailOrPhone, password) => {
-    setLoading(true);
-    try {
-      const data = unwrapPayload(await authAPI.login(emailOrPhone, password));
-      applySession(data.accessToken, data.user, data.refreshToken);
-      return data;
-    } finally {
-      setLoading(false);
+  const applySession = useCallback((token, user, refreshToken, mode) => {
+    writeSession(token, user, refreshToken, mode);
+    if (mode === MODE_ADMIN) {
+      setAdminSession({ token, user, refreshToken });
+    } else {
+      setCustomerSession({ token, user, refreshToken });
     }
-  };
+  }, []);
 
-  const register = async (data) => {
-    setLoading(true);
-    try {
-      const result = unwrapPayload(await authAPI.register(data));
-      applySession(result.accessToken, result.user, result.refreshToken);
-      return result;
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Prevent two concurrent refreshes for the same namespace (401 storms).
+  const refreshInFlight = useRef({ customer: null, admin: null });
 
-  const logout = async () => {
-    try {
-      if (session.refreshToken) {
-        await authAPI.logout(session.refreshToken);
-      }
-    } catch (error) {
-      console.error("Logout error:", error);
-    } finally {
-      clearSession();
-      setSession({ token: null, user: null, refreshToken: null });
-    }
-  };
-
-  const updateProfile = async (data) => {
-    if (!session.token) throw new Error("Not authenticated");
-    
-    setLoading(true);
-    try {
-      const updatedUser = unwrapPayload(await authAPI.updateProfile(data));
-      applySession(session.token, updatedUser, session.refreshToken);
-      return updatedUser;
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const changePassword = async (currentPassword, newPassword) => {
-    if (!session.token) throw new Error("Not authenticated");
-    
-    await authAPI.changePassword(currentPassword, newPassword);
-  };
-
-  const loginWithGoogle = async (credential) => {
-    setLoading(true);
-    try {
-      const data = unwrapPayload(await authAPI.googleLogin(credential));
-      applySession(data.accessToken, data.user, data.refreshToken);
-      return data;
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loginWithFacebook = async (accessToken) => {
-    setLoading(true);
-    try {
-      const data = unwrapPayload(await authAPI.facebookLogin(accessToken));
-      applySession(data.accessToken, data.user, data.refreshToken);
-      return data;
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loginWithLine = async (code, redirectUri) => {
-    setLoading(true);
-    try {
-      const data = unwrapPayload(await authAPI.lineLogin(code, redirectUri));
-      applySession(data.accessToken, data.user, data.refreshToken);
-      return data;
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const refreshAccessToken = async () => {
-    if (!session.refreshToken) throw new Error("No refresh token");
-    
-    try {
-      const data = unwrapPayload(await authAPI.refreshToken(session.refreshToken));
-      applySession(data.accessToken, session.user, data.refreshToken);
-      return data.accessToken;
-    } catch (error) {
-      // Refresh failed, logout
-      clearSession();
-      setSession({ token: null, user: null, refreshToken: null });
-      throw error;
-    }
-  };
-
-  // Check if token is expired and refresh if needed
-  useEffect(() => {
-    if (!session.token) return;
-    
-    const checkTokenExpiry = async () => {
+  const login = useCallback(
+    async (emailOrPhone, password, mode = MODE_CUSTOMER) => {
+      setLoading(true);
       try {
-        // Try to get profile to validate token
-        await authAPI.getProfile();
+        const data = unwrapPayload(await authAPI.login(emailOrPhone, password, mode));
+        applySession(data.accessToken, data.user, data.refreshToken, mode);
+        return data;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applySession]
+  );
+
+  const register = useCallback(
+    async (data, mode = MODE_CUSTOMER) => {
+      setLoading(true);
+      try {
+        const result = unwrapPayload(await authAPI.register(data, mode));
+        applySession(result.accessToken, result.user, result.refreshToken, mode);
+        return result;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applySession]
+  );
+
+  const logout = useCallback(
+    async (mode = MODE_CUSTOMER) => {
+      try {
+        const session = mode === MODE_ADMIN ? adminSession : customerSession;
+        if (session.refreshToken) {
+          await authAPI.logout(session.refreshToken, mode);
+        }
       } catch (error) {
-        if (error.status === 401 && session.refreshToken) {
-          await refreshAccessToken();
+        console.error("Logout error:", error);
+      } finally {
+        clearSession(mode);
+        if (mode === MODE_ADMIN) {
+          setAdminSession({ token: null, user: null, refreshToken: null });
+        } else {
+          setCustomerSession({ token: null, user: null, refreshToken: null });
         }
       }
-    };
-    
-    checkTokenExpiry();
-  }, [session.token]);
+    },
+    [adminSession, customerSession]
+  );
 
-  const isAdmin = ['admin', 'owner'].includes(session.user?.role);
-  const isCourier = session.user?.role === 'courier';
-  // Legacy aliases used by the pre-existing customer/admin pages.
-  const sessionRef = { user: session.user };
+  const updateProfile = useCallback(
+    async (data, mode = MODE_CUSTOMER) => {
+      const session = mode === MODE_ADMIN ? adminSession : customerSession;
+      if (!session.token) throw new Error("Not authenticated");
+
+      setLoading(true);
+      try {
+        const updatedUser = unwrapPayload(await authAPI.updateProfile(data, mode));
+        applySession(session.token, updatedUser, session.refreshToken, mode);
+        return updatedUser;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applySession]
+  );
+
+  const changePassword = useCallback(
+    async (currentPassword, newPassword, mode = MODE_CUSTOMER) => {
+      const session = mode === MODE_ADMIN ? adminSession : customerSession;
+      if (!session.token) throw new Error("Not authenticated");
+
+      await authAPI.changePassword(currentPassword, newPassword, mode);
+    },
+    []
+  );
+
+  const loginWithGoogle = useCallback(
+    async (credential, mode = MODE_CUSTOMER) => {
+      setLoading(true);
+      try {
+        const data = unwrapPayload(await authAPI.googleLogin(credential, mode));
+        applySession(data.accessToken, data.user, data.refreshToken, mode);
+        return data;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applySession]
+  );
+
+  const loginWithFacebook = useCallback(
+    async (accessToken, mode = MODE_CUSTOMER) => {
+      setLoading(true);
+      try {
+        const data = unwrapPayload(await authAPI.facebookLogin(accessToken, mode));
+        applySession(data.accessToken, data.user, data.refreshToken, mode);
+        return data;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applySession]
+  );
+
+  const loginWithLine = useCallback(
+    async (code, redirectUri, mode = MODE_CUSTOMER) => {
+      setLoading(true);
+      try {
+        const data = unwrapPayload(await authAPI.lineLogin(code, redirectUri, mode));
+        applySession(data.accessToken, data.user, data.refreshToken, mode);
+        return data;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applySession]
+  );
+
+  const refreshAccessToken = useCallback(
+    async (mode = MODE_CUSTOMER) => {
+      // Collapse concurrent refreshes for the same namespace: Supabase rotates
+      // the refresh token, so two parallel refreshes would race and one would
+      // fail with an invalid (already-used) refresh token.
+      if (refreshInFlight.current[mode]) {
+        return refreshInFlight.current[mode];
+      }
+
+      const session = mode === MODE_ADMIN ? adminSession : customerSession;
+      if (!session.refreshToken) throw new Error("No refresh token");
+
+      const refreshPromise = (async () => {
+        try {
+          const data = unwrapPayload(await authAPI.refreshToken(session.refreshToken, mode));
+          applySession(data.accessToken, session.user, data.refreshToken, mode);
+          return data.accessToken;
+        } catch (error) {
+          clearSession(mode);
+          if (mode === MODE_ADMIN) {
+            setAdminSession({ token: null, user: null, refreshToken: null });
+          } else {
+            setCustomerSession({ token: null, user: null, refreshToken: null });
+          }
+          throw error;
+        }
+      })();
+
+      refreshInFlight.current[mode] = refreshPromise;
+      try {
+        return await refreshPromise;
+      } finally {
+        refreshInFlight.current[mode] = null;
+      }
+    },
+    [applySession, adminSession, customerSession]
+  );
+
+  // Validate a namespace's stored session on load: the access token may have
+  // expired while the tab was closed, or the refresh token may have been
+  // revoked (logout elsewhere / password change). If the token is rejected we
+  // try a single refresh; if that fails we clear the session so the user is
+  // sent back to /login instead of holding a dead token.
+  const validateSession = useCallback(
+    async (mode = MODE_CUSTOMER) => {
+      const session = mode === MODE_ADMIN ? adminSession : customerSession;
+      if (!session.token) return;
+
+      const setSession = mode === MODE_ADMIN ? setAdminSession : setCustomerSession;
+
+      try {
+        await authAPI.getProfile(mode);
+        // Token still good — nothing to do.
+      } catch (error) {
+        if (error?.status !== 401 || !session.refreshToken) {
+          clearSession(mode);
+          setSession({ token: null, user: null, refreshToken: null });
+          return;
+        }
+
+        // Access token expired/rejected but we have a refresh token: refresh once.
+        try {
+          await refreshAccessToken(mode);
+        } catch {
+          // refreshAccessToken already cleared the session on failure.
+        }
+      }
+    },
+    [adminSession, customerSession, refreshAccessToken]
+  );
+
+  useEffect(() => {
+    validateSession(MODE_CUSTOMER);
+    validateSession(MODE_ADMIN);
+    // Run once on mount to reconcile persisted sessions with the server.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sync namespace state across tabs when another tab writes to localStorage.
+  // Customer changes only affect customer state; admin changes only affect admin state.
+  useEffect(() => {
+    const handleStorage = (e) => {
+      if (!e.key) return;
+      const customerKeys = Object.values(STORAGE_KEYS[MODE_CUSTOMER]);
+      const adminKeys = Object.values(STORAGE_KEYS[MODE_ADMIN]);
+      if (customerKeys.includes(e.key)) {
+        setCustomerSession(readSession(MODE_CUSTOMER));
+      }
+      if (adminKeys.includes(e.key)) {
+        setAdminSession(readSession(MODE_ADMIN));
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+
+  const customer = {
+    token: customerSession.token,
+    user: customerSession.user,
+    isAuthenticated: !!customerSession.token,
+  };
+  const admin = {
+    token: adminSession.token,
+    user: adminSession.user,
+    isAuthenticated: !!adminSession.token,
+  };
+
+  const isAdmin = ["admin", "owner"].includes(adminSession.user?.role);
+  const isSeller = customerSession.user?.role === "seller";
+  const isCourier = customerSession.user?.role === "courier";
+  const user = customerSession.user;
+  const token = customerSession.token;
+  const isAuthenticated = !!customerSession.token;
+
   const value = {
     loading,
-    user: session.user,
-    token: session.token,
-    isAuthenticated: !!session.token,
-    isSeller: session.user?.role === 'seller',
+    customer,
+    admin,
+    user,
+    token,
+    isAuthenticated,
     isAdmin,
+    isSeller,
     isCourier,
-    customer: sessionRef,
-    admin: sessionRef,
     login,
     register,
     logout,
@@ -215,7 +339,7 @@ export function AuthProvider({ children }) {
     loginWithGoogle,
     loginWithFacebook,
     loginWithLine,
-    refreshAccessToken
+    refreshAccessToken,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

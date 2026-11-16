@@ -3,8 +3,23 @@ const API_BASE = RAW_API_BASE.endsWith("/api")
   ? RAW_API_BASE
   : `${RAW_API_BASE.replace(/\/$/, "")}/api`;
 
+const STORAGE_KEYS = {
+  customer: {
+    token: "kindee:customer:token",
+    refreshToken: "kindee:customer:refreshToken",
+  },
+  admin: {
+    token: "kindee:admin:token",
+    refreshToken: "kindee:admin:refreshToken",
+  },
+};
+
+function keysFor(mode) {
+  return STORAGE_KEYS[mode] || STORAGE_KEYS.customer;
+}
+
 export function getToken(mode = "customer") {
-  return localStorage.getItem(mode === "admin" ? "adminToken" : "customerToken");
+  return localStorage.getItem(keysFor(mode).token);
 }
 
 export async function request(path, options = {}, mode = "customer") {
@@ -49,35 +64,35 @@ export async function request(path, options = {}, mode = "customer") {
 export const apiRequest = request;
 
 export const authAPI = {
-  login: (email, password) =>
+  login: (email, password, mode = "customer") =>
     request("/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
-    }),
+    }, mode),
 
-  register: ({ name, email, password, phone, address, role }) =>
+  register: ({ name, email, password, phone, address, role }, mode = "customer") =>
     request("/auth/register", {
       method: "POST",
       body: JSON.stringify({ name, email, password, phone, address, role }),
-    }),
+    }, mode),
 
-  googleLogin: (credential) =>
+  googleLogin: (credential, mode = "customer") =>
     request("/auth/google", {
       method: "POST",
       body: JSON.stringify({ credential }),
-    }),
+    }, mode),
 
-  facebookLogin: (accessToken) =>
+  facebookLogin: (accessToken, mode = "customer") =>
     request("/auth/facebook", {
       method: "POST",
       body: JSON.stringify({ accessToken }),
-    }),
+    }, mode),
 
-  lineLogin: (code, redirectUri) =>
+  lineLogin: (code, redirectUri, mode = "customer") =>
     request("/auth/line", {
       method: "POST",
       body: JSON.stringify({ code, redirectUri }),
-    }),
+    }, mode),
 
   getSocialConfig: () => request("/settings/public/social-config"),
 };

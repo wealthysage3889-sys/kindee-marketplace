@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useSocket } from "../context/SocketContext";
-import { chatAPI, uploadAPI } from "../api";
-import { formatRelativeTime, formatDate } from "../utils/helpers";
+import { chatAPI, uploadAPI, normalizeAttachment } from "../api";
+import { formatDate } from "../utils/helpers";
 import "./ChatRoom.css";
 
 const MESSAGE_TYPES = {
@@ -16,71 +16,112 @@ const MESSAGE_TYPES = {
   voice_call: "voice_call"
 };
 
-export default function ChatRoom({ conversationId: conversationIdProp, storeOrderId, initialMessages }) {
+// The chat room is mounted from two routes:
+//   /messages/:conversationId            -> customer session (kindee:customer:token)
+//   /selladmin/messages/:conversationId  -> store owner/admin session (kindee:admin:token)
+// Every chatAPI/uploadAPI call in this component must use the same mode, otherwise
+// the token namespace is mixed inside one conversation (403 / 401).
+export function resolveChatMode(mode, pathname = "") {
+  if (mode === "admin" || mode === "customer") return mode;
+  return pathname.startsWith("/selladmin") ? "admin" : "customer";
+}
+
+function attachmentUrl(att) {
+  return att?.file_url || att?.fileUrl || att?.url;
+}
+
+function attachmentName(att) {
+  return att?.file_name || att?.fileName || att?.name || "ไฟล์แนบ";
+}
+
+function attachmentMime(att) {
+  return att?.mime_type || att?.mimeType || att?.type || "";
+}
+
+function attachmentSize(att) {
+  const size = att?.file_size ?? att?.fileSize ?? att?.size ?? 0;
+  return size > 0 ? `${(size / 1024).toFixed(1)} KB` : "";
+}
+
+export default function ChatRoom({ conversationId: conversationIdProp, mode: modeProp, initialMessages }) {
   const routeParams = useParams();
+  const location = useLocation();
   const conversationId = conversationIdProp || routeParams.conversationId;
-  const { user } = useAuth();
-  const { 
-    joinConversation, 
-    leaveConversation, 
-    sendCallSignal,
-    on, 
-    off, 
-    emit,
-    typingUsers 
+
+  const { customer, admin } = useAuth();
+  const mode = resolveChatMode(modeProp, location.pathname);
+  // Session that matches the route: seller/owner store owners still hold their
+  // token in the customer namespace, admins hold theirs in the admin namespace.
+  const session = mode === "admin" ? admin : customer;
+  const user = session?.user;
+  const currentUserId = user?.id || user?._id;
+
+  const {
+    connected,
+    joinConversation,
+    leaveConversation,
+    on,
+    off,
+    emit
   } = useSocket();
-  
+
   const [messages, setMessages] = useState(initialMessages || []);
   const [newMessage, setNewMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
-  const [showAttachments, setShowAttachments] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [conversation, setConversation] = useState(null);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState("");
-  
+
   const messagesEndRef = useRef(null);
   const messageInputRef = useRef(null);
+  const fileInputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const isTypingRef = useRef(false);
+  // Last message id already reported as read for this room (prevents duplicate POSTs).
+  const lastMarkedReadRef = useRef(null);
+  const visibleRef = useRef(true);
+
+  useEffect(() => {
+    lastMarkedReadRef.current = null;
+  }, [conversationId, mode]);
 
   // Load conversation info
   useEffect(() => {
-    if (conversationId) {
-      chatAPI.getConversation(conversationId)
-        .then(res => setConversation(res.data))
-        .catch(err => console.error("Failed to load conversation:", err));
-    }
-  }, [conversationId]);
+    if (!conversationId) return;
+    let cancelled = false;
+    chatAPI.getConversation(conversationId, mode)
+      .then(res => {
+        if (!cancelled) setConversation(res?.data || res || null);
+      })
+      .catch(err => {
+        if (!cancelled) setError(err.message || "ไม่สามารถโหลดการสนทนาได้");
+      });
+    return () => { cancelled = true; };
+  }, [conversationId, mode]);
 
-  // Join conversation
+  // Join conversation room once the socket is up (handlers below need `connected`).
   useEffect(() => {
-    if (conversationId) {
-      joinConversation(conversationId);
-    }
-    
-    return () => {
-      if (conversationId) {
-        leaveConversation(conversationId);
-      }
-    };
-  }, [conversationId, joinConversation, leaveConversation]);
+    if (!conversationId || !connected) return;
+    joinConversation(conversationId);
+    return () => { leaveConversation(conversationId); };
+  }, [conversationId, connected, joinConversation, leaveConversation]);
 
-  // Load messages
   const loadMessages = useCallback(async (pageNum = 1, append = false) => {
+    if (!conversationId) return;
     setLoading(true);
     try {
-      const result = await chatAPI.getMessages(conversationId, { page: pageNum, limit: 50 });
-      const newMessages = result.data;
-      
+      const result = await chatAPI.getMessages(conversationId, { page: pageNum, limit: 50 }, mode);
+      const newMessages = Array.isArray(result?.data) ? result.data : [];
+
       if (append) {
         setMessages(prev => [...newMessages, ...prev]);
       } else {
         setMessages(newMessages);
       }
-      
+
       setHasMore(newMessages.length === 50);
       setPage(pageNum);
     } catch (err) {
@@ -88,11 +129,54 @@ export default function ChatRoom({ conversationId: conversationIdProp, storeOrde
     } finally {
       setLoading(false);
     }
-  }, [conversationId]);
+  }, [conversationId, mode]);
 
   useEffect(() => {
     loadMessages(1, false);
-  }, [conversationId, loadMessages]);
+  }, [conversationId, mode, loadMessages]);
+
+  // Track tab visibility so we only mark messages read when the user can see them.
+  useEffect(() => {
+    const update = () => { visibleRef.current = document.visibilityState === "visible"; };
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+
+  // Mark read: only for this room, only for messages the user did not send,
+  // and only once per message id.
+  const markAsRead = useCallback(async (lastReadMessageId) => {
+    if (!conversationId || !lastReadMessageId) return;
+    const id = String(lastReadMessageId);
+    if (lastMarkedReadRef.current === id) return;
+    lastMarkedReadRef.current = id;
+    try {
+      await chatAPI.markAsRead(conversationId, id, mode);
+    } catch {
+      lastMarkedReadRef.current = null;
+    }
+  }, [conversationId, mode]);
+
+  const currentMember = conversation?.members?.find(
+    (m) => String(m.profile_id ?? m.profileId) === String(currentUserId)
+  );
+  const serverLastReadId = currentMember?.last_read_message_id
+    ?? currentMember?.lastReadMessageId
+    ?? null;
+
+  // On open (and on every new message) mark the newest inbound message as read.
+  // Marking the newest inbound message (not simply the last message) keeps the
+  // unread counter correct when the last message in the room was sent by us.
+  useEffect(() => {
+    if (!messages.length || !currentUserId) return;
+    const lastInbound = [...messages]
+      .reverse()
+      .find((m) => String(m.sender_id ?? m.senderId) !== String(currentUserId));
+    if (!lastInbound) return;
+    const lastInboundId = lastInbound.id ?? lastInbound._id;
+    if (serverLastReadId && String(serverLastReadId) === String(lastInboundId)) return;
+    markAsRead(lastInboundId);
+  }, [messages, currentUserId, serverLastReadId, markAsRead]);
 
   // Scroll to bottom
   const scrollToBottom = useCallback(() => {
@@ -105,73 +189,78 @@ export default function ChatRoom({ conversationId: conversationIdProp, storeOrde
 
   // Socket event handlers
   useEffect(() => {
+    if (!connected) return;
+
     const handleNewMessage = (message) => {
+      const incomingConversationId = message?.conversation_id ?? message?.conversationId;
+      // Never touch another room's state.
+      if (incomingConversationId && String(incomingConversationId) !== String(conversationId)) return;
+
+      const senderId = message?.sender_id ?? message?.senderId;
+      if (senderId && currentUserId && String(senderId) === String(currentUserId)) return;
+
       setMessages(prev => {
-        // Avoid duplicates
-        if (prev.some(m => m.id === message.id)) return prev;
+        const id = message?.id ?? message?._id;
+        if (prev.some(m => String(m.id ?? m._id) === String(id))) return prev;
         return [...prev, message];
       });
-      
-      // Mark as read if we're in the conversation
-      chatAPI.markAsRead(conversationId, message.id).catch(() => {});
+
+      // User is in the room and can see the message -> mark read now.
+      if (visibleRef.current) {
+        markAsRead(message?.id ?? message?._id);
+      }
     };
-    
-    const handleMessagesRead = ({ userId, count }) => {
-      // Update read status
-    };
-    
-    const handleTyping = ({ userId, name }) => {
-      // Show typing indicator
-    };
-    
-    const handleStopTyping = ({ userId }) => {
-      // Hide typing indicator
-    };
-    
+
     on("newMessage", handleNewMessage);
-    on("messagesRead", handleMessagesRead);
-    on("typing", handleTyping);
-    on("stopTyping", handleStopTyping);
-    
+
     return () => {
       off("newMessage", handleNewMessage);
-      off("messagesRead", handleMessagesRead);
-      off("typing", handleTyping);
-      off("stopTyping", handleStopTyping);
     };
-  }, [conversationId, on, off]);
+  }, [conversationId, connected, currentUserId, on, off, markAsRead]);
 
   // Send message
   const handleSendMessage = async (e) => {
-    e.preventDefault();
-    
+    e?.preventDefault?.();
+
     if ((!newMessage.trim() && selectedFiles.length === 0) || sending) return;
-    
+
     setSending(true);
     const content = newMessage.trim();
     setNewMessage("");
-    setShowAttachments(false);
     const filesToSend = [...selectedFiles];
     setSelectedFiles([]);
     isTypingRef.current = false;
     clearTimeout(typingTimeoutRef.current);
     stopTyping();
-    
+    setError("");
+
     try {
-      // Upload attachments first
       let attachments = [];
       if (filesToSend.length > 0) {
-        const uploadResult = await uploadAPI.uploadChatAttachment(conversationId, filesToSend);
-        attachments = uploadResult.data;
+        const uploadResult = await uploadAPI.uploadChatAttachment(conversationId, filesToSend, mode);
+        const uploaded = Array.isArray(uploadResult?.data) ? uploadResult.data : [];
+        attachments = uploaded.map(normalizeAttachment);
       }
-      
-      // Send message
-      await chatAPI.sendMessage(conversationId, {
+
+      const type = filesToSend.length > 0
+        ? (filesToSend.every(f => (f.type || "").startsWith("image/")) ? "image" : "file")
+        : "text";
+
+      const result = await chatAPI.sendMessage(conversationId, {
         content: content || undefined,
-        type: filesToSend.length > 0 ? (filesToSend[0].type.startsWith("image/") ? "image" : "file") : "text",
+        type,
         attachments,
         metadata: {}
-      });
+      }, mode);
+
+      const saved = result?.data || result;
+      if (saved?.id || saved?._id) {
+        setMessages(prev => {
+          const id = saved.id ?? saved._id;
+          if (prev.some(m => String(m.id ?? m._id) === String(id))) return prev;
+          return [...prev, saved];
+        });
+      }
     } catch (err) {
       setError(err.message || "ไม่สามารถส่งข้อความได้");
       // Restore message on error
@@ -186,9 +275,9 @@ export default function ChatRoom({ conversationId: conversationIdProp, storeOrde
   const handleTyping = () => {
     if (!isTypingRef.current) {
       isTypingRef.current = true;
-      startTyping(user.name);
+      emit("typing", { conversationId, userId: currentUserId, name: user?.name });
     }
-    
+
     clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
       isTypingRef.current = false;
@@ -196,17 +285,13 @@ export default function ChatRoom({ conversationId: conversationIdProp, storeOrde
     }, 2000);
   };
 
-  const startTyping = (name) => {
-    emit("typing", { conversationId, name });
-  };
-
   const stopTyping = () => {
-    emit("stopTyping", { conversationId });
+    emit("stopTyping", { conversationId, userId: currentUserId });
   };
 
   // File selection
   const handleFileSelect = (e) => {
-    const files = Array.from(e.target.files);
+    const files = Array.from(e.target.files || []);
     const validFiles = files.filter(f => {
       const maxSize = 20 * 1024 * 1024; // 20MB
       if (f.size > maxSize) {
@@ -215,7 +300,7 @@ export default function ChatRoom({ conversationId: conversationIdProp, storeOrde
       }
       return true;
     });
-    
+
     setSelectedFiles(prev => [...prev, ...validFiles].slice(0, 5));
     e.target.value = "";
   };
@@ -237,33 +322,43 @@ export default function ChatRoom({ conversationId: conversationIdProp, storeOrde
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const msgDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-    
+
     if (msgDate.getTime() === today.getTime()) {
       return date.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
     } else if (msgDate.getTime() === today.getTime() - 86400000) {
       return "เมื่อวาน " + date.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
     } else {
-      return date.toLocaleDateString("th-TH", { month: "short", day: "numeric" }) + " " + 
+      return date.toLocaleDateString("th-TH", { month: "short", day: "numeric" }) + " " +
              date.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
     }
   };
 
   // Render message content
   const renderMessageContent = (message) => {
+    const attachments = message.attachments || [];
+    const firstAttachment = attachments[0];
+
     switch (message.type) {
       case "image":
         return (
           <div className="message-image">
-            <img src={message.content || message.attachments?.[0]?.file_url} alt="Image" onClick={() => window.open(message.attachments?.[0]?.file_url, "_blank")} />
+            <img
+              src={attachmentUrl(firstAttachment) || message.content}
+              alt={attachmentName(firstAttachment)}
+              onClick={() => {
+                const url = attachmentUrl(firstAttachment);
+                if (url) window.open(url, "_blank");
+              }}
+            />
           </div>
         );
       case "file":
         return (
           <div className="message-file">
-            <a href={message.attachments?.[0]?.file_url} target="_blank" rel="noopener noreferrer">
+            <a href={attachmentUrl(firstAttachment)} target="_blank" rel="noopener noreferrer">
               <span className="file-icon">📄</span>
-              <span className="file-name">{message.attachments?.[0]?.file_name || message.content}</span>
-              <span className="file-size">{(message.attachments?.[0]?.file_size / 1024).toFixed(1)} KB</span>
+              <span className="file-name">{attachmentName(firstAttachment)}</span>
+              <span className="file-size">{attachmentSize(firstAttachment)}</span>
             </a>
           </div>
         );
@@ -293,7 +388,29 @@ export default function ChatRoom({ conversationId: conversationIdProp, storeOrde
         );
       default:
         return (
-          <div className="message-text">{message.content}</div>
+          <>
+            {message.content && <div className="message-text">{message.content}</div>}
+            {attachments.length > 0 && (
+              <div className="message-attachments">
+                {attachments.map((att, i) => (
+                  <div key={att.id || i} className="attachment">
+                    {attachmentMime(att).startsWith("image/") ? (
+                      <img
+                        src={attachmentUrl(att)}
+                        alt={attachmentName(att)}
+                        onClick={() => window.open(attachmentUrl(att), "_blank")}
+                      />
+                    ) : (
+                      <a href={attachmentUrl(att)} target="_blank" rel="noopener noreferrer">
+                        <span className="file-icon">📄</span>
+                        <span>{attachmentName(att)}</span>
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         );
     }
   };
@@ -324,11 +441,10 @@ export default function ChatRoom({ conversationId: conversationIdProp, storeOrde
         </div>
         <div className="chat-header-right">
           {conversation?.type === "store_customer" && (
-            <button className="call-btn" onClick={() => {
-              // Initiate call
-              emit("callSignal", { 
-                callId: `call-${Date.now()}`, 
-                signal: { type: "offer" } 
+            <button className="call-btn" type="button" onClick={() => {
+              emit("callSignal", {
+                callId: `call-${Date.now()}`,
+                signal: { type: "offer" }
               });
             }}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -341,58 +457,46 @@ export default function ChatRoom({ conversationId: conversationIdProp, storeOrde
 
       <div className="chat-messages">
         {hasMore && (
-          <button className="load-more-btn" onClick={handleLoadMore} disabled={loading}>
+          <button className="load-more-btn" type="button" onClick={handleLoadMore} disabled={loading}>
             {loading ? "กำลังโหลด..." : "โหลดข้อความก่อนหน้า"}
           </button>
         )}
-        
+
         {messages.map((message, index) => {
-          const isOwn = message.sender_id === user.id;
-          const showTime = index === 0 || 
-            new Date(message.created_at).getTime() - new Date(messages[index - 1]?.created_at).getTime() > 5 * 60 * 1000;
-          
+          const messageId = message.id ?? message._id;
+          const senderId = message.sender_id ?? message.senderId;
+          const isOwn = currentUserId && String(senderId) === String(currentUserId);
+          const createdAt = message.created_at ?? message.createdAt;
+          const showTime = index === 0 ||
+            new Date(createdAt).getTime() - new Date(messages[index - 1]?.created_at ?? messages[index - 1]?.createdAt).getTime() > 5 * 60 * 1000;
+
           return (
-            <div key={message.id} className={`message ${isOwn ? "own" : ""}`}>
+            <div key={messageId} className={`message ${isOwn ? "own" : ""}`}>
               {!isOwn && (
                 <div className="message-sender">
-                  <img src={message.sender?.avatar_url} alt={message.sender?.name} />
+                  {message.sender?.avatar_url && (
+                    <img src={message.sender.avatar_url} alt={message.sender?.name} />
+                  )}
                   <span>{message.sender?.name}</span>
                 </div>
               )}
-              
+
               <div className="message-bubble">
                 {renderMessageContent(message)}
-                
-                {message.attachments && message.attachments.length > 0 && message.type === "text" && (
-                  <div className="message-attachments">
-                    {message.attachments.map((att, i) => (
-                      <div key={i} className="attachment">
-                        {att.mime_type.startsWith("image/") ? (
-                          <img src={att.file_url} alt={att.file_name} onClick={() => window.open(att.file_url, "_blank")} />
-                        ) : (
-                          <a href={att.file_url} target="_blank" rel="noopener noreferrer">
-                            <span className="file-icon">📄</span>
-                            <span>{att.file_name}</span>
-                          </a>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                
+
                 <div className="message-time">
-                  {formatMessageTime(message.created_at)}
+                  {formatMessageTime(createdAt)}
                   {isOwn && message.is_read && <span className="read-receipt">✓✓</span>}
                 </div>
               </div>
-              
+
               {showTime && (
-                <div className="message-date-separator">{formatDate(message.created_at)}</div>
+                <div className="message-date-separator">{formatDate(createdAt)}</div>
               )}
             </div>
           );
         })}
-        
+
         <div ref={messagesEndRef} />
       </div>
 
@@ -402,25 +506,35 @@ export default function ChatRoom({ conversationId: conversationIdProp, storeOrde
         {selectedFiles.length > 0 && (
           <div className="selected-files">
             {selectedFiles.map((file, index) => (
-              <span className="selected-file" key={index}>
+              <span className="selected-file" key={`${file.name}-${index}`}>
                 {file.name} ({(file.size / 1024).toFixed(1)} KB)
                 <button type="button" onClick={() => removeFile(index)}>×</button>
               </span>
             ))}
           </div>
         )}
-        
+
         <div className="input-row">
-          <button 
-            type="button" 
-            className="attach-btn" 
-            onClick={() => setShowAttachments(!showAttachments)}
+          <button
+            type="button"
+            className="attach-btn"
+            onClick={() => fileInputRef.current?.click()}
           >
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.49"></path>
             </svg>
           </button>
-          
+
+          <input
+            type="file"
+            multiple
+            accept="image/*,application/pdf,.doc,.docx"
+            onChange={handleFileSelect}
+            className="file-input"
+            style={{ display: "none" }}
+            ref={fileInputRef}
+          />
+
           <input
             ref={messageInputRef}
             type="text"
@@ -439,23 +553,11 @@ export default function ChatRoom({ conversationId: conversationIdProp, storeOrde
             className="message-input"
             disabled={sending}
           />
-          
-          {showAttachments && (
-            <input
-              type="file"
-              multiple
-              accept="image/*,application/pdf,.doc,.docx"
-              onChange={handleFileSelect}
-              className="file-input"
-              style={{ display: "none" }}
-              ref={(el) => el?.click()}
-            />
-          )}
-          
-          <button 
-            type="submit" 
+
+          <button
+            type="submit"
             className="send-btn"
-            disabled={!newMessage.trim() && selectedFiles.length === 0 || sending}
+            disabled={(!newMessage.trim() && selectedFiles.length === 0) || sending}
           >
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="22" y1="2" x2="11" y2="13"></line>

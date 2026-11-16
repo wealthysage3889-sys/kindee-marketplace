@@ -12,43 +12,37 @@ export function useSocket() {
   return ctx;
 }
 
+// The app keeps two token namespaces (customer + admin/store-owner). A browser
+// can be signed in to both at the same time, so one socket is opened per
+// namespace: that way the customer chat and the store-owner chat both receive
+// realtime events, no matter which session the current page uses.
 export function SocketProvider({ children }) {
-  const { token, isAuthenticated } = useAuth();
-  const socketRef = useRef(null);
+  const { customer, admin } = useAuth();
+  const customerToken = customer?.token || null;
+  const adminToken = admin?.token || null;
+
+  const socketsRef = useRef(new Map()); // token -> socket
+  const detachRef = useRef(new Map()); // token -> detach handlers
   const [connected, setConnected] = useState(false);
   const [typingUsers, setTypingUsers] = useState({});
   const [activeCall, setActiveCall] = useState(null);
 
-  const connect = useCallback(() => {
-    if (!isAuthenticated || !token) return;
-    
-    if (socketRef.current?.connected) return;
+  const anyConnected = () => [...socketsRef.current.values()].some((socket) => socket.connected);
 
-    const API_BASE = import.meta.env.VITE_API_BASE || "/api";
-    const socketUrl = API_BASE.replace(/\/api$/, "") || "";
-
-    socketRef.current = io(socketUrl || undefined, {
-      path: "/socket.io",
-      transports: ["websocket", "polling"],
-      auth: { token },
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-    });
-
+  const attachHandlers = useCallback((socket) => {
     const onConnect = () => {
-      console.log("Socket connected:", socketRef.current.id);
-      setConnected(true);
+      console.log("Socket connected:", socket.id);
+      setConnected(anyConnected());
     };
 
     const onDisconnect = (reason) => {
       console.log("Socket disconnected:", reason);
-      setConnected(false);
+      setConnected(anyConnected());
     };
 
     const onReconnect = (attempt) => {
       console.log("Socket reconnected after attempt:", attempt);
-      setConnected(true);
+      setConnected(anyConnected());
     };
 
     const onConnectError = (error) => {
@@ -71,166 +65,183 @@ export function SocketProvider({ children }) {
 
     // Message events
     const onNewMessage = (message) => {
-      socketRef.current.emit('messageReceived', message.id);
+      if (!message?.id) return;
+      socket.emit('messageReceived', message.id);
     };
 
-    const onMessagesRead = ({ conversationId, userId, count }) => {
-      // Handle read receipts
+    const onMessagesRead = () => {
+      // Read receipts are handled by the chat room itself
     };
 
-    // Order events
-    const onOrderStatusUpdate = (data) => {
-      // Handle order status updates
-    };
+    const onOrderStatusUpdate = () => {};
+    const onNewOrder = () => {};
+    const onDeliveryStatusUpdate = () => {};
+    const onCourierLocationUpdate = () => {};
+    const onNotification = () => {};
 
-    const onNewOrder = (order) => {
-      // Handle new order notification
-    };
+    const onIncomingCall = (callData) => setActiveCall(callData);
+    const onCallEnded = () => setActiveCall(null);
+    const onCallSignal = () => {};
 
-    // Delivery events
-    const onDeliveryStatusUpdate = (data) => {
-      // Handle delivery status updates
-    };
-
-    const onCourierLocationUpdate = (data) => {
-      // Handle real-time courier location
-    };
-
-    // Call events
-    const onIncomingCall = (callData) => {
-      setActiveCall(callData);
-    };
-
-    const onCallEnded = (callData) => {
-      setActiveCall(null);
-    };
-
-    const onCallSignal = ({ from, signal }) => {
-      // Handle WebRTC signaling
-    };
-
-    // Notification events
-    const onNotification = (notification) => {
-      // Handle new notification
-    };
-
-    socketRef.current.on("connect", onConnect);
-    socketRef.current.on("disconnect", onDisconnect);
-    socketRef.current.io?.on("reconnect", onReconnect);
-    socketRef.current.io?.on("connect_error", onConnectError);
-    socketRef.current.on("typing", onTyping);
-    socketRef.current.on("stopTyping", onStoppedTyping);
-    socketRef.current.on("newMessage", onNewMessage);
-    socketRef.current.on("messagesRead", onMessagesRead);
-    socketRef.current.on("orderStatusUpdate", onOrderStatusUpdate);
-    socketRef.current.on("newOrder", onNewOrder);
-    socketRef.current.on("deliveryStatusUpdate", onDeliveryStatusUpdate);
-    socketRef.current.on("courierLocationUpdate", onCourierLocationUpdate);
-    socketRef.current.on("incomingCall", onIncomingCall);
-    socketRef.current.on("callEnded", onCallEnded);
-    socketRef.current.on("callSignal", onCallSignal);
-    socketRef.current.on("notification", onNotification);
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+    socket.io?.on("reconnect", onReconnect);
+    socket.io?.on("connect_error", onConnectError);
+    socket.on("typing", onTyping);
+    socket.on("stopTyping", onStoppedTyping);
+    socket.on("newMessage", onNewMessage);
+    socket.on("messagesRead", onMessagesRead);
+    socket.on("orderStatusUpdate", onOrderStatusUpdate);
+    socket.on("newOrder", onNewOrder);
+    socket.on("deliveryStatusUpdate", onDeliveryStatusUpdate);
+    socket.on("courierLocationUpdate", onCourierLocationUpdate);
+    socket.on("incomingCall", onIncomingCall);
+    socket.on("callEnded", onCallEnded);
+    socket.on("callSignal", onCallSignal);
+    socket.on("notification", onNotification);
 
     return () => {
-      if (socketRef.current) {
-        socketRef.current.io?.off("reconnect", onReconnect);
-        socketRef.current.io?.off("connect_error", onConnectError);
-        socketRef.current.off("connect", onConnect);
-        socketRef.current.off("disconnect", onDisconnect);
-        socketRef.current.off("typing", onTyping);
-        socketRef.current.off("stopTyping", onStoppedTyping);
-        socketRef.current.off("newMessage", onNewMessage);
-        socketRef.current.off("messagesRead", onMessagesRead);
-        socketRef.current.off("orderStatusUpdate", onOrderStatusUpdate);
-        socketRef.current.off("newOrder", onNewOrder);
-        socketRef.current.off("deliveryStatusUpdate", onDeliveryStatusUpdate);
-        socketRef.current.off("courierLocationUpdate", onCourierLocationUpdate);
-        socketRef.current.off("incomingCall", onIncomingCall);
-        socketRef.current.off("callEnded", onCallEnded);
-        socketRef.current.off("callSignal", onCallSignal);
-        socketRef.current.off("notification", onNotification);
-        socketRef.current.disconnect();
-        socketRef.current = null;
-      }
+      socket.io?.off("reconnect", onReconnect);
+      socket.io?.off("connect_error", onConnectError);
+      socket.off("connect", onConnect);
+      socket.off("disconnect", onDisconnect);
+      socket.off("typing", onTyping);
+      socket.off("stopTyping", onStoppedTyping);
+      socket.off("newMessage", onNewMessage);
+      socket.off("messagesRead", onMessagesRead);
+      socket.off("orderStatusUpdate", onOrderStatusUpdate);
+      socket.off("newOrder", onNewOrder);
+      socket.off("deliveryStatusUpdate", onDeliveryStatusUpdate);
+      socket.off("courierLocationUpdate", onCourierLocationUpdate);
+      socket.off("incomingCall", onIncomingCall);
+      socket.off("callEnded", onCallEnded);
+      socket.off("callSignal", onCallSignal);
+      socket.off("notification", onNotification);
     };
-  }, [isAuthenticated, token]);
+  }, []);
+
+  const createSocket = useCallback((token) => {
+    const API_BASE = import.meta.env.VITE_API_BASE || "/api";
+    const socketUrl = API_BASE.replace(/\/api$/, "") || "";
+
+    return io(socketUrl || undefined, {
+      path: "/socket.io",
+      transports: ["websocket", "polling"],
+      auth: { token },
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+    });
+  }, []);
+
+  const connect = useCallback(() => {
+    const tokens = [];
+    [customerToken, adminToken].forEach((token) => {
+      if (token && !tokens.includes(token)) tokens.push(token);
+    });
+
+    // Drop sockets whose session disappeared (logout).
+    for (const [token, socket] of [...socketsRef.current.entries()]) {
+      if (!tokens.includes(token)) {
+        detachRef.current.get(token)?.();
+        detachRef.current.delete(token);
+        socketsRef.current.delete(token);
+        socket.disconnect();
+      }
+    }
+
+    tokens.forEach((token) => {
+      if (socketsRef.current.has(token)) return;
+      const socket = createSocket(token);
+      socketsRef.current.set(token, socket);
+      detachRef.current.set(token, attachHandlers(socket));
+    });
+
+    setConnected(anyConnected());
+  }, [customerToken, adminToken, createSocket, attachHandlers]);
+
+  const disconnectAll = useCallback(() => {
+    for (const [token, socket] of [...socketsRef.current.entries()]) {
+      detachRef.current.get(token)?.();
+      detachRef.current.delete(token);
+      socketsRef.current.delete(token);
+      socket.disconnect();
+    }
+    setConnected(false);
+  }, []);
 
   useEffect(() => {
-    if (isAuthenticated && token) {
-      connect();
-    }
-    
-    return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-        socketRef.current = null;
-      }
-    };
-  }, [isAuthenticated, token, connect]);
+    connect();
+    return disconnectAll;
+  }, [connect, disconnectAll]);
+
+  const eachSocket = (fn) => {
+    socketsRef.current.forEach((socket) => fn(socket));
+  };
 
   // Socket actions
   const joinStore = useCallback((storeId) => {
-    socketRef.current?.emit("joinStore", storeId);
+    eachSocket((socket) => socket.emit("joinStore", storeId));
   }, []);
 
   const leaveStore = useCallback((storeId) => {
-    socketRef.current?.emit("leaveStore", storeId);
+    eachSocket((socket) => socket.emit("leaveStore", storeId));
   }, []);
 
   const joinConversation = useCallback((conversationId) => {
-    socketRef.current?.emit("joinConversation", conversationId);
+    eachSocket((socket) => socket.emit("joinConversation", conversationId));
   }, []);
 
   const leaveConversation = useCallback((conversationId) => {
-    socketRef.current?.emit("leaveConversation", conversationId);
+    eachSocket((socket) => socket.emit("leaveConversation", conversationId));
   }, []);
 
   const joinDelivery = useCallback((deliveryId) => {
-    socketRef.current?.emit("joinDelivery", deliveryId);
+    eachSocket((socket) => socket.emit("joinDelivery", deliveryId));
   }, []);
 
   const leaveDelivery = useCallback((deliveryId) => {
-    socketRef.current?.emit("leaveDelivery", deliveryId);
+    eachSocket((socket) => socket.emit("leaveDelivery", deliveryId));
   }, []);
 
   const joinCall = useCallback((callId) => {
-    socketRef.current?.emit("joinCall", callId);
+    eachSocket((socket) => socket.emit("joinCall", callId));
   }, []);
 
   const leaveCall = useCallback((callId) => {
-    socketRef.current?.emit("leaveCall", callId);
+    eachSocket((socket) => socket.emit("leaveCall", callId));
   }, []);
 
   const startTyping = useCallback((conversationId, name) => {
-    socketRef.current?.emit("typing", { conversationId, name });
+    eachSocket((socket) => socket.emit("typing", { conversationId, name }));
   }, []);
 
   const stopTyping = useCallback((conversationId) => {
-    socketRef.current?.emit("stopTyping", { conversationId });
+    eachSocket((socket) => socket.emit("stopTyping", { conversationId }));
   }, []);
 
   const sendCallSignal = useCallback((callId, signal) => {
-    socketRef.current?.emit("callSignal", { callId, signal });
+    eachSocket((socket) => socket.emit("callSignal", { callId, signal }));
   }, []);
 
   const sendCourierLocation = useCallback((deliveryId, coordinates, metadata) => {
-    socketRef.current?.emit("courierLocationUpdate", { deliveryId, coordinates, metadata });
+    eachSocket((socket) => socket.emit("courierLocationUpdate", { deliveryId, coordinates, metadata }));
   }, []);
 
   const on = useCallback((event, handler) => {
-    socketRef.current?.on(event, handler);
+    eachSocket((socket) => socket.on(event, handler));
   }, []);
 
   const off = useCallback((event, handler) => {
-    socketRef.current?.off(event, handler);
+    eachSocket((socket) => socket.off(event, handler));
   }, []);
 
   const emit = useCallback((event, data) => {
-    socketRef.current?.emit(event, data);
+    eachSocket((socket) => socket.emit(event, data));
   }, []);
 
   const value = {
-    socket: socketRef.current,
+    socket: socketsRef.current.values().next().value || null,
     connected,
     joinStore,
     leaveStore,

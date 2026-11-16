@@ -12,6 +12,19 @@ const fieldLabels = {
   stock: "จำนวนคงคลัง",
 };
 
+// "1,000.50" / "1000.50" -> 1000.5, "" -> null, invalid text -> NaN
+const parseNumberInput = (value) => {
+  const normalized = String(value ?? "").replace(/,/g, "").trim();
+  if (normalized === "") return null;
+  return Number(normalized);
+};
+
+const formatBaht = (value) =>
+  `${Number(value).toLocaleString("th-TH", { maximumFractionDigits: 2 })} บาท`;
+
+const errorMessage = (err, fallback) =>
+  err?.data?.errors?.[0]?.message || err?.message || fallback;
+
 export default function Products() {
   const navigate = useNavigate();
   const [form, setForm] = useState({
@@ -80,13 +93,47 @@ export default function Products() {
       }
     }
 
+    const price = parseNumberInput(form.price);
+    if (price === null || !Number.isFinite(price) || price < 0) {
+      setError("กรุณากรอกราคาปกติเป็นตัวเลข 0 ขึ้นไป");
+      return;
+    }
+
+    const stock = parseNumberInput(form.stock);
+    if (stock === null || !Number.isInteger(stock) || stock < 0) {
+      setError("กรุณากรอกจำนวนคงคลังเป็นเลขจำนวนเต็ม 0 ขึ้นไป");
+      return;
+    }
+
+    // An empty discount field means "no discount"; otherwise it must be a
+    // number lower than the regular price.
+    const discountPrice = parseNumberInput(form.discountPrice);
+    if (discountPrice !== null && (!Number.isFinite(discountPrice) || discountPrice <= 0)) {
+      setError("ราคาส่วนลดต้องเป็นตัวเลขมากกว่า 0 และน้อยกว่าราคาปกติ หรือเว้นว่างไว้หากไม่มีส่วนลด");
+      return;
+    }
+    if (discountPrice !== null && discountPrice >= price) {
+      setError(
+        `ราคาส่วนลดต้องน้อยกว่าราคาปกติ (ราคาปกติ ${formatBaht(price)} และราคาส่วนลด ${formatBaht(discountPrice)})`
+      );
+      return;
+    }
+
+    // Validate images: at least 1 image is required before submitting
+    const hasNewImages = images.some((file) => file !== null);
+    if (!hasNewImages) {
+      setError("กรุณาอัปโหลดรูปสินค้าอย่างน้อย 1 รูป");
+      return;
+    }
+
     const data = new FormData();
     data.append("name", form.name);
-    data.append("price", form.price);
-    if (form.discountPrice) data.append("discountPrice", form.discountPrice);
+    data.append("price", String(price));
+    // Left empty -> the field is omitted and the product is saved without a discount.
+    if (discountPrice !== null) data.append("discountPrice", String(discountPrice));
     data.append("category", form.category);
     data.append("description", form.description);
-    data.append("stock", form.stock);
+    data.append("stock", String(stock));
     images.forEach((file) => {
       if (file) data.append("images", file);
     });
@@ -97,7 +144,7 @@ export default function Products() {
       setSuccess("เพิ่มสินค้าสำเร็จ");
       setTimeout(() => navigate("/seller/products"), 1200);
     } catch (err) {
-      setError(err.message || "เพิ่มสินค้าไม่สำเร็จ");
+      setError(errorMessage(err, "เพิ่มสินค้าไม่สำเร็จ"));
     } finally {
       setLoading(false);
     }
@@ -149,6 +196,7 @@ export default function Products() {
                 onChange={handleInput("discountPrice")}
                 placeholder="ราคาพิเศษ (ถ้ามี)"
               />
+              <span className="form-hint">เว้นว่างได้หากไม่มีส่วนลด และต้องน้อยกว่าราคาปกติ</span>
             </div>
 
             <div className="form-group">

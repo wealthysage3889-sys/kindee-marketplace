@@ -1,8 +1,9 @@
 ﻿import { useEffect, useRef, useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { authAPI } from "../api/auth";
 import SocialAuth from "../components/SocialAuth";
+import { createLineState } from "../utils/lineState";
 
 const EyeIcon = ({ open }) => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -26,7 +27,7 @@ function loadFacebookSdk(appId) {
 }
 
 export default function Register() {
-  const { register, loginWithGoogle, loginWithFacebook, loginWithLine, logout } = useAuth();
+  const { register, loginWithGoogle, loginWithFacebook } = useAuth();
   const [step, setStep] = useState(1);
   const [emailOrPhone, setEmailOrPhone] = useState("");
   const [form, setForm] = useState({ name: "", email: "", password: "", phone: "", address: "", role: "customer" });
@@ -37,8 +38,6 @@ export default function Register() {
   const [loading, setLoading] = useState(false);
   const [socialConfig, setSocialConfig] = useState(null);
   const navigate = useNavigate();
-  const location = useLocation();
-const lineHandled = useRef(false);
   const googleInitialized = useRef(false);
 
   const isEmail = emailOrPhone.includes("@");
@@ -48,23 +47,6 @@ const lineHandled = useRef(false);
     authAPI.getSocialConfig().then((res) => { if (active) setSocialConfig(res?.data || null); }).catch(() => {});
     return () => { active = false; };
   }, []);
-
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const code = params.get("code");
-    const state = params.get("state");
-    if (code && state === "line_register" && !lineHandled.current) {
-      lineHandled.current = true;
-      setLoading(true); setMessage("");
-      loginWithLine(code, window.location.origin + "/register", "customer")
-        .then((data) => {
-          if (["admin", "owner"].includes(data.user.role)) { logout("customer"); navigate("/selladmin/login", { replace: true }); }
-          else navigate("/", { replace: true });
-        })
-        .catch((err) => { setMessage(err.message || "สมัครด้วย LINE ไม่สำเร็จ"); navigate("/register", { replace: true }); })
-        .finally(() => setLoading(false));
-    }
-  }, [location.search, loginWithLine, logout, navigate]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -121,7 +103,6 @@ const handleGoogle = async () => {
           setLoading(true);
           try {
             const data = await loginWithGoogle(response.credential, "customer");
-            if (["admin", "owner"].includes(data.user.role)) { logout("customer"); navigate("/selladmin/login", { replace: true }); return; }
             navigate("/");
           } catch (err) { setMessage(err.message || "สมัครด้วย Google ไม่สำเร็จ"); }
           finally { setLoading(false); }
@@ -148,7 +129,6 @@ const handleFacebook = async () => {
           (async () => {
             try {
               const data = await loginWithFacebook(response.authResponse.accessToken, "customer");
-              if (["admin", "owner"].includes(data.user.role)) { logout("customer"); navigate("/selladmin/login", { replace: true }); return; }
               navigate("/");
             } catch (err) { setMessage(err.message || "สมัครด้วย Facebook ไม่สำเร็จ"); }
             finally { setLoading(false); }
@@ -161,8 +141,10 @@ const handleFacebook = async () => {
   const handleLine = () => {
     if (!socialConfig?.line?.channelId) return;
     setMessage(""); setInfo("");
-    const redirectUri = window.location.origin + "/register";
-    const params = new URLSearchParams({ response_type: "code", client_id: socialConfig.line.channelId, redirect_uri: redirectUri, state: "line_register", scope: "profile openid email" });
+    // Use the unified callback page so the redirect_uri matches the value
+    // registered in the LINE Developers Console (single URL for all flows).
+    const redirectUri = window.location.origin + "/oauth/line/callback";
+    const params = new URLSearchParams({ response_type: "code", client_id: socialConfig.line.channelId, redirect_uri: redirectUri, state: createLineState("register"), scope: "profile openid email" });
     window.location.href = `https://access.line.me/oauth2/v2.1/authorize?${params.toString()}`;
   };
 

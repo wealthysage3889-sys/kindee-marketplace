@@ -39,9 +39,9 @@ export default function AdminLogin() {
     setLoading(true);
     setMessage("");
     try {
-      const data = await login(form.email, form.password);
+      const data = await login(form.email, form.password, "admin");
       if (!["admin", "owner"].includes(data.user?.role)) {
-        await logout();
+        await logout("admin");
         setMessage("บัญชีนี้ไม่มีสิทธิ์เข้าสู่ระบบแอดมิน (ต้องมี role admin/owner ในฐานข้อมูล)");
         return;
       }

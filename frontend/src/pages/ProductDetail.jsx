@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, useLocation, Link } from "react-router-dom";
 import { productAPI } from "../api/product";
+import { extractList, resolveProductPricing } from "../utils/helpers";
 import { useCart } from "../context/CartContext";
 
 const PLACEHOLDER_IMAGE = "https://via.placeholder.com/600x600?text=No+Image";
@@ -122,7 +123,7 @@ export default function ProductDetail() {
       try {
         setRelatedLoading(true);
         const data = await productAPI.getProducts({ limit: 20 });
-        const all = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+        const all = extractList(data, "products");
         const related = all.filter((p) => p._id !== product._id);
         const sameCategory = related.filter((p) => {
           const cat = typeof p.category === "string" ? p.category : p.category?.name || "";
@@ -185,8 +186,7 @@ export default function ProductDetail() {
   const safeIndex = Math.min(selectedImage, images.length - 1);
   const hasMultipleImages = images.length > 1;
 
-  const displayPrice = product.discountPrice ?? product.price;
-  const hasDiscount = product.discountPrice != null && product.discountPrice < product.price;
+  const { displayPrice, originalPrice, hasDiscount, discountPercent } = resolveProductPricing(product);
   const stock = product.stock != null && product.stock !== "" ? Number(product.stock) : null;
   const isOutOfStock = stock != null && stock <= 0;
   const maxQuantity = stock != null && stock > 0 ? stock : 1;
@@ -348,12 +348,12 @@ export default function ProductDetail() {
           <h1 className="product-detail-name">{product.name}</h1>
 
           <div className="product-detail-price">
-            <span className="price-current">{Number(displayPrice || 0).toLocaleString()} บาท</span>
+            <span className="price-current">{displayPrice.toLocaleString()} บาท</span>
             {hasDiscount && (
               <>
-                <span className="price-original">{Number(product.price).toLocaleString()} บาท</span>
+                <span className="price-original">{originalPrice.toLocaleString()} บาท</span>
                 <span className="price-discount-badge">
-                  -{Math.round((1 - displayPrice / product.price) * 100)}%
+                  -{discountPercent}%
                 </span>
               </>
             )}
@@ -411,8 +411,7 @@ export default function ProductDetail() {
           <h2 className="related-products-title">สินค้าที่คุณอาจสนใจ</h2>
           <div className="product-grid">
             {relatedProducts.map((product) => {
-              const displayPrice = product.discountPrice ?? product.price;
-              const hasDiscount = product.discountPrice != null && product.discountPrice < product.price;
+              const { displayPrice, originalPrice, hasDiscount } = resolveProductPricing(product);
               const image = product.images?.[0] || PLACEHOLDER_IMAGE;
               const stock = product.stock;
               const stockLabel = stock != null && stock !== ""
@@ -426,8 +425,8 @@ export default function ProductDetail() {
                       <p className="product-category">{typeof product.category === "string" ? product.category : product.category?.name || "ไม่ระบุ category"}</p>
                       <h3 className="product-name">{product.name}</h3>
                       <div className="product-price">
-                        <span className="price-current">{Number(displayPrice || 0).toLocaleString()} บาท</span>
-                        {hasDiscount && <span className="price-original">{Number(product.price).toLocaleString()} บาท</span>}
+                        <span className="price-current">{displayPrice.toLocaleString()} บาท</span>
+                        {hasDiscount && <span className="price-original">{originalPrice.toLocaleString()} บาท</span>}
                       </div>
                       <p className="product-stock">{stockLabel}</p>
                     </div>

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { productAPI } from "../api/product";
+import { extractList } from "../utils/helpers";
 
 const IMAGE_COUNT = 3;
 
@@ -11,6 +12,19 @@ const fieldLabels = {
   description: "รายละเอียด",
   stock: "จำนวนคงคลัง",
 };
+
+// "1,000.50" / "1000.50" -> 1000.5, "" -> null, invalid text -> NaN
+const parseNumberInput = (value) => {
+  const normalized = String(value ?? "").replace(/,/g, "").trim();
+  if (normalized === "") return null;
+  return Number(normalized);
+};
+
+const formatBaht = (value) =>
+  `${Number(value).toLocaleString("th-TH", { maximumFractionDigits: 2 })} บาท`;
+
+const errorMessage = (err, fallback) =>
+  err?.data?.errors?.[0]?.message || err?.message || fallback;
 
 export default function AdminProducts() {
   const [products, setProducts] = useState([]);
@@ -33,14 +47,16 @@ export default function AdminProducts() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
   const [formSuccess, setFormSuccess] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   const fetchProducts = useCallback(async () => {
     try {
       setLoading(true);
       const response = await productAPI.getProducts({}, "admin");
-      // Backend returns { success: true, data: products[], ... }
-      const productList = response?.data || response?.products || response || [];
-      setProducts(Array.isArray(productList) ? productList : []);
+      // API responds { success: true, data: { products, pagination } }
+      setProducts(extractList(response, "products"));
     } catch (err) {
       setError(err.message || "โหลดสินค้าไม่สำเร็จ");
       setProducts([]);
@@ -123,11 +139,13 @@ export default function AdminProducts() {
     resetForm();
     setForm({
       name: product.name || "",
-      price: product.price || "",
-      discountPrice: product.discountPrice || "",
-      category: product.category || "",
+      price: product.price ?? "",
+      // The API returns discount_price (snake_case); accept both spellings so
+      // an existing discount is never shown as empty and then wiped on save.
+      discountPrice: product.discountPrice ?? product.discount_price ?? "",
+      category: product.category?.name || product.category || "",
       description: product.description || "",
-      stock: product.stock || "",
+      stock: product.stock ?? "",
     });
     setExistingImages(product.images || []);
     setPreviews(product.images || []);
@@ -154,6 +172,32 @@ export default function AdminProducts() {
       }
     }
 
+    const price = parseNumberInput(form.price);
+    if (price === null || !Number.isFinite(price) || price < 0) {
+      setFormError("กรุณากรอกราคาปกติเป็นตัวเลข 0 ขึ้นไป");
+      return;
+    }
+
+    const stock = parseNumberInput(form.stock);
+    if (stock === null || !Number.isInteger(stock) || stock < 0) {
+      setFormError("กรุณากรอกจำนวนคงคลังเป็นเลขจำนวนเต็ม 0 ขึ้นไป");
+      return;
+    }
+
+    // An empty discount field means "no discount"; otherwise it must be a
+    // number lower than the regular price.
+    const discountPrice = parseNumberInput(form.discountPrice);
+    if (discountPrice !== null && (!Number.isFinite(discountPrice) || discountPrice <= 0)) {
+      setFormError("ราคาส่วนลดต้องเป็นตัวเลขมากกว่า 0 และน้อยกว่าราคาปกติ หรือเว้นว่างไว้หากไม่มีส่วนลด");
+      return;
+    }
+    if (discountPrice !== null && discountPrice >= price) {
+      setFormError(
+        `ราคาส่วนลดต้องน้อยกว่าราคาปกติ (ราคาปกติ ${formatBaht(price)} และราคาส่วนลด ${formatBaht(discountPrice)})`
+      );
+      return;
+    }
+
     // Validate images: at least 1 image (existing or new)
     const hasExistingImages = existingImages.length > 0;
     const hasNewImages = images.some((file) => file !== null);
@@ -164,11 +208,15 @@ export default function AdminProducts() {
 
     const data = new FormData();
     data.append("name", form.name);
-    data.append("price", form.price);
-    if (form.discountPrice) data.append("discountPrice", form.discountPrice);
+    data.append("price", String(price));
+    // While editing the discount is always sent, so clearing the field removes
+    // an existing discount; on create it is omitted when left empty.
+    if (isEditing || discountPrice !== null) {
+      data.append("discountPrice", discountPrice === null ? "" : String(discountPrice));
+    }
     data.append("category", form.category);
     data.append("description", form.description);
-    data.append("stock", form.stock);
+    data.append("stock", String(stock));
     
     // Keep existing images
     existingImages.forEach((img) => {
@@ -194,7 +242,12 @@ export default function AdminProducts() {
         fetchProducts();
       }, 1000);
     } catch (err) {
-      setFormError(err.message || (isEditing ? "แก้ไขสินค้าไม่สำเร็จ" : "เพิ่มสินค้าไม่สำเร็จ"));
+      setFormError(
+        errorMessage(
+          err,
+          isEditing ? "แก้ไขสินค้าไม่สำเร็จ" : "เพิ่มสินค้าไม่สำเร็จ"
+        )
+      );
     } finally {
       setSubmitting(false);
     }
@@ -207,11 +260,52 @@ export default function AdminProducts() {
     }).format(price);
   };
 
-  const handleDelete = (productId) => {
-    if (window.confirm("ต้องการลบสินค้านี้ใช่หรือไม่?")) {
-      productAPI.deleteProduct(productId, "admin").then(fetchProducts);
+  const openDeleteModal = (product) => {
+    setDeleteError("");
+    setDeleteTarget(product);
+  };
+
+  const closeDeleteModal = () => {
+    if (deleting) return;
+    setDeleteTarget(null);
+    setDeleteError("");
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleting) return;
+    const productId = deleteTarget._id || deleteTarget.id;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await productAPI.deleteProduct(productId, "admin");
+      setDeleteTarget(null);
+      await fetchProducts();
+    } catch (err) {
+      setDeleteError(errorMessage(err, "ลบสินค้าไม่สำเร็จ"));
+    } finally {
+      setDeleting(false);
     }
   };
+
+  useEffect(() => {
+    if (!deleteTarget) return undefined;
+
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape" && !deleting) {
+        setDeleteTarget(null);
+        setDeleteError("");
+      }
+    };
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [deleteTarget, deleting]);
 
   return (
     <div className="page">
@@ -234,20 +328,20 @@ export default function AdminProducts() {
             <thead>
               <tr>
                 <th className="id-cell">#</th>
-                <th>รูปภาพ</th>
-                <th>ชื่อสินค้า</th>
-                <th>หมวดหมู่</th>
-                <th>ราคา</th>
-                <th>สต็อก</th>
-                <th>สถานะ</th>
-                <th>การจัดการ</th>
+                <th className="col-image">รูปภาพ</th>
+                <th className="col-name">ชื่อสินค้า</th>
+                <th className="col-category">หมวดหมู่</th>
+                <th className="col-price">ราคา</th>
+                <th className="col-stock">สต็อก</th>
+                <th className="col-status">สถานะ</th>
+                <th className="col-actions">การจัดการ</th>
               </tr>
             </thead>
             <tbody>
               {Array.isArray(products) && products.map((product, index) => (
                 <tr key={product._id || product.id || index}>
                   <td className="id-cell">{index + 1}</td>
-                  <td>
+                  <td className="col-image">
                     {product.images && product.images.length > 0 ? (
                       <img
                         src={product.images[0]}
@@ -258,18 +352,18 @@ export default function AdminProducts() {
                       <div className="product-thumb-placeholder">ไม่มีรูป</div>
                     )}
                   </td>
-                  <td>
+                  <td className="col-name">
                     <div className="product-name-cell">{product.name}</div>
                   </td>
-                  <td>{product.category || "-"}</td>
-                  <td>{formatPrice(product.price)}</td>
-                  <td>{product.stock ?? "-"}</td>
-                  <td>
+                  <td className="col-category">{product.category?.name || product.category || "-"}</td>
+                  <td className="col-price">{formatPrice(product.price)}</td>
+                  <td className="col-stock">{product.stock ?? "-"}</td>
+                  <td className="col-status">
                     <span className={`status-badge ${product.isActive !== false ? "status-active" : "status-inactive"}`}>
                       {product.isActive !== false ? "เปิดขาย" : "ปิดขาย"}
                     </span>
                   </td>
-                  <td className="actions-cell">
+                  <td className="col-actions">
                     <button
                       type="button"
                       className="btn-edit"
@@ -280,7 +374,7 @@ export default function AdminProducts() {
                     <button
                       type="button"
                       className="btn-delete"
-                      onClick={() => handleDelete(product._id || product.id)}
+                      onClick={() => openDeleteModal(product)}
                     >
                       ลบ
                     </button>
@@ -289,6 +383,64 @@ export default function AdminProducts() {
               ))}
             </tbody>
           </table>
+          <div className="products-card-view">
+            {products.map((product, index) => (
+              <article
+                key={product._id || product.id || index}
+                className="product-card"
+              >
+                {product.images && product.images.length > 0 ? (
+                  <img
+                    src={product.images[0]}
+                    alt={product.name}
+                    className="product-card-image"
+                  />
+                ) : (
+                  <div className="product-card-image product-card-image-placeholder">
+                    ไม่มีรูป
+                  </div>
+                )}
+                <div className="product-card-body">
+                  <div className="product-card-index">สินค้าที่ {index + 1}</div>
+                  <div className="product-card-name">{product.name}</div>
+                  <div className="product-card-meta">
+                    <span className="product-card-meta-item">
+                      {product.category?.name || product.category || "-"}
+                    </span>
+                    <span className="product-card-meta-item">
+                      สต็อก {product.stock ?? "-"}
+                    </span>
+                  </div>
+                  <div className="product-card-price">
+                    {formatPrice(product.price)}
+                  </div>
+                  <span
+                    className={`status-badge ${
+                      product.isActive !== false ? "status-active" : "status-inactive"
+                    }`}
+                  >
+                    {product.isActive !== false ? "เปิดขาย" : "ปิดขาย"}
+                  </span>
+                </div>
+                <div className="product-card-actions">
+                  <button
+                    type="button"
+                    className="btn-edit"
+                    onClick={() => openEditModal(product)}
+                  >
+                    แก้ไข
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-delete"
+                    onClick={() => openDeleteModal(product)}
+                  >
+                    ลบ
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
         </div>
       )}
 
@@ -347,6 +499,7 @@ export default function AdminProducts() {
                     onChange={handleInput("discountPrice")}
                     placeholder="ราคาพิเศษ (ถ้ามี)"
                   />
+                  <span className="form-hint">เว้นว่างได้หากไม่มีส่วนลด และต้องน้อยกว่าราคาปกติ</span>
                 </div>
               </div>
 
@@ -434,6 +587,75 @@ export default function AdminProducts() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="account-modal-overlay" onClick={closeDeleteModal}>
+          <div
+            className="account-modal delete-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="account-modal-header">
+              <h2 id="delete-modal-title">ยืนยันการลบสินค้า</h2>
+              <button
+                type="button"
+                className="account-modal-close"
+                onClick={closeDeleteModal}
+                aria-label="ปิด"
+                disabled={deleting}
+              >
+                ×
+              </button>
+            </div>
+
+            {deleteError && <div className="form-error" role="alert">{deleteError}</div>}
+
+            <div className="delete-product-info">
+              {deleteTarget.images && deleteTarget.images.length > 0 ? (
+                <img
+                  src={deleteTarget.images[0]}
+                  alt={deleteTarget.name}
+                  className="delete-product-thumb"
+                />
+              ) : (
+                <div className="delete-product-thumb delete-product-thumb-placeholder">ไม่มีรูป</div>
+              )}
+              <div className="delete-product-details">
+                <div className="delete-product-name">{deleteTarget.name}</div>
+                <div className="delete-product-meta">
+                  {deleteTarget.category?.name || deleteTarget.category || "-"}
+                </div>
+                <div className="delete-product-price">{formatPrice(deleteTarget.price)}</div>
+              </div>
+            </div>
+
+            <p className="delete-warning">
+              คุณต้องการลบสินค้านี้ใช่หรือไม่? การดำเนินการนี้ไม่สามารถย้อนกลับได้
+            </p>
+
+            <div className="account-modal-actions">
+              <button
+                type="button"
+                className="btn-outline"
+                onClick={closeDeleteModal}
+                disabled={deleting}
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                className="btn-delete-confirm"
+                onClick={confirmDelete}
+                disabled={deleting}
+              >
+                {deleting ? "กำลังลบ..." : "ยืนยันการลบ"}
+              </button>
+            </div>
           </div>
         </div>
       )}

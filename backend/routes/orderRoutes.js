@@ -4,6 +4,7 @@ import { validate, validateId } from '../middleware/validate.js';
 import { verifyToken, authorize, verifyAdmin } from '../middleware/auth.js';
 import * as orderService from '../services/orderService.js';
 import { asyncHandler, AppError, NotFoundError } from '../middleware/errorHandler.js';
+import { validateThaiPhone } from '../utils/phone.js';
 
 const router = express.Router();
 
@@ -16,7 +17,7 @@ router.post('/', verifyToken, authorize('customer'), [
   body('customerNotes').optional().trim(),
   body('deliveryAddress').isObject().withMessage('Delivery address required'),
   body('deliveryAddress.name').trim().notEmpty().withMessage('Recipient name required'),
-  body('deliveryAddress.phone').isMobilePhone('th-TH').withMessage('Invalid phone'),
+  body('deliveryAddress.phone').custom(validateThaiPhone).withMessage('Invalid phone'),
   body('deliveryAddress.address').trim().notEmpty().withMessage('Address required'),
   body('deliveryAddress.district').optional().trim(),
   body('deliveryAddress.province').optional().trim(),

@@ -14,32 +14,22 @@ import {
 
 const router = express.Router();
 
-// Get settings
-router.get('/', optionalAuth, asyncHandler(async (req, res) => {
+// Get settings (admin only - OAuth settings are sensitive)
+router.get('/', verifyToken, verifyAdmin, asyncHandler(async (req, res) => {
   const category = typeof req.query.category === 'string' ? req.query.category.trim() : '';
-  const isPrivileged = isPrivilegedUser(req.user);
 
   // The table has no category column: filter on the OAuth key whitelist.
   const categoryKeys = keysForCategory(category);
   if (categoryKeys && categoryKeys.length === 0) {
-    return res.json({ success: true, data: isPrivileged ? [] : {} });
+    return res.json({ success: true, data: [] });
   }
 
   let query = supabaseAdmin.from('settings').select(SETTING_COLUMNS);
   if (categoryKeys) query = query.in('key', categoryKeys);
-  if (!isPrivileged) query = query.eq('is_public', true);
 
   const { data: settings, error } = await query.order('key');
   if (error) {
     throw new AppError(`Failed to fetch settings: ${error.message}`, 500);
-  }
-
-  if (!isPrivileged) {
-    const settingsObj = (settings || []).reduce((acc, s) => {
-      acc[s.key] = s.value;
-      return acc;
-    }, {});
-    return res.json({ success: true, data: settingsObj });
   }
 
   res.json({ success: true, data: (settings || []).map(redactSetting) });

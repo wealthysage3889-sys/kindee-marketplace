@@ -1,9 +1,50 @@
 import { supabaseAdmin } from '../config/supabase.js';
 import { AppError, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
-import { v4 as uuidv4 } from 'uuid';
+import { emitNewMessage, emitToUser, emitMessageRead } from './socketService.js';
+
+// Attachments may arrive as the message_attachments column names (file_url, ...)
+// or as the upload endpoint's response shape (url, fileName, ...). Normalise both
+// so an attachment can always be linked to the message it was uploaded for.
+const normalizeAttachment = (attachment = {}) => {
+  const fileUrl = attachment.file_url || attachment.fileUrl || attachment.url;
+  const fileName = attachment.file_name || attachment.fileName || attachment.name;
+  const fileSize = attachment.file_size ?? attachment.fileSize ?? attachment.size ?? 0;
+  const mimeType = attachment.mime_type || attachment.mimeType || attachment.type || 'application/octet-stream';
+
+  if (!fileUrl || !fileName) {
+    throw new ValidationError('Attachment requires file_url and file_name');
+  }
+
+  return {
+    file_url: fileUrl,
+    file_name: fileName,
+    file_size: Number(fileSize) || 0,
+    mime_type: mimeType,
+    width: attachment.width ?? null,
+    height: attachment.height ?? null,
+    duration_seconds: attachment.duration_seconds ?? attachment.durationSeconds ?? null,
+    thumbnail_url: attachment.thumbnail_url ?? attachment.thumbnailUrl ?? null
+  };
+};
 
 // Create or get direct conversation between customer and store
-export const getOrCreateConversation = async (customerId, storeId, storeOrderId = null) => {
+export const getOrCreateConversation = async (customerId, storeId, storeOrderId = null, context = {}) => {
+  // The store must exist, otherwise a conversation would be created against
+  // nothing and the owner member insert would fail silently.
+  const { data: store, error: storeError } = await supabaseAdmin
+    .from('stores')
+    .select('id, owner_id')
+    .eq('id', storeId)
+    .single();
+
+  if (storeError || !store) {
+    throw new NotFoundError('Store');
+  }
+
+  if (!store.owner_id) {
+    throw new AppError('Store owner is not configured', 500);
+  }
+
   // Check for existing conversation
   let query = supabaseAdmin
     .from('conversations')
@@ -13,21 +54,40 @@ export const getOrCreateConversation = async (customerId, storeId, storeOrderId 
     `)
     .eq('type', 'store_customer')
     .eq('store_id', storeId);
-  
+
   if (storeOrderId) {
     query = query.eq('store_order_id', storeOrderId);
   }
-  
-  const { data: conversations } = await query;
-  
+
+  const { data: conversations, error: conversationError } = await query;
+
+  if (conversationError) {
+    throw new AppError(`Failed to fetch conversations: ${conversationError.message}`, 500);
+  }
+
   // Find conversation where customer is a member
   for (const conv of conversations || []) {
-    const isMember = conv.members.some(m => m.profile_id === customerId);
+    const isMember = (conv.members || []).some(m => m.profile_id === customerId);
     if (isMember) {
       return await getConversationById(conv.id);
     }
   }
-  
+
+  // A store owner is already a member (as admin) of every room of that store,
+  // so there is no customer-side conversation to create for them.
+  const sameUser = String(store.owner_id) === String(customerId);
+  // Temporary non-secret diagnostic log for "Cannot start a conversation with your own store" investigation.
+  console.info('[chat.getOrCreateConversation]', {
+    storeId,
+    reqUserId: customerId,
+    storeOwnerId: store.owner_id,
+    role: context.role ?? null,
+    sameUser
+  });
+  if (sameUser) {
+    throw new ValidationError('Cannot start a conversation with your own store');
+  }
+
   // Create new conversation
   const { data: conversation, error } = await supabaseAdmin
     .from('conversations')
@@ -38,25 +98,24 @@ export const getOrCreateConversation = async (customerId, storeId, storeOrderId 
     })
     .select()
     .single();
-  
+
   if (error) {
     throw new AppError(`Conversation creation failed: ${error.message}`, 500);
   }
-  
-  // Add members
-  const { data: store } = await supabaseAdmin
-    .from('stores')
-    .select('owner_id')
-    .eq('id', storeId)
-    .single();
-  
-  await supabaseAdmin
+
+  // Add members: the customer is a plain member, the store owner is the
+  // conversation admin. The owner always comes from stores.owner_id.
+  const { error: memberError } = await supabaseAdmin
     .from('conversation_members')
     .insert([
       { conversation_id: conversation.id, profile_id: customerId, role: 'member' },
       { conversation_id: conversation.id, profile_id: store.owner_id, role: 'admin' }
     ]);
-  
+
+  if (memberError) {
+    throw new AppError(`Failed to add conversation members: ${memberError.message}`, 500);
+  }
+
   return getConversationById(conversation.id);
 };
 
@@ -92,10 +151,34 @@ export const getConversationById = async (conversationId, userId = null) => {
   return conversation;
 };
 
+const getLatestMessagesByConversation = async (conversationIds) => {
+  const ids = [...new Set((conversationIds || []).filter(Boolean))];
+  if (ids.length === 0) return new Map();
+
+  const { data, error } = await supabaseAdmin
+    .from('messages')
+    .select('*')
+    .in('conversation_id', ids)
+    .eq('is_deleted', false)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    throw new AppError(`Failed to fetch latest messages: ${error.message}`, 500);
+  }
+
+  const latest = new Map();
+  for (const message of data || []) {
+    if (!latest.has(message.conversation_id)) {
+      latest.set(message.conversation_id, message);
+    }
+  }
+  return latest;
+};
+
 // Get conversations for user
 export const getUserConversations = async (userId, filters = {}, pagination = {}) => {
   const { type, store_id, page = 1, limit = 20 } = filters;
-  
+
   let query = supabaseAdmin
     .from('conversations')
     .select(`
@@ -106,28 +189,33 @@ export const getUserConversations = async (userId, filters = {}, pagination = {}
         profile_id,
         unread_count,
         last_read_at
-      ),
-      last_message:messages!last_message_at(*)
+      )
     `, { count: 'exact' })
     .eq('conversation_members.profile_id', userId)
-    .eq('conversation_members.left_at', null);
-  
+    .is('conversation_members.left_at', null);
+
   if (type) query = query.eq('type', type);
   if (store_id) query = query.eq('store_id', store_id);
-  
+
   query = query
-    .order('last_message_at', { ascending: false, nullsLast: true })
+    .order('last_message_at', { ascending: false, nullsFirst: false })
     .range((page - 1) * limit, page * limit - 1);
-  
+
   const { data, error, count } = await query;
-  
+
   if (error) {
     throw new AppError(`Failed to fetch conversations: ${error.message}`, 500);
   }
-  
+
+  const latestMessages = await getLatestMessagesByConversation((data || []).map((c) => c.id));
+  const conversations = (data || []).map((conversation) => ({
+    ...conversation,
+    last_message: latestMessages.get(conversation.id) || null,
+  }));
+
   return {
-    conversations: data,
-    pagination: { page, limit, total: count, totalPages: Math.ceil(count / limit) }
+    conversations,
+    pagination: { page, limit, total: count, totalPages: Math.ceil((count || 0) / limit) }
   };
 };
 
@@ -157,6 +245,7 @@ export const getMessages = async (conversationId, userId, pagination = {}) => {
       .from('messages')
       .select('created_at')
       .eq('id', before_id)
+      .eq('conversation_id', conversationId)
       .single();
     
     if (beforeMsg) {
@@ -179,12 +268,19 @@ export const getMessages = async (conversationId, userId, pagination = {}) => {
 };
 
 // Send message
-export const sendMessage = async (conversationId, senderId, messageData) => {
+export const sendMessage = async (conversationId, senderId, messageData = {}) => {
   const { content, type = 'text', metadata = {}, reply_to_id, attachments = [] } = messageData;
-  
-  // Verify membership
+
+  // Verify membership: only a member of this conversation may post in it.
+  // senderId always comes from the verified token (req.user.id).
   const conversation = await getConversationById(conversationId, senderId);
-  
+
+  const normalizedAttachments = (Array.isArray(attachments) ? attachments : []).map(normalizeAttachment);
+
+  if (!content && normalizedAttachments.length === 0) {
+    throw new ValidationError('Message content or attachment required');
+  }
+
   // Create message
   const { data: message, error } = await supabaseAdmin
     .from('messages')
@@ -201,41 +297,38 @@ export const sendMessage = async (conversationId, senderId, messageData) => {
       sender:profiles!sender_id(id, name, avatar_url, role)
     `)
     .single();
-  
+
   if (error) {
     throw new AppError(`Message creation failed: ${error.message}`, 500);
   }
-  
+
   // Add attachments if provided
-  if (attachments.length > 0) {
-    const attachmentData = attachments.map(att => ({
+  if (normalizedAttachments.length > 0) {
+    const attachmentData = normalizedAttachments.map(att => ({
       message_id: message.id,
-      file_url: att.file_url,
-      file_name: att.file_name,
-      file_size: att.file_size,
-      mime_type: att.mime_type,
-      width: att.width,
-      height: att.height,
-      duration_seconds: att.duration_seconds,
-      thumbnail_url: att.thumbnail_url
+      ...att
     }));
-    
-    await supabaseAdmin
+
+    const { error: attachmentError } = await supabaseAdmin
       .from('message_attachments')
       .insert(attachmentData);
-    
+
+    if (attachmentError) {
+      throw new AppError(`Attachment creation failed: ${attachmentError.message}`, 500);
+    }
+
     message.attachments = attachmentData;
   }
-  
+
   // Update conversation last_message_at
   await supabaseAdmin
     .from('conversations')
     .update({ last_message_at: new Date().toISOString() })
     .eq('id', conversationId);
-  
+
   // Create notifications for other members
   const otherMembers = conversation.members.filter(m => m.profile_id !== senderId && !m.left_at);
-  
+
   for (const member of otherMembers) {
     await supabaseAdmin.rpc('create_notification', {
       p_recipient_id: member.profile_id,
@@ -247,37 +340,62 @@ export const sendMessage = async (conversationId, senderId, messageData) => {
       p_related_type: 'conversation'
     });
   }
-  
+
+  // Realtime delivery: the conversation room plus every other member's user room
+  // (so the store owner also sees it on the conversation list).
+  emitNewMessage(message);
+  for (const member of otherMembers) {
+    emitToUser(member.profile_id, 'newMessage', message);
+  }
+
   return message;
 };
 
 // Mark messages as read
 export const markMessagesRead = async (conversationId, userId, lastReadMessageId = null) => {
   // Verify membership
-  const conversation = await getConversationById(conversationId, userId);
-  
+  await getConversationById(conversationId, userId);
+
+  // A read marker may only point at a message of this conversation, otherwise
+  // one room could mark another room's message as read.
+  if (lastReadMessageId) {
+    const { data: readMessage, error: readError } = await supabaseAdmin
+      .from('messages')
+      .select('id')
+      .eq('id', lastReadMessageId)
+      .eq('conversation_id', conversationId)
+      .single();
+
+    if (readError || !readMessage) {
+      throw new ValidationError('Message does not belong to this conversation');
+    }
+  }
+
   const updateData = { last_read_at: new Date().toISOString() };
   if (lastReadMessageId) {
     updateData.last_read_message_id = lastReadMessageId;
   }
-  
+
   const { error } = await supabaseAdmin
     .from('conversation_members')
     .update(updateData)
     .eq('conversation_id', conversationId)
     .eq('profile_id', userId);
-  
+
   if (error) {
     throw new AppError(`Failed to mark messages as read: ${error.message}`, 500);
   }
-  
-  // Reset unread count
+
+  // Reset unread count (the DB trigger also resets it when last_read_at changes,
+  // keep it explicit so the count is correct without the trigger too).
   await supabaseAdmin
     .from('conversation_members')
     .update({ unread_count: 0 })
     .eq('conversation_id', conversationId)
     .eq('profile_id', userId);
-  
+
+  emitMessageRead(conversationId, userId, 0);
+
   return { success: true };
 };
 
@@ -287,7 +405,7 @@ export const getUnreadCount = async (userId) => {
     .from('conversation_members')
     .select('unread_count')
     .eq('profile_id', userId)
-    .eq('left_at', null);
+    .is('left_at', null);
   
   if (error) {
     throw new AppError(`Failed to fetch unread count: ${error.message}`, 500);
@@ -300,40 +418,72 @@ export const getUnreadCount = async (userId) => {
 export const editMessage = async (messageId, userId, newContent) => {
   const { data: message, error } = await supabaseAdmin
     .from('messages')
-    .update({ 
-      content: newContent, 
-      is_edited: true 
+    .select('id, conversation_id, sender_id, is_deleted')
+    .eq('id', messageId)
+    .single();
+
+  if (error || !message || message.is_deleted) {
+    throw new NotFoundError('Message');
+  }
+
+  // Membership is required before touching a message (service role bypasses RLS).
+  await getConversationById(message.conversation_id, userId);
+
+  if (String(message.sender_id) !== String(userId)) {
+    throw new AppError('Not authorized to edit this message', 403);
+  }
+
+  const { data: updated, error: updateError } = await supabaseAdmin
+    .from('messages')
+    .update({
+      content: newContent,
+      is_edited: true
     })
     .eq('id', messageId)
     .eq('sender_id', userId)
     .eq('is_deleted', false)
     .select()
     .single();
-  
-  if (error || !message) {
+
+  if (updateError || !updated) {
     throw new AppError('Message not found or not authorized', 404);
   }
-  
-  return message;
+
+  return updated;
 };
 
 // Delete message (soft delete)
 export const deleteMessage = async (messageId, userId, isAdmin = false) => {
-  let query = supabaseAdmin
+  const { data: message, error } = await supabaseAdmin
+    .from('messages')
+    .select('id, conversation_id, sender_id, is_deleted')
+    .eq('id', messageId)
+    .single();
+
+  if (error || !message || message.is_deleted) {
+    throw new NotFoundError('Message');
+  }
+
+  // Membership is required before touching a message (service role bypasses RLS).
+  const conversation = await getConversationById(message.conversation_id, userId);
+  const membership = conversation.members.find(m => String(m.profile_id) === String(userId));
+
+  const isSender = String(message.sender_id) === String(userId);
+  const isConversationAdmin = Boolean(isAdmin && membership && ['admin', 'owner'].includes(membership.role));
+
+  if (!isSender && !isConversationAdmin) {
+    throw new AppError('Not authorized to delete this message', 403);
+  }
+
+  const { error: updateError } = await supabaseAdmin
     .from('messages')
     .update({ is_deleted: true, deleted_at: new Date().toISOString() })
     .eq('id', messageId);
-  
-  if (!isAdmin) {
-    query = query.eq('sender_id', userId);
+
+  if (updateError) {
+    throw new AppError(`Failed to delete message: ${updateError.message}`, 500);
   }
-  
-  const { data: message, error } = await query.select().single();
-  
-  if (error || !message) {
-    throw new AppError('Message not found or not authorized', 404);
-  }
-  
+
   return { success: true };
 };
 
@@ -434,44 +584,56 @@ export const removeConversationMember = async (conversationId, userId, memberId)
 
 // Mute/unmute conversation
 export const muteConversation = async (conversationId, userId, muted = true) => {
+  // Only a member may change their own mute setting for this conversation.
+  await getConversationById(conversationId, userId);
+
   const { error } = await supabaseAdmin
     .from('conversation_members')
     .update({ is_muted: muted })
     .eq('conversation_id', conversationId)
     .eq('profile_id', userId);
-  
+
   if (error) {
     throw new AppError(`Failed to mute conversation: ${error.message}`, 500);
   }
-  
+
   return { success: true };
 };
 
 // Upload message attachment
-export const uploadMessageAttachment = async (messageId, fileData) => {
-  const { file_url, file_name, file_size, mime_type, width, height, duration_seconds, thumbnail_url } = fileData;
-  
-  const { data: attachment, error } = await supabaseAdmin
+export const uploadMessageAttachment = async (messageId, fileData, userId = null) => {
+  const { data: message, error } = await supabaseAdmin
+    .from('messages')
+    .select('id, conversation_id, is_deleted')
+    .eq('id', messageId)
+    .single();
+
+  if (error || !message || message.is_deleted) {
+    throw new NotFoundError('Message');
+  }
+
+  // Membership is required: the service role key bypasses RLS, so without this
+  // check any authenticated user could attach files to someone else's message.
+  if (userId) {
+    await getConversationById(message.conversation_id, userId);
+  }
+
+  const attachment = normalizeAttachment(fileData);
+
+  const { data: created, error: insertError } = await supabaseAdmin
     .from('message_attachments')
     .insert({
       message_id: messageId,
-      file_url,
-      file_name,
-      file_size,
-      mime_type,
-      width,
-      height,
-      duration_seconds,
-      thumbnail_url
+      ...attachment
     })
     .select()
     .single();
-  
-  if (error) {
-    throw new AppError(`Attachment upload failed: ${error.message}`, 500);
+
+  if (insertError) {
+    throw new AppError(`Attachment upload failed: ${insertError.message}`, 500);
   }
-  
-  return attachment;
+
+  return created;
 };
 
 // Get store conversations for seller
@@ -483,13 +645,13 @@ export const getStoreConversations = async (storeId, ownerId, filters = {}, pagi
     .eq('id', storeId)
     .eq('owner_id', ownerId)
     .single();
-  
+
   if (!store) {
     throw new AppError('Store not found or not authorized', 403);
   }
-  
+
   const { status, page = 1, limit = 20 } = filters;
-  
+
   let query = supabaseAdmin
     .from('conversations')
     .select(`
@@ -499,27 +661,32 @@ export const getStoreConversations = async (storeId, ownerId, filters = {}, pagi
         unread_count,
         last_read_at,
         profile:profiles(id, name, avatar_url)
-      ),
-      last_message:messages!last_message_at(*)
+      )
     `, { count: 'exact' })
     .eq('store_id', storeId);
-  
+
   if (status === 'unread') {
     query = query.gt('conversation_members.unread_count', 0);
   }
-  
+
   query = query
-    .order('last_message_at', { ascending: false, nullsLast: true })
+    .order('last_message_at', { ascending: false, nullsFirst: false })
     .range((page - 1) * limit, page * limit - 1);
-  
+
   const { data, error, count } = await query;
-  
+
   if (error) {
     throw new AppError(`Failed to fetch conversations: ${error.message}`, 500);
   }
-  
+
+  const latestMessages = await getLatestMessagesByConversation((data || []).map((c) => c.id));
+  const conversations = (data || []).map((conversation) => ({
+    ...conversation,
+    last_message: latestMessages.get(conversation.id) || null,
+  }));
+
   return {
-    conversations: data,
-    pagination: { page, limit, total: count, totalPages: Math.ceil(count / limit) }
+    conversations,
+    pagination: { page, limit, total: count, totalPages: Math.ceil((count || 0) / limit) }
   };
 };

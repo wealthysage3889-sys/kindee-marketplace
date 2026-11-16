@@ -14,9 +14,26 @@ function readCart() {
   }
 }
 
+// Mirrors backend utils/productPricing.js#resolveEffectivePrice so the cart
+// total and the amount the backend charges can never disagree.
+//   NULL/"" -> regular price, 0 -> regular price (free items are not supported),
+//   0 < d < price -> discount price, d >= price -> regular price.
 function resolvePrice(product) {
-  const price = product.discountPrice ?? product.price;
-  return Number(price) || 0;
+  const price = Number(product.price);
+  const rawDiscount = product.discount_price ?? product.discountPrice;
+  const discount =
+    rawDiscount === null || rawDiscount === undefined || rawDiscount === ""
+      ? null
+      : Number(rawDiscount);
+
+  if (!Number.isFinite(price)) return 0;
+  if (discount === null || !Number.isFinite(discount)) return price;
+  if (discount <= 0 || discount >= price) return price;
+  return discount;
+}
+
+function resolveProductId(product) {
+  return product.id ?? product._id;
 }
 
 function resolveImage(product) {
@@ -54,12 +71,13 @@ export function CartProvider({ children }) {
 
   const addItem = useCallback((product, quantity = 1) => {
     const qty = Math.max(1, Number(quantity) || 1);
+    const productId = resolveProductId(product);
     setItems((prev) => {
-      const existing = prev.find((item) => item.id === product._id);
+      const existing = prev.find((item) => item.id === productId);
       if (existing) {
         const max = existing.stock != null ? existing.stock : Infinity;
         return prev.map((item) =>
-          item.id === product._id
+          item.id === productId
             ? { ...item, quantity: Math.min(item.quantity + qty, max) }
             : item
         );
@@ -71,7 +89,7 @@ export function CartProvider({ children }) {
       return [
         ...prev,
         {
-          id: product._id,
+          id: productId,
           name: product.name,
           price: resolvePrice(product),
           image: resolveImage(product),

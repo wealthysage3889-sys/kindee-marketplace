@@ -6,6 +6,7 @@ import { asyncHandler, AppError } from '../middleware/errorHandler.js';
 import { supabaseAdmin } from '../config/supabase.js';
 import * as orderService from '../services/orderService.js';
 import * as notificationService from '../services/notificationService.js';
+import * as authService from '../services/authService.js';
 import {
   SETTING_COLUMNS,
   normalizeSettingsPayload,
@@ -13,6 +14,12 @@ import {
 } from '../utils/settings.js';
 
 const router = express.Router();
+
+// A raw search term is interpolated into a PostgREST .or() filter, where
+// characters such as , ( ) " \ : are structural. Strip them so user input can
+// only match text and can never alter the filter expression.
+const sanitizeSearch = (value) =>
+  String(value ?? '').replace(/[,()"\\:]/g, ' ').trim();
 
 // Dashboard stats
 router.get('/stats', verifyToken, verifyAdmin, asyncHandler(async (req, res) => {
@@ -129,8 +136,9 @@ router.get('/stores', verifyToken, verifyAdmin, [
   if (filters.is_active !== undefined) query = query.eq('is_active', filters.is_active);
   if (filters.is_verified !== undefined) query = query.eq('is_verified', filters.is_verified);
   if (filters.owner_id) query = query.eq('owner_id', filters.owner_id);
-  if (filters.search) {
-    query = query.or(`name.ilike.%${filters.search}%,slug.ilike.%${filters.search}%`);
+  const storeSearch = sanitizeSearch(filters.search);
+  if (storeSearch) {
+    query = query.or(`name.ilike.%${storeSearch}%,slug.ilike.%${storeSearch}%`);
   }
   
   query = query
@@ -211,8 +219,9 @@ router.get('/products', verifyToken, verifyAdmin, [
   if (filters.store_id) query = query.eq('store_id', filters.store_id);
   if (filters.category_id) query = query.eq('category_id', filters.category_id);
   if (filters.is_active !== undefined) query = query.eq('is_active', filters.is_active);
-  if (filters.search) {
-    query = query.or(`name.ilike.%${filters.search}%,description.ilike.%${filters.search}%`);
+  const productSearch = sanitizeSearch(filters.search);
+  if (productSearch) {
+    query = query.or(`name.ilike.%${productSearch}%,description.ilike.%${productSearch}%`);
   }
   
   query = query
@@ -258,21 +267,23 @@ router.get('/users', verifyToken, verifyAdmin, [
     limit: parseInt(req.query.limit) || 20
   };
   
-  const result = await supabaseAdmin
+let query = supabaseAdmin
     .from('profiles')
     .select('*', { count: 'exact' });
-  
+
   // Apply filters
-  if (filters.role) result.eq('role', filters.role);
-  if (filters.is_active !== undefined) result.eq('is_active', filters.is_active);
-  if (filters.search) {
-    result.or(`name.ilike.%${filters.search}%,email.ilike.%${filters.search}%,phone.ilike.%${filters.search}%`);
+  if (filters.role) query = query.eq('role', filters.role);
+  if (filters.is_active !== undefined) query = query.eq('is_active', filters.is_active);
+  const userSearch = sanitizeSearch(filters.search);
+  if (userSearch) {
+    query = query.or(`name.ilike.%${userSearch}%,email.ilike.%${userSearch}%,phone.ilike.%${userSearch}%`);
   }
-  
-  result.order('created_at', { ascending: false })
+
+  query = query
+    .order('created_at', { ascending: false })
     .range((pagination.page - 1) * pagination.limit, pagination.page * pagination.limit - 1);
-  
-  const { data, error, count } = await result;
+
+  const { data, error, count } = await query;
   
   if (error) {
     throw new AppError(`Failed to fetch users: ${error.message}`, 500);
@@ -289,6 +300,55 @@ router.get('/users', verifyToken, verifyAdmin, [
         totalPages: Math.ceil(count / pagination.limit)
       }
     }
+  });
+}));
+
+// Update user role
+router.patch('/users/:id/role', validateId(), verifyToken, verifyAdmin, [
+  body('role').isIn(['customer', 'seller', 'admin', 'owner', 'courier']).withMessage('Invalid role')
+], validate, asyncHandler(async (req, res) => {
+  const targetUser = await authService.getProfile(req.params.id);
+  if (!targetUser) {
+    throw new AppError('ไม่พบผู้ใช้งาน', 404);
+  }
+
+  if (req.body.role === 'owner' && req.user.role !== 'owner') {
+    throw new AppError('เฉพาะเจ้าของระบบเท่านั้นที่สามารถมอบสิทธิ์ owner ได้', 403);
+  }
+
+  if (targetUser.role === 'owner' && req.user.role !== 'owner') {
+    throw new AppError('ไม่มีสิทธิ์จัดการบัญชีเจ้าของระบบ', 403);
+  }
+
+  const profile = await authService.updateUserRole(req.params.id, req.body.role, req.user.id);
+
+  res.json({
+    success: true,
+    message: 'User role updated',
+    data: profile
+  });
+}));
+
+// Deactivate/delete user
+router.delete('/users/:id', validateId(), verifyToken, verifyAdmin, asyncHandler(async (req, res) => {
+  const targetUser = await authService.getProfile(req.params.id);
+  if (!targetUser) {
+    throw new AppError('ไม่พบผู้ใช้งาน', 404);
+  }
+
+  if (targetUser.role === 'owner' && req.user.role !== 'owner') {
+    throw new AppError('ไม่มีสิทธิ์ลบบัญชีเจ้าของระบบ', 403);
+  }
+
+  if (targetUser.id === req.user.id) {
+    throw new AppError('ไม่สามารถลบบัญชีของตนเองได้', 400);
+  }
+
+  await authService.deactivateAccount(req.params.id);
+
+  res.json({
+    success: true,
+    message: 'ลบผู้ใช้งานเรียบร้อย'
   });
 }));
 

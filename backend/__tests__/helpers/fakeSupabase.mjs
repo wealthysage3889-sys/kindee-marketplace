@@ -108,6 +108,11 @@ export function createFakeSupabase(seed = {}) {
       return list.some((item) => sameValue(item, row[key]));
     }
 
+    if (column.startsWith('eq.')) {
+      const key = column.slice(4);
+      return sameValue(row[key], expected);
+    }
+
     if (column.startsWith('neq.')) {
       const key = column.slice(4);
       return !sameValue(row[key], expected);
@@ -157,6 +162,7 @@ export function createFakeSupabase(seed = {}) {
   const rowsFor = (table) => {
     const filters = Object.entries(state0.filters);
     const orExpr = state0.filters.__or;
+    const orClauses = state0.orClauses || [];
     const rest = filters.filter(([k]) => k !== '__or');
 
     const matchOr = (row) => {
@@ -166,25 +172,62 @@ export function createFakeSupabase(seed = {}) {
         .map((clause) => clause.trim())
         .filter(Boolean)
         .some((clause) => {
+          // Support `col.is.null` (SQL NULL check) in addition to `col.op.value`.
+          const nullMatch = clause.match(/^([a-zA-Z0-9_.]+)\.is\.null$/);
+          if (nullMatch) {
+            const col = nullMatch[1];
+            const actual = row[col];
+            return actual === null || actual === undefined;
+          }
           const m = clause.match(/^([a-zA-Z0-9_.]+)\.(eq|neq|gt|gte|lt|lte)\.(.*)$/);
           if (!m) return false;
-          const [, column, , rawValue] = m;
-          return rowMatches(row, `${column}`, rawValue);
+          const [, column, operator, rawValue] = m;
+          // rowMatches handles `neq.` and comparison operators natively; for `eq`
+          // we pass the bare column name so it falls through to sameValue.
+          if (operator === 'eq') {
+            return rowMatches(row, column, rawValue);
+          }
+          return rowMatches(row, `${operator}.${column}`, rawValue);
         });
     };
 
+    const matchOrClauses = (row) =>
+      orClauses.every((clause) =>
+        String(clause)
+          .split(',')
+          .map((c) => c.trim())
+          .filter(Boolean)
+          .some((c) => {
+            const nullMatch = c.match(/^([a-zA-Z0-9_.]+)\.is\.null$/);
+            if (nullMatch) {
+              const actual = row[nullMatch[1]];
+              return actual === null || actual === undefined;
+            }
+            const m = c.match(/^([a-zA-Z0-9_.]+)\.(eq|neq|gt|gte|lt|lte)\.(.*)$/);
+            if (!m) return false;
+            const [, column, operator, rawValue] = m;
+            if (operator === 'eq') return rowMatches(row, column, rawValue);
+            return rowMatches(row, `${operator}.${column}`, rawValue);
+          })
+      );
+
     return [...tables[table].values()].filter((row) =>
-      rest.every(([column, expected]) => rowMatches(row, column, expected)) && matchOr(row)
+      rest.every(([column, expected]) => rowMatches(row, column, expected)) &&
+      matchOr(row) && matchOrClauses(row)
     );
   };
 
-  // `rowsFor` needs the active builder state; the indirection keeps the builder
-  // object small while still allowing settle() to read the pending filters.
-  let state0 = { filters: {} };
+// `rowsFor` needs the active builder state; the indirection keeps the builder
+    // object small while still allowing settle() to read the pending filters.
+    let state0 = { filters: {}, orClauses: [] };
 
-  const settle = async (table, state) => {
-    const op = state.write?.type ?? 'select';
-    calls.push({ table, op, filters: { ...state.filters }, payload: state.write?.payload });
+    const settle = async (table, state) => {
+      const op = state.write?.type ?? 'select';
+      calls.push({ table, op, filters: { ...state.filters }, payload: state.write?.payload });
+
+      // Carry `.or()` clauses (AND-ed) into the shared state so rowsFor can
+      // apply them after the primary `.or()` filter.
+      state0 = { filters: { ...state.filters }, orClauses: state.orClauses || [] };
 
     if (op === 'insert') {
       const payload = state.write.payload;
@@ -196,6 +239,27 @@ export function createFakeSupabase(seed = {}) {
           created_at: item.created_at || new Date().toISOString(),
         };
         tables[table].set(row.id, row);
+
+        // Simulate database triggers
+        if (table === 'messages' && !row.is_deleted) {
+          // increment_unread_count trigger: increment unread for other members
+          membersOf(row.conversation_id).forEach((m) => {
+            if (m.profile_id !== row.sender_id && !m.left_at) {
+              m.unread_count = (m.unread_count || 0) + 1;
+            }
+          });
+          // update_conversation_last_message trigger
+          const conv = tables.conversations.get(row.conversation_id);
+          if (conv) {
+            conv.last_message_at = row.created_at;
+          }
+        }
+
+        // reset_unread_count trigger: when last_read_at changes on conversation_members
+        if (table === 'conversation_members' && item.last_read_at !== undefined) {
+          row.unread_count = 0;
+        }
+
         return clone(row);
       });
 
@@ -206,9 +270,16 @@ export function createFakeSupabase(seed = {}) {
     }
 
     if (op === 'update') {
-      state0 = state;
+      state0 = { filters: { ...state.filters }, orClauses: state.orClauses || [] };
       const rows = rowsFor(table);
-      rows.forEach((row) => Object.assign(row, clone(state.write.payload)));
+      rows.forEach((row) => {
+        // reset_unread_count trigger: when last_read_at changes, reset unread_count
+        if (table === 'conversation_members' && state.write.payload.last_read_at !== undefined && row.last_read_at !== state.write.payload.last_read_at) {
+          Object.assign(row, clone(state.write.payload), { unread_count: 0 });
+        } else {
+          Object.assign(row, clone(state.write.payload));
+        }
+      });
 
       if (state.single) {
         return { data: rows[0] ? clone(rows[0]) : null, error: rows.length ? null : MISSING_ROW, count: rows.length };
@@ -217,14 +288,14 @@ export function createFakeSupabase(seed = {}) {
     }
 
     if (op === 'delete') {
-      state0 = state;
+      state0 = { filters: { ...state.filters }, orClauses: state.orClauses || [] };
       const rows = rowsFor(table);
       rows.forEach((row) => tables[table].delete(row.id));
       return { data: rows.map(clone), error: null, count: rows.length };
     }
 
     // select
-    state0 = state;
+    state0 = { filters: { ...state.filters }, orClauses: state.orClauses || [] };
     let rows = rowsFor(table);
 
     if (table === 'conversations') {
@@ -270,6 +341,7 @@ export function createFakeSupabase(seed = {}) {
     const state = {
       write: null,
       filters: {},
+      orClauses: [],
       order: null,
       limit: null,
       range: null,
@@ -293,7 +365,16 @@ export function createFakeSupabase(seed = {}) {
       // Minimal `.or("a.eq.x,b.eq.y")` support: matches rows where ANY of the
       // comma-separated `col.op.value` clauses matches. Good enough for the
       // auth lookups (email/phone) the service performs.
-      or: (expression) => { state.filters.__or = String(expression); return builder; },
+      or: (expression) => {
+        // First `.or()` sets `__or`; subsequent ones push to `orClauses` so
+        // they are AND-ed together (PostgREST chains `.or()` with AND).
+        if (!state.filters.__or) {
+          state.filters.__or = String(expression);
+        } else {
+          state.orClauses.push(String(expression));
+        }
+        return builder;
+      },
       order: (column, options = {}) => {
         state.order = {
           column,

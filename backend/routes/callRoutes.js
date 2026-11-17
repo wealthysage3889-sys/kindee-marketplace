@@ -72,9 +72,20 @@ router.post('/:id/end', validateId(), verifyToken, asyncHandler(async (req, res)
   });
 }));
 
+// Cancel call (caller cancels before answer)
+router.post('/:id/cancel', validateId(), verifyToken, asyncHandler(async (req, res) => {
+  const call = await callService.cancelCall(req.params.id, req.user.id);
+
+  res.json({
+    success: true,
+    message: 'Call cancelled',
+    data: call
+  });
+}));
+
 // Get call history
 router.get('/history', verifyToken, [
-  query('status').optional().isIn(['ringing', 'accepted', 'rejected', 'missed', 'ended']),
+  query('status').optional().isIn(['ringing', 'accepted', 'rejected', 'missed', 'ended', 'no_answer', 'cancelled', 'completed', 'failed']),
   query('type').optional().isIn(['voice', 'video']),
   query('page').optional().isInt({ min: 1 }),
   query('limit').optional().isInt({ min: 1, max: 50 })
@@ -165,6 +176,21 @@ router.post('/:id/mute', validateId(), verifyToken, [
   res.json({
     success: true,
     message: req.body.muted ? 'Muted' : 'Unmuted'
+  });
+}));
+
+// Heartbeat — refreshes the calling participant's last-contact timestamp on an
+// accepted call so the backend knows the line is still alive.
+router.post('/:id/heartbeat', validateId(), verifyToken, asyncHandler(async (req, res) => {
+  const ok = await callService.heartbeatCall(req.params.id, req.user.id);
+  
+  if (!ok) {
+    throw new NotFoundError('Active call');
+  }
+  
+  res.json({
+    success: true,
+    message: 'Heartbeat recorded'
   });
 }));
 

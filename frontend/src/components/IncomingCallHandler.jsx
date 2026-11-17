@@ -14,18 +14,40 @@ function resolveCallMode(pathname) {
 }
 
 export default function IncomingCallHandler({ children }) {
-  const { user, isAuthenticated } = useAuth();
+  const { customer, admin } = useAuth();
   const location = useLocation();
   const mode = resolveCallMode(location.pathname);
   const { on, off, joinCall, leaveCall } = useSocket();
   const [incomingCall, setIncomingCall] = useState(null);
   const [showCallUI, setShowCallUI] = useState(false);
+  // The session that owns this layout: admin on /selladmin, customer elsewhere.
+  // A bare token is not enough — the recipient's profile role must authorize
+  // them to receive calls (admin/owner on the admin layout).
+  const session = mode === "admin" ? admin : customer;
+  const isAuthenticated = !!session.token;
+  const isAuthorized = mode === "admin"
+    ? ["admin", "owner"].includes((session.user || {}).role)
+    : isAuthenticated;
+  const userId = session.user?.id || session.user?._id;
   // The socket handler is registered once; it reads the current session/user
   // from refs so an incoming call is never dropped or checked against a stale
   // closure value (this used to silence the modal in the admin/owner session,
   // where `isAuthenticated` in the closure referred to the customer session).
-  const sessionRef = useRef({ mode, isAuthenticated, userId: user?.id || user?._id });
-  sessionRef.current = { mode, isAuthenticated, userId: user?.id || user?._id };
+  const sessionRef = useRef({ mode, isAuthenticated, isAuthorized, userId });
+  sessionRef.current = { mode, isAuthenticated, isAuthorized, userId };
+  // Mirror of the active incoming call + whether the call UI is up, so socket
+  // handlers can act on the current call without being re-registered (and read
+  // through a stale closure) every time state changes.
+  const incomingCallRef = useRef(null);
+  const showCallUIStateRef = useRef(false);
+
+  const clearIncoming = useCallback(() => {
+    ringtone.stop();
+    incomingCallRef.current = null;
+    showCallUIStateRef.current = false;
+    setIncomingCall(null);
+    setShowCallUI(false);
+  }, []);
 
   const handleIncomingCall = useCallback((callData) => {
     console.info("[call] IncomingCallHandler incomingCall", { callId: callData?.call_id, from: callData?.caller_id, hasConversation: !!callData?.conversation_id });
@@ -33,8 +55,8 @@ export default function IncomingCallHandler({ children }) {
     const session = sessionRef.current;
 
     // Don't show if already in a call
-    if (showCallUI) {
-      console.warn("[call] IncomingCallHandler ignored (already in UI)", { callId: callData?.call_id });
+    if (showCallUIStateRef.current || incomingCallRef.current) {
+      console.warn("[call] IncomingCallHandler ignored (already in a call)", { callId: callData?.call_id });
       return;
     }
 
@@ -50,7 +72,7 @@ export default function IncomingCallHandler({ children }) {
     joinCall(callData.call_id);
     console.info("[call] IncomingCallHandler joined call room", { callId: callData?.call_id });
 
-    setIncomingCall({
+    const next = {
       callId: callData.call_id,
       callerId: callData.caller_id,
       callerName: callData.caller_name,
@@ -58,30 +80,55 @@ export default function IncomingCallHandler({ children }) {
       conversationId: callData.conversation_id,
       storeOrderId: callData.store_order_id,
       callType: callData.call_type || "voice"
-    });
+    };
+    incomingCallRef.current = next;
+    setIncomingCall(next);
 
     // Play incoming-call ringtone (loops until stopped)
     ringtone.start(callData.call_id);
 
     // Show browser notification if permission granted
     showBrowserNotification(callData);
-  }, [showCallUI, joinCall]);
+  }, [joinCall]);
 
+  // Called when the call ends/closes for any reason (local close, remote
+  // hang-up, or VoiceCallUI teardown). Stops the ringtone, leaves the call room
+  // and clears the modal.
   const handleCallEnded = useCallback(() => {
-    console.info("[call] IncomingCallHandler call ended/closed", { callId: incomingCall?.callId });
-    if (incomingCall) {
-      leaveCall(incomingCall.callId);
+    console.info("[call] IncomingCallHandler call ended/closed", { callId: incomingCallRef.current?.callId });
+    if (incomingCallRef.current) {
+      leaveCall(incomingCallRef.current.callId);
     }
-    setIncomingCall(null);
-    setShowCallUI(false);
-  }, [incomingCall, leaveCall]);
+    clearIncoming();
+  }, [leaveCall, clearIncoming]);
+
+  // A socket callEnded/callRejected for the incoming call must close the modal
+  // and stop the ringtone even before VoiceCallUI is mounted (caller cancelled
+  // while we were still ringing). Events for other calls are ignored by call_id.
+  const makeRemoteEndHandler = useCallback((eventName) => (payload) => {
+    const endedCallId = payload?.call_id ?? payload?.callId;
+    const current = incomingCallRef.current;
+    if (!current) return;
+    if (endedCallId && String(endedCallId) !== String(current.callId)) {
+      console.info(`[call] ${eventName} ignored (different call)`, { active: current.callId, event: endedCallId });
+      return;
+    }
+    console.info(`[call] ${eventName} -> clearing incoming modal`, { callId: current.callId, status: payload?.status });
+    // VoiceCallUI (if mounted) also handles its own teardown; clearing here
+    // guarantees the ringtone and modal close even when it is not mounted.
+    leaveCall(current.callId);
+    clearIncoming();
+  }, [leaveCall, clearIncoming]);
 
   const handleAccept = useCallback(async () => {
-    const callId = incomingCall?.callId;
+    const callId = incomingCallRef.current?.callId;
     console.info("[call] IncomingCallHandler accept clicked", { callId, mode });
     if (!callId) return;
     // Mount VoiceCallUI first so it joins/subscribes before the caller sends the offer.
+    showCallUIStateRef.current = true;
     setShowCallUI(true);
+    // Stop the ringtone immediately on accept; VoiceCallUI takes over media.
+    ringtone.stop();
     try {
       // Accept must be called with the same session token that owns this layout
       // (admin on /selladmin, customer elsewhere) so the backend authorizes the callee.
@@ -91,30 +138,50 @@ export default function IncomingCallHandler({ children }) {
     } catch (err) {
       console.error("[call] IncomingCallHandler accept failed", { callId, mode, error: err?.message || String(err) });
     }
-  }, [incomingCall, mode]);
+  }, [mode]);
 
   const handleReject = useCallback(async () => {
-    console.info("[call] IncomingCallHandler reject clicked", { callId: incomingCall?.callId });
-    if (incomingCall) {
+    const current = incomingCallRef.current;
+    console.info("[call] IncomingCallHandler reject clicked", { callId: current?.callId });
+    ringtone.stop();
+    if (current) {
       try {
-        await callAPI.reject(incomingCall.callId, mode);
+        await callAPI.reject(current.callId, mode);
       } catch (err) {
-        console.error("[call] IncomingCallHandler reject error", { callId: incomingCall?.callId, error: err?.message || String(err) });
+        console.error("[call] IncomingCallHandler reject error", { callId: current.callId, error: err?.message || String(err) });
       }
-      leaveCall(incomingCall.callId);
+      leaveCall(current.callId);
     }
-    setIncomingCall(null);
-  }, [incomingCall, leaveCall, mode]);
+    clearIncoming();
+  }, [leaveCall, clearIncoming, mode]);
+
+  const handleRemoteCallEnded = useCallback((payload) => makeRemoteEndHandler("callEnded")(payload), [makeRemoteEndHandler]);
+  const handleRemoteCallRejected = useCallback((payload) => makeRemoteEndHandler("callRejected")(payload), [makeRemoteEndHandler]);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
-    
+    // Only register the listener for the session that owns this layout. An
+    // admin on /selladmin must receive calls even when no customer session
+    // exists, and only when the admin/owner role authorizes them.
+    if (!isAuthenticated || !isAuthorized) return;
+
     on("incomingCall", handleIncomingCall);
-    
+    on("callEnded", handleRemoteCallEnded);
+    on("callRejected", handleRemoteCallRejected);
+
     return () => {
       off("incomingCall", handleIncomingCall);
+      off("callEnded", handleRemoteCallEnded);
+      off("callRejected", handleRemoteCallRejected);
     };
-  }, [isAuthenticated, on, off, handleIncomingCall]);
+  }, [isAuthenticated, isAuthorized, on, off, handleIncomingCall, handleRemoteCallEnded, handleRemoteCallRejected]);
+
+  // Stop the ringtone on unmount (route change / logout) so it can never keep
+  // looping after this handler is gone.
+  useEffect(() => {
+    return () => {
+      ringtone.stop();
+    };
+  }, []);
 
   // Request notification permission on mount
   useEffect(() => {

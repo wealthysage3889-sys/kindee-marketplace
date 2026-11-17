@@ -199,6 +199,15 @@
   transform: scale(1.1);
 }
 
+.btn-cancel {
+  background: #c62828;
+}
+
+.btn-cancel:hover {
+  background: #b71c1c;
+  transform: scale(1.1);
+}
+
 .call-actions svg {
   width: 28px;
   height: 28px;

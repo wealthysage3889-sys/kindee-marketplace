@@ -26,6 +26,7 @@ const calleeId = '22222222-2222-4222-8222-222222222222';
 const outsiderId = '33333333-3333-4333-8333-333333333333';
 const conversationId = '44444444-4444-4444-8444-444444444444';
 const otherConversationId = '55555555-5555-4555-8555-555555555555';
+const acceptCallId = '66666666-6666-4666-8666-666666666666';
 
 const TOKENS = {
   [callerId]: 'caller-session-token',
@@ -221,4 +222,79 @@ test('POST /calls without a token is rejected with 401', async () => {
     body: { calleeId, conversationId },
   });
   assert.equal(status, 401);
+});
+
+test('POST /calls/:id/accept by the callee (admin/owner) transitions ringing -> accepted', async () => {
+  await supabaseAdmin.from('call_history').insert({
+    id: acceptCallId,
+    caller_id: callerId,
+    callee_id: calleeId,
+    conversation_id: conversationId,
+    status: 'ringing',
+    started_at: new Date().toISOString(),
+  });
+
+  const { status, data } = await api(`/${acceptCallId}/accept`, {
+    token: TOKENS[calleeId],
+    method: 'POST',
+  });
+
+  assert.equal(status, 200);
+  assert.equal(data.data.status, 'accepted');
+  assert.equal(data.data.callee_id, calleeId);
+  assert.ok(data.data.answered_at, 'answered_at must be set when accepted');
+});
+
+test('POST /calls/:id/accept by the caller (not the callee) is rejected with 404', async () => {
+  await supabaseAdmin.from('call_history').insert({
+    id: acceptCallId,
+    caller_id: callerId,
+    callee_id: calleeId,
+    conversation_id: conversationId,
+    status: 'ringing',
+    started_at: new Date().toISOString(),
+  });
+
+  const { status } = await api(`/${acceptCallId}/accept`, {
+    token: TOKENS[callerId],
+    method: 'POST',
+  });
+
+  assert.equal(status, 404);
+});
+
+test('POST /calls/:id/accept without a token is rejected with 401', async () => {
+  await supabaseAdmin.from('call_history').insert({
+    id: acceptCallId,
+    caller_id: callerId,
+    callee_id: calleeId,
+    conversation_id: conversationId,
+    status: 'ringing',
+    started_at: new Date().toISOString(),
+  });
+
+  const { status } = await api(`/${acceptCallId}/accept`, {
+    method: 'POST',
+  });
+
+  assert.equal(status, 401);
+});
+
+test('POST /calls/:id/accept an already accepted call is rejected with 409', async () => {
+  await supabaseAdmin.from('call_history').insert({
+    id: acceptCallId,
+    caller_id: callerId,
+    callee_id: calleeId,
+    conversation_id: conversationId,
+    status: 'accepted',
+    started_at: new Date().toISOString(),
+    answered_at: new Date().toISOString(),
+  });
+
+  const { status } = await api(`/${acceptCallId}/accept`, {
+    token: TOKENS[calleeId],
+    method: 'POST',
+  });
+
+  assert.equal(status, 409);
 });

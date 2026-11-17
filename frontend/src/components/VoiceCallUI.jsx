@@ -17,8 +17,14 @@ export default function VoiceCallUI({
   callerName,
   callerAvatar
 }) {
-  const { token, user } = useAuth();
-  const { sendCallSignal, joinCall, leaveCall, on, off } = useSocket();
+  const { customer, admin } = useAuth();
+  const { sendCallSignal, joinCall, leaveCall, on, off, sendHeartbeat, connected } = useSocket();
+  
+  // Use the session that owns this call leg so the "ignore own signal" guard
+  // compares against the real recipient (admin/owner on /selladmin, customer
+  // elsewhere) instead of always the customer session.
+  const session = callMode === "admin" ? admin : customer;
+  const user = session.user;
   
   const [callId, setCallId] = useState(initialCallId);
   const [status, setStatus] = useState("connecting");
@@ -42,6 +48,16 @@ export default function VoiceCallUI({
   const answerAppliedRef = useRef(false);
   const signalLockRef = useRef(false);
   
+  // Heartbeat: keeps the accepted call alive on the backend. Each side sends
+  // a heartbeat every HEARTBEAT_INTERVAL_MS. The backend ends the call only
+  // when BOTH sides are silent beyond HEARTBEAT_STALE_MS, so a temporary
+  // network blip on one side never cuts an active conversation.
+  const HEARTBEAT_INTERVAL_MS = 15000;
+  const HEARTBEAT_STALE_MS = 45000;
+  const heartbeatIntervalRef = useRef(null);
+  const heartbeatLastSentRef = useRef(0);
+  const heartbeatStartedRef = useRef(false);
+  
   // Signal handshake is initiated from socket handlers / mount effect so these
   // callbacks are only invoked through refs, never during render.
   const createOfferRef = useRef(null);
@@ -60,6 +76,25 @@ export default function VoiceCallUI({
       clearInterval(durationIntervalRef.current);
       durationIntervalRef.current = null;
     }
+  }, []);
+
+  const startHeartbeat = useCallback(() => {
+    if (heartbeatIntervalRef.current) return;
+    if (!callId) return;
+    heartbeatLastSentRef.current = Date.now();
+    sendHeartbeat(callId);
+    heartbeatIntervalRef.current = setInterval(() => {
+      heartbeatLastSentRef.current = Date.now();
+      sendHeartbeat(callId);
+    }, HEARTBEAT_INTERVAL_MS);
+  }, [callId, sendHeartbeat]);
+
+  const stopHeartbeat = useCallback(() => {
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
+    }
+    heartbeatStartedRef.current = false;
   }, []);
 
   // Stop the incoming-call ringtone. Declared before every consumer below so no callback
@@ -316,10 +351,15 @@ export default function VoiceCallUI({
 
   const cleanup = useCallback(() => {
     stopDurationTimer();
+    stopHeartbeat();
     stopRingtone();
     stopRingback();
     
     if (peerConnectionRef.current) {
+      peerConnectionRef.current.onicecandidate = null;
+      peerConnectionRef.current.ontrack = null;
+      peerConnectionRef.current.oniceconnectionstatechange = null;
+      peerConnectionRef.current.onconnectionstatechange = null;
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
     }
@@ -328,17 +368,25 @@ export default function VoiceCallUI({
       localStreamRef.current.getTracks().forEach(track => track.stop());
       localStreamRef.current = null;
     }
-    
-    setLocalStream(null);
-    setRemoteStream(null);
-    setStatus("ended");
+
+    // Detach and reset the media elements so no track can keep playing after the
+    // UI is gone. The remote <audio> is what actually renders the other party's
+    // voice; leaving its srcObject attached is what caused lingering audio.
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.pause?.();
+      remoteAudioRef.current.srcObject = null;
+    }
+    if (localAudioRef.current) {
+      localAudioRef.current.pause?.();
+      localAudioRef.current.srcObject = null;
+    }
     pendingIceCandidatesRef.current = [];
     mediaReadyRef.current = false;
     offerSentRef.current = false;
     answerSentRef.current = false;
     answerAppliedRef.current = false;
     signalLockRef.current = false;
-  }, [stopDurationTimer, stopRingtone, stopRingback]);
+  }, [stopDurationTimer, stopHeartbeat, stopRingtone, stopRingback]);
 
   const terminateCall = useCallback(() => {
     cleanup();
@@ -367,28 +415,51 @@ export default function VoiceCallUI({
     };
 
     const onCallEndedSocket = (callData) => {
+      // Ignore events for a different call (late delivery / multi-tab / reconnect):
+      // only tear down when the event targets the call this UI owns. A payload
+      // without a call_id is a call-room broadcast for a room we joined for this
+      // exact call, so it applies.
+      const endedCallId = callData?.call_id ?? callData?.callId;
+      if (endedCallId && callId && String(endedCallId) !== String(callId)) {
+        console.info("[call] callEnded ignored (different call)", { active: callId, event: endedCallId });
+        return;
+      }
       console.info("[call] callEnded event", { callId, status: callData?.status, endedBy: callData?.ended_by || callData?.rejected_by });
+      // Every callEnded status is terminal for this leg: completed (remote hung
+      // up an accepted call), cancelled/no_answer (caller cancelled / callee did
+      // not answer), rejected, ended, missed, failed. In all cases we must stop
+      // audio, close the peer connection, stop every MediaStreamTrack and close
+      // the UI — otherwise the remote side keeps hearing audio after the line is
+      // gone. Previously only a subset of statuses triggered teardown, which left
+      // the other party's audio playing.
       stopRingtone();
       stopRingback();
-      const terminal = callData && ["ended","missed","rejected","failed"].includes(callData.status);
-      if (terminal) {
-        // Do NOT tear down on "accepted": that means the callee picked up and
-        // the peer connection is still being established.
-        terminateCallRef.current();
-      }
+      stopHeartbeat();
+      terminateCallRef.current();
     };
 
     const handleCallAccepted = (payload) => {
+      const acceptedCallId = payload?.call_id ?? payload?.callId;
+      if (acceptedCallId && callId && String(acceptedCallId) !== String(callId)) {
+        console.info("[call] callAccepted ignored (different call)", { active: callId, event: acceptedCallId });
+        return;
+      }
       console.info("[call] callAccepted event", { callId, acceptedBy: payload?.accepted_by, initiator: isInitiatorRef.current });
       stopRingtone();
       stopRingback();
       setStatus("accepted");
+      startHeartbeat();
       if (isInitiatorRef.current && !offerSentRef.current) {
         createOfferRef.current();
       }
     };
 
     const handleCallRejected = (payload) => {
+      const rejectedCallId = payload?.call_id ?? payload?.callId;
+      if (rejectedCallId && callId && String(rejectedCallId) !== String(callId)) {
+        console.info("[call] callRejected ignored (different call)", { active: callId, event: rejectedCallId });
+        return;
+      }
       console.info("[call] callRejected event", { callId, rejectedBy: payload?.rejected_by });
       stopRingtone();
       stopRingback();
@@ -409,8 +480,23 @@ export default function VoiceCallUI({
       off("callRejected", handleCallRejected);
       stopRingtone();
       stopRingback();
+      stopHeartbeat();
+      stopDurationTimer();
     };
-  }, [callId, initialCallId, user?.id, on, off, handleSignal, playRingtone, stopRingtone, stopRingback]);
+  }, [callId, initialCallId, user?.id, on, off, handleSignal, playRingtone, stopRingtone, stopRingback, sendHeartbeat, startHeartbeat, stopHeartbeat]);
+
+  // On socket reconnect while in an accepted call, verify the call is still
+  // accepted before resuming heartbeats. If the backend ended it while we were
+  // disconnected, tear down the UI instead of resuming.
+  useEffect(() => {
+    if (!connected || status !== "accepted" || !callId) return;
+    callAPI.getById(callId).then(({ data }) => {
+      if (!data || data.status !== "accepted") {
+        stopHeartbeat();
+        terminateCallRef.current();
+      }
+    }).catch(() => {});
+  }, [connected, callId, status, callAPI, stopHeartbeat]);
 
   // Initialize call
   useEffect(() => {
@@ -443,7 +529,7 @@ export default function VoiceCallUI({
       cleanup();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialCallId, calleeId, joinCall, leaveCall, prepareMediaAndPC, cleanup]);
+  }, [initialCallId, calleeId, joinCall, leaveCall, prepareMediaAndPC, cleanup, stopHeartbeat]);
 
   const initiateCall = async () => {
     try {
@@ -462,14 +548,16 @@ setCallId(result.data.id);
       console.info("[call] initiated", { callId: result.data.id, status: result.data?.status });
       // Start the outgoing ringback tone immediately after the backend
       // confirms the call was created in "ringing" state. It loops until the
-      // callee accepts/rejects/ends the call or the line expires.
-      playRingback();
+      // callee accepts/rejects/ends the call or the line expires. Bound to the
+      // actual call id returned by the API (not the component state, which is
+      // still null at this point because setState is async).
+      ringback.start(result.data.id);
       // createOffer is triggered by the callAccepted socket event after
       // the callee picks up.
     } catch (err) {
       console.error("[call] initiate failed", { error: err?.message || String(err), status: err?.status });
       stopRingback();
-      setError(err.message || "ไม่สามารถtelefonได้");
+      setError(err.message || "ไม่สามารถ initiate สายได้");
       onClose?.();
     }
   };
@@ -480,6 +568,7 @@ setCallId(result.data.id);
       stopRingtone();
       await callAPI.accept(callId, callMode);
       setStatus("accepted");
+      startHeartbeat();
       console.info("[call] accepted", { callId });
       // Media + peer connection are prepared in the mount effect above.
       // The offer arrives via handleSignal -> createAnswer.
@@ -511,6 +600,30 @@ setCallId(result.data.id);
       console.info("[call] end requested", { callId });
     } catch (err) {
       console.error("[call] end failed", { callId, error: err?.message || String(err) });
+    } finally {
+      terminateCall();
+    }
+  };
+
+  // Cancel a call the caller started, before the callee answers. The backend
+  // transitions ringing -> cancelled and emits callEnded to the callee so their
+  // incoming-call modal and ringtone stop immediately.
+  const cancelCall = async () => {
+    if (!callId) {
+      // No active call id yet (e.g. still awaiting the initiate response): just
+      // close the UI locally; there is nothing on the backend to cancel.
+      terminateCall();
+      return;
+    }
+    try {
+      console.info("[call] cancelling", { callId });
+      stopRingback();
+      await callAPI.cancel(callId, callMode);
+      console.info("[call] cancel requested", { callId });
+    } catch (err) {
+      // A 409 means the callee already accepted/ended — the callEnded event will
+      // tear us down anyway, so treat cancel as best-effort.
+      console.info("[call] cancel best-effort", { callId, error: err?.message || String(err) });
     } finally {
       terminateCall();
     }
@@ -552,6 +665,21 @@ setCallId(result.data.id);
           </div>
           <h3>กำลังเชื่อมต่อ...</h3>
           <p>{callerName}</p>
+
+          {/* The initiator (caller) may cancel before the callee picks up. This
+              sends cancelCall -> the backend emits callEnded(cancelled) to the
+              callee, whose modal + ringtone stop immediately. */}
+          {calleeId && (
+            <div className="call-actions">
+               <button className="btn-cancel" onClick={cancelCall}>
+                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                   <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"></path>
+                   <line x1="2" y1="2" x2="22" y2="22"></line>
+                 </svg>
+                 ยกเลิกการโทร
+               </button>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -572,19 +700,33 @@ setCallId(result.data.id);
           <p>{callerName}</p>
           
           <div className="call-actions">
-            <button className="btn-accept" onClick={acceptCall}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
-              </svg>
-              รับสาย
-            </button>
-            <button className="btn-reject" onClick={rejectCall}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
-                <line x1="12" y1="2" x2="12" y2="22"></line>
-              </svg>
-              ปฏิเสธ
-            </button>
+            {calleeId ? (
+              // Outgoing (caller) side: show cancel call button while ringing.
+              <button className="btn-cancel" onClick={cancelCall}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"></path>
+                  <line x1="2" y1="2" x2="22" y2="22"></line>
+                </svg>
+                ยกเลิกการโทร
+              </button>
+            ) : (
+              // Incoming (callee) side: accept / reject.
+              <>
+                <button className="btn-accept" onClick={acceptCall}>
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
+                  </svg>
+                  รับสาย
+                </button>
+                <button className="btn-reject" onClick={rejectCall}>
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+                    <line x1="12" y1="2" x2="12" y2="22"></line>
+                  </svg>
+                  ปฏิเสธ
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -644,8 +786,9 @@ setCallId(result.data.id);
             onClick={endCall}
             title="วางสาย"
           >
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"></path>
+              <line x1="2" y1="2" x2="22" y2="22"></line>
             </svg>
           </button>
         </div>

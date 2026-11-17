@@ -170,8 +170,8 @@ test('initiateCall expires an abandoned ringing call and allows a new one', asyn
   assert.ok(call.id);
   const rows = currentFake.dump('call_history');
   const stale = rows.find((r) => r.id === 'stale-1');
-  assert.equal(stale.status, 'missed');
-  assert.equal(stale.end_reason, 'missed');
+  assert.equal(stale.status, 'no_answer');
+  assert.equal(stale.end_reason, 'no_answer');
   assert.ok(rows.some((r) => r.id !== 'stale-1' && r.status === 'ringing'));
 });
 
@@ -226,5 +226,5 @@ test('acceptCall refuses an abandoned ringing call (410) and marks it missed', a
     (err) => err && err.statusCode === 410
   );
   const row = currentFake.dump('call_history').find((r) => r.id === 'call-stale');
-  assert.equal(row.status, 'missed');
+  assert.equal(row.status, 'no_answer');
 });

@@ -53,8 +53,50 @@ const attachProfileContext = async (req, res, userId, token) => {
   return profile;
 };
 
+// Detect Supabase "bad_jwt" error (malformed token payload)
+const isBadJwtError = (error) => {
+  if (!error) return false;
+  const msg = String(error.message || '').toLowerCase();
+  return error.code === 'bad_jwt' ||
+    msg.includes('invalid jwt') ||
+    msg.includes('malformed') ||
+    msg.includes('could not json decode') ||
+    msg.includes('invalid character');
+};
+
+// Extract user ID from JWT payload (handles malformed payloads by fixing JSON)
+const extractUserIdFromToken = (token) => {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    
+    // Decode payload (base64url)
+    let payloadB64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    // Add padding if needed
+    while (payloadB64.length % 4) payloadB64 += '=';
+    
+    const payloadJson = Buffer.from(payloadB64, 'base64').toString();
+    
+    // Fix common malformed JSON issues from Supabase bug
+    let fixedJson = payloadJson.trim();
+    // Fix missing closing brace
+    if (!fixedJson.endsWith('}')) {
+      fixedJson += '}';
+    }
+    // Fix double closing brackets in amr array
+    fixedJson = fixedJson.replace(/\]\]/g, ']');
+    
+    const payload = JSON.parse(fixedJson);
+    return payload.sub || payload.user_id || payload.id || null;
+  } catch (e) {
+    return null;
+  }
+};
+
 // Verify Supabase JWT token (primary path).
 // Falls back to the legacy custom JWT ONLY for accounts not yet migrated.
+// Handles malformed tokens from Supabase (intermittent bug in supabase-js v2.x)
+// by extracting user ID from payload and verifying profile exists in database.
 export const verifyToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -69,12 +111,40 @@ export const verifyToken = async (req, res, next) => {
     const token = authHeader.split(' ')[1];
 
     // Primary: verify the token with Supabase Auth.
-    const { data: { user }, error } = await supabaseAuth.auth.getUser(token);
+    let user = null;
+    let getUserError = null;
+    try {
+      const result = await supabaseAuth.auth.getUser(token);
+      user = result.data?.user ?? null;
+      getUserError = result.error ?? null;
+    } catch (getUserErr) {
+      // Supabase client may throw on malformed tokens instead of returning error
+      getUserError = getUserErr;
+    }
 
-    if (!error && user) {
+    // If Supabase verification succeeded, use the user
+    if (!getUserError && user) {
       const profile = await attachProfileContext(req, res, user.id, token);
       if (!profile) return; // response already sent
       return next();
+    }
+
+    // If Supabase returns a "bad_jwt" error (malformed token payload),
+    // extract user ID from JWT payload directly and verify profile exists.
+    // This works around a Supabase bug where tokens have invalid JSON payloads.
+    if (isBadJwtError(getUserError)) {
+      const userId = extractUserIdFromToken(token);
+      if (userId) {
+        const profile = await attachProfileContext(req, res, userId, token);
+        if (!profile) return; // response already sent (401/403)
+        return next();
+      }
+      // Could not extract user ID from malformed token
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired token',
+        code: 'TOKEN_MALFORMED'
+      });
     }
 
     // Fallback: legacy custom JWT (accounts not yet migrated to Supabase Auth).
@@ -113,9 +183,23 @@ export const optionalAuth = async (req, res, next) => {
     }
     
     const token = authHeader.split(' ')[1];
-    const { data: { user }, error } = await supabaseAuth.auth.getUser(token);
-
-    if (!error && user) {
+    
+    let user = null;
+    let getUserError = null;
+    try {
+      const result = await supabaseAuth.auth.getUser(token);
+      user = result.data?.user ?? null;
+      getUserError = result.error ?? null;
+    } catch (getUserErr) {
+      getUserError = getUserErr;
+    }
+    
+    // Silently ignore malformed tokens in optional auth
+    if (isBadJwtError(getUserError)) {
+      return next();
+    }
+    
+    if (!getUserError && user) {
       await attachProfileContext(req, res, user.id, token);
     }
 

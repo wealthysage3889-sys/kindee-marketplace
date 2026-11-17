@@ -6,17 +6,25 @@ import "./CallHistory.css";
 
 const STATUS_LABELS = {
   ringing: "กำลังโทร",
-  accepted: "เชื่อมต่อแล้ว",
-  rejected: "ปฏิเสธ",
-  missed: "ไม่ได้รับ",
+  accepted: "กำลังสนทนา",
+  completed: "สนทนาสำเร็จ",
+  rejected: "ปฏิเสธสาย",
+  missed: "สายที่ไม่ได้รับ",
+  no_answer: "ไม่ได้รับสาย",
+  cancelled: "ยกเลิกการโทร",
+  failed: "โทรไม่สำเร็จ",
   ended: "สิ้นสุด"
 };
 
 const STATUS_ICONS = {
   ringing: "📞",
   accepted: "✅",
+  completed: "✅",
   rejected: "❌",
   missed: "📵",
+  no_answer: "🔕",
+  cancelled: "🚫",
+  failed: "⚠️",
   ended: "📞"
 };
 
@@ -98,10 +106,12 @@ export default function CallHistory() {
         >
           <option value="">ทุกสถานะ</option>
           <option value="ringing">กำลังโทร</option>
-          <option value="accepted">เชื่อมต่อแล้ว</option>
-          <option value="rejected">ปฏิเสธ</option>
-          <option value="missed">ไม่ได้รับ</option>
-          <option value="ended">สิ้นสุด</option>
+          <option value="accepted">กำลังสนทนา</option>
+          <option value="completed">สนทนาสำเร็จ</option>
+          <option value="no_answer">ไม่ได้รับสาย</option>
+          <option value="rejected">ปฏิเสธสาย</option>
+          <option value="cancelled">ยกเลิกการโทร</option>
+          <option value="failed">โทรไม่สำเร็จ</option>
         </select>
 
         <select

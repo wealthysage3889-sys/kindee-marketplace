@@ -309,7 +309,7 @@ export default function SellAdminMessages() {
                         {lastMsg?.content || "ไม่มีข้อความ"}
                       </span>
                       {unreadCount > 0 && (
-                        <span className="chat-badge">{unreadCount}</span>
+                        <span className="chat-badge">{unreadCount > 99 ? "99+" : unreadCount}</span>
                       )}
                     </div>
                   </div>

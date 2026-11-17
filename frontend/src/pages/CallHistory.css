@@ -169,8 +169,12 @@
 
 .call-status.status-ringing { background: #fff3e0; color: #ef6c00; }
 .call-status.status-accepted { background: #e3f2fd; color: #1976d2; }
+.call-status.status-completed { background: #e8f5e9; color: #2e7d32; }
 .call-status.status-rejected { background: #ffebee; color: #c62828; }
 .call-status.status-missed { background: #fce4ec; color: #c2185b; }
+.call-status.status-no_answer { background: #fff3e0; color: #e65100; }
+.call-status.status-cancelled { background: #f5f5f5; color: #757575; }
+.call-status.status-failed { background: #ffebee; color: #b71c1c; }
 .call-status.status-ended { background: #eceff1; color: #455a64; }
 
 .call-meta {
@@ -340,8 +344,12 @@
 
 .detail-status.status-ringing { background: #fff3e0; color: #ef6c00; }
 .detail-status.status-accepted { background: #e3f2fd; color: #1976d2; }
+.detail-status.status-completed { background: #e8f5e9; color: #2e7d32; }
 .detail-status.status-rejected { background: #ffebee; color: #c62828; }
 .detail-status.status-missed { background: #fce4ec; color: #c2185b; }
+.detail-status.status-no_answer { background: #fff3e0; color: #e65100; }
+.detail-status.status-cancelled { background: #f5f5f5; color: #757575; }
+.detail-status.status-failed { background: #ffebee; color: #b71c1c; }
 .detail-status.status-ended { background: #eceff1; color: #455a64; }
 
 .detail-grid {

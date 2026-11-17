@@ -62,6 +62,8 @@ export function SocketProvider({ children }) {
     const onReconnect = (attempt) => {
       console.log("Socket reconnected after attempt:", attempt);
       setConnected(anyConnected());
+      // After reconnect, components that own a call will re-check call status
+      // via their own effect before resuming heartbeats.
     };
 
     const onConnectError = (error) => {
@@ -118,6 +120,7 @@ export function SocketProvider({ children }) {
     const onIncomingCall = (callData) => setActiveCall(callData);
     const onCallEnded = () => setActiveCall(null);
     const onCallSignal = () => {};
+    const onCallHeartbeat = () => {}; // Ack handled by backend DB update
 
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
@@ -134,6 +137,7 @@ export function SocketProvider({ children }) {
     socket.on("incomingCall", onIncomingCall);
     socket.on("callEnded", onCallEnded);
     socket.on("callSignal", onCallSignal);
+    socket.on("callHeartbeat", onCallHeartbeat);
     socket.on("notification", onNotification);
 
     return () => {
@@ -152,6 +156,7 @@ export function SocketProvider({ children }) {
       socket.off("incomingCall", onIncomingCall);
       socket.off("callEnded", onCallEnded);
       socket.off("callSignal", onCallSignal);
+      socket.off("callHeartbeat", onCallHeartbeat);
       socket.off("notification", onNotification);
     };
   }, []);
@@ -277,6 +282,10 @@ export function SocketProvider({ children }) {
     eachSocket((socket) => socket.emit("callSignal", { callId, signal }));
   }, []);
 
+  const sendHeartbeat = useCallback((callId) => {
+    eachSocket((socket) => socket.emit("callHeartbeat", { callId }));
+  }, []);
+
   const sendCourierLocation = useCallback((deliveryId, coordinates, metadata) => {
     eachSocket((socket) => socket.emit("courierLocationUpdate", { deliveryId, coordinates, metadata }));
   }, []);
@@ -322,6 +331,7 @@ export function SocketProvider({ children }) {
     startTyping,
     stopTyping,
     sendCallSignal,
+    sendHeartbeat,
     sendCourierLocation,
     on,
     off,

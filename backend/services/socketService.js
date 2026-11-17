@@ -2,10 +2,12 @@ import { Server } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import { supabaseAdmin, createUserClient } from '../config/supabase.js';
 import { JWT_SECRET } from '../middleware/auth.js';
+import { heartbeatCall, expireStaleAcceptedCalls } from './callService.js';
 
 let io = null;
 const userSockets = new Map(); // userId -> Set of socketIds
 const socketUsers = new Map(); // socketId -> userId
+const userDisconnectAt = new Map(); // userId -> timestamp of last disconnect (grace period tracking)
 
 const initialize = (server) => {
   io = new Server(server, {
@@ -218,6 +220,17 @@ const initialize = (server) => {
       socket.join(`call_${callId}`);
     });
     
+    // Heartbeat: participant refreshes their last-contact timestamp on an accepted call.
+    socket.on('callHeartbeat', async ({ callId }) => {
+      if (!callId) return;
+      const recorded = await heartbeatCall(callId, userId);
+      if (recorded) {
+        // A heartbeat from one side keeps the call alive; clear any pending
+        // disconnect-based expiry for this user since they are back in contact.
+        userDisconnectAt.delete(userId);
+      }
+    });
+    
     socket.on('leaveCall', (callId) => {
       if (!callId) return;
       socket.leave(`call_${callId}`);
@@ -252,6 +265,15 @@ const initialize = (server) => {
         userSocketSet.delete(socket.id);
         if (userSocketSet.size === 0) {
           userSockets.delete(userId);
+          // Record disconnect time so the grace-period expiry can decide
+          // whether to end accepted calls this user participates in.
+          userDisconnectAt.set(userId, Date.now());
+          // After the heartbeat stale window, check if any accepted calls
+          // involving this user should be ended (both sides silent).
+          setTimeout(() => {
+            userDisconnectAt.delete(userId);
+            expireStaleAcceptedCalls().catch(() => {});
+          }, Number(process.env.CALL_HEARTBEAT_STALE_MS) || 45 * 1000);
         }
       }
       socketUsers.delete(socket.id);

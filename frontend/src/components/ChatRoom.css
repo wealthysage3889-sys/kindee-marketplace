@@ -352,7 +352,7 @@
   background: #fafafa;
   flex: 0 0 auto;
   z-index: 10;
-  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .selected-files {
@@ -491,6 +491,6 @@
   }
   
   .chat-input-area {
-    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 }

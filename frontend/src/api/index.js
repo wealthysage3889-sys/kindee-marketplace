@@ -32,8 +32,37 @@ export function removeToken(mode = "customer") {
   localStorage.removeItem(keysFor(mode).token);
 }
 
+// Refresh access token for the given mode
+async function refreshAccessToken(mode) {
+  const refreshToken = localStorage.getItem(keysFor(mode).refreshToken);
+  if (!refreshToken) throw new Error("No refresh token");
+  
+  const response = await fetch(`${API_BASE}/auth/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refreshToken }),
+  });
+  
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const err = new Error(data.message || "Token refresh failed");
+    err.data = data;
+    err.status = response.status;
+    throw err;
+  }
+  
+  if (data.data?.accessToken) {
+    setToken(data.data.accessToken, mode);
+    if (data.data.refreshToken) {
+      localStorage.setItem(keysFor(mode).refreshToken, data.data.refreshToken);
+    }
+    return data.data.accessToken;
+  }
+  throw new Error("No access token in refresh response");
+}
+
 export async function request(path, options = {}, mode = "customer") {
-  const token = getToken(mode);
+  let token = getToken(mode);
   const isFormData = options.body instanceof FormData;
   const headers = new Headers();
   
@@ -48,10 +77,17 @@ export async function request(path, options = {}, mode = "customer") {
     extra.forEach((value, key) => headers.set(key, value));
   }
 
-  try {
+  let retried = false;
+  
+  async function doRequest(currentToken) {
+    const requestHeaders = new Headers(headers);
+    if (currentToken) {
+      requestHeaders.set("Authorization", `Bearer ${currentToken}`);
+    }
+    
     const response = await fetch(`${API_BASE}${path}`, {
       method: options.method,
-      headers,
+      headers: requestHeaders,
       body: options.body,
       credentials: "omit",
     });
@@ -66,7 +102,24 @@ export async function request(path, options = {}, mode = "customer") {
     }
     
     return data;
+  }
+
+  try {
+    return await doRequest(token);
   } catch (error) {
+    // On 401, try to refresh token and retry once
+    if (error.status === 401 && !retried && token) {
+      retried = true;
+      try {
+        const newToken = await refreshAccessToken(mode);
+        return await doRequest(newToken);
+      } catch (refreshError) {
+        // Refresh failed, clear tokens and rethrow original error
+        localStorage.removeItem(keysFor(mode).token);
+        localStorage.removeItem(keysFor(mode).refreshToken);
+        throw error;
+      }
+    }
     if (error instanceof TypeError) {
       throw new Error("Cannot connect to server");
     }
@@ -430,6 +483,11 @@ export const callAPI = {
 
   accept: (callId, mode = "customer") =>
     request(`/calls/${callId}/accept`, {
+      method: "POST",
+    }, mode),
+
+  cancel: (callId, mode = "customer") =>
+    request(`/calls/${callId}/cancel`, {
       method: "POST",
     }, mode),
 

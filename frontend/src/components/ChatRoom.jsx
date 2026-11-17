@@ -229,10 +229,54 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
       }
     };
 
+    // Real-time call history: when a call status changes, add a system message
+    // so both parties see the call event appear in chat without refresh.
+    const handleCallStatusUpdate = (data) => {
+      const incomingConvId = data?.conversation_id ?? data?.conversationId;
+      if (incomingConvId && String(incomingConvId) !== String(conversationId)) return;
+
+      const status = data?.status;
+      const duration = data?.duration_seconds ?? 0;
+      const callId = data?.call_id ?? data?.callId;
+      if (!status || !callId) return;
+
+      const statusLabels = {
+        completed: 'สนทนาสำเร็จ',
+        no_answer: 'ไม่ได้รับสาย',
+        cancelled: 'ยกเลิกการโทร',
+        rejected: 'ปฏิเสธสาย',
+        failed: 'โทรไม่สำเร็จ',
+        accepted: 'รับสายแล้ว',
+      };
+      const statusLabel = statusLabels[status] || status;
+      const durationText = duration > 0
+        ? ` • ${Math.floor(duration / 60)}:${String(duration % 60).padStart(2, '0')} นาที`
+        : '';
+
+      // Add as a synthetic system message (voice_call type)
+      const callEventMessage = {
+        id: `call-event-${callId}-${status}`,
+        conversation_id: conversationId,
+        type: 'voice_call',
+        content: `📞 ${statusLabel}${durationText}`,
+        metadata: { call_id: callId, call_status: status, duration_seconds: duration },
+        created_at: new Date().toISOString(),
+        sender_id: data?.caller_id,
+      };
+
+      setMessages(prev => {
+        // Avoid duplicate call events
+        if (prev.some(m => m.id === callEventMessage.id)) return prev;
+        return [...prev, callEventMessage];
+      });
+    };
+
     on("newMessage", handleNewMessage);
+    on("callStatusUpdate", handleCallStatusUpdate);
 
     return () => {
       off("newMessage", handleNewMessage);
+      off("callStatusUpdate", handleCallStatusUpdate);
     };
   }, [conversationId, connected, currentUserId, on, off, markAsRead]);
 
@@ -443,10 +487,9 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
       return;
     }
     try {
-      // Only send ids that exist: the API validates storeOrderId as a UUID when
-      // the key is present, and store_customer conversations have no order yet
-      // (conversation.store_order is null), so passing null produced a 400.
-      const storeOrderId = conversation?.store_order?.id ?? conversation?.store_order_id ?? undefined;
+      // Send storeOrderId as explicit null when no order exists.
+      // The API accepts null for store_customer conversations without an order.
+      const storeOrderId = conversation?.store_order?.id ?? conversation?.store_order_id ?? null;
       const result = await callAPI.initiate({
         calleeId: counterpartProfile.id,
         conversationId,
@@ -457,7 +500,7 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
         callId: result.data.id,
         calleeId: counterpartProfile.id,
         conversationId,
-        storeOrderId: conversation?.store_order?.id,
+        storeOrderId: conversation?.store_order?.id ?? null,
         callerName: displayName,
         callerAvatar: displayAvatar
       });

@@ -66,3 +66,21 @@ export const validateThaiPhone = (value) => {
   if (isThaiPhoneValid(value)) return true;
   throw new Error('Invalid phone');
 };
+
+// Convert a valid Thai phone number to E.164 format (+66XXXXXXXXX).
+// Returns the E.164 string, or null if the input is not a recognizable Thai phone number.
+export const toE164ThaiPhone = (value) => {
+  const normalized = normalizeThaiPhone(value);
+  if (!normalized) return null;
+
+  // If already in E.164 format (+66...), return as-is
+  if (normalized.startsWith('+66')) return normalized;
+
+  // Domestic format (0XXXXXXXXX) -> convert to E.164
+  // Remove leading 0 and prepend +66
+  if (normalized.startsWith('0')) {
+    return `+66${normalized.slice(1)}`;
+  }
+
+  return null;
+};

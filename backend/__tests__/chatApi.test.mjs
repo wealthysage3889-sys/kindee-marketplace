@@ -295,7 +295,6 @@ test('marking a room read resets the caller unread count', async () => {
     .dump('conversation_members')
     .find((m) => m.conversation_id === conversationId && m.profile_id === ownerId);
   assert.equal(ownerMember.unread_count, 0);
-  assert.equal(ownerMember.last_read_message_id, msg1Id);
 });
 
 test('marking read with a message of another room is rejected with 400', async () => {

@@ -199,6 +199,12 @@ export default function ProductDetail() {
   const stockClass = isOutOfStock ? " out" : stock != null && stock <= 5 ? " low" : "";
 
   const sellerName = typeof product.seller === "object" ? product.seller?.name : null;
+  const storeId =
+    product?.store?.id ||
+    product?.store?._id ||
+    product?.store_id ||
+    (typeof product?.storeId === "string" ? product.storeId : product?.storeId?.id || product?.storeId?._id) ||
+    null;
   const rating = Number(product.ratingsAverage) || 0;
   const ratingCount = Number(product.ratingsQuantity) || 0;
 
@@ -220,7 +226,7 @@ export default function ProductDetail() {
     navigate("/cart", { state: { from: location.pathname } });
   };
 
-  const handleShare = async () => {
+const handleShare = async () => {
     if (!product) return;
     const title = product.name;
     const text = `${product.name} - ราคา ${product.price} บาท`;
@@ -235,6 +241,14 @@ export default function ProductDetail() {
     } catch (err) {
       showToast("แชร์สินค้าไม่สำเร็จ");
     }
+  };
+
+  const handleChat = () => {
+    if (!storeId) {
+      showToast("ไม่พบข้อมูลร้านค้า กรุณาลองใหม่อีกครั้ง");
+      return;
+    }
+    navigate(`/messages?openStore=${storeId}`);
   };
 
   const handleSearch = (e) => {
@@ -386,14 +400,14 @@ export default function ProductDetail() {
             </div>
           </div>
 
-          {sellerName && (
-            <Link to={`/stores/${typeof product.seller === "object" ? product.seller._id : product.seller}`} className="product-detail-seller">
+          {(sellerName || storeId) && storeId && (
+            <Link to={`/stores/${storeId}`} className="product-detail-seller">
               <span className="product-detail-seller-avatar">
-                {sellerName.charAt(0).toUpperCase()}
+                {(sellerName || (typeof product.store === "object" ? product.store?.name : "") || "ร").charAt(0).toUpperCase()}
               </span>
               <span className="product-detail-seller-text">
                 <small>ร้านค้า</small>
-                <strong>{sellerName}</strong>
+                <strong>{sellerName || (typeof product.store === "object" ? product.store?.name : "") || "ร้านค้า"}</strong>
               </span>
               <span className="product-detail-seller-link">ดูร้าน ›</span>
             </Link>
@@ -440,14 +454,24 @@ export default function ProductDetail() {
 
       <div className="product-action-bar">
         <div className="product-action-inner">
-          <Link to="/stores" className="product-action-icon" aria-label="ร้านค้า">
+          <Link
+            to={storeId ? `/stores/${storeId}` : "/stores"}
+            className="product-action-icon"
+            aria-label="ร้านค้า"
+          >
             <StoreIcon />
             <span>ร้านค้า</span>
           </Link>
-          <Link to="/messages" className="product-action-icon" aria-label="แชทกับร้านค้า">
+          <button
+            type="button"
+            className="product-action-icon"
+            onClick={handleChat}
+            aria-label="แชทกับร้านค้า"
+            disabled={!storeId}
+          >
             <ChatIcon />
             <span>แชท</span>
-          </Link>
+          </button>
           <button
             type="button"
             className="product-action-outline"

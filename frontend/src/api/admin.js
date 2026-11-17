@@ -32,6 +32,11 @@ export const adminAPI = {
       method: "PATCH",
       body: JSON.stringify({ role }),
     }),
+  setUserActive: (id, isActive) =>
+    adminRequest(`/admin/users/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ isActive }),
+    }),
   deleteUser: (id) =>
     adminRequest(`/admin/users/${id}`, {
       method: "DELETE",

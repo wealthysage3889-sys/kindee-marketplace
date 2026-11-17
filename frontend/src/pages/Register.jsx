@@ -1,5 +1,5 @@
-﻿import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { authAPI } from "../api/auth";
 import SocialAuth from "../components/SocialAuth";
@@ -15,6 +15,12 @@ const ArrowLeftIcon = () => (
 );
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function resolveRedirect(from) {
+  const pathname = from?.pathname;
+  if (typeof pathname !== "string" || !pathname.startsWith("/") || pathname.startsWith("//")) return "/";
+  return `${pathname}${from?.search || ""}${from?.hash || ""}`;
+}
+
 
 function loadFacebookSdk(appId) {
   return new Promise((resolve, reject) => {
@@ -38,6 +44,8 @@ export default function Register() {
   const [loading, setLoading] = useState(false);
   const [socialConfig, setSocialConfig] = useState(null);
   const navigate = useNavigate();
+  const location = useLocation();
+  const redirectTo = resolveRedirect(location.state?.from);
   const googleInitialized = useRef(false);
 
   const isEmail = emailOrPhone.includes("@");
@@ -80,7 +88,7 @@ export default function Register() {
     setLoading(true); setMessage(""); setInfo("");
     try {
       await register({ name: form.name.trim(), email: form.email.trim(), password: form.password, phone: form.phone.trim(), address: form.address.trim(), role: form.role });
-      navigate("/");
+      navigate(redirectTo, { replace: true });
     } catch (err) { setMessage(err?.data?.message || err.message || "สมัครสมาชิกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง"); }
     finally { setLoading(false); }
   };
@@ -89,11 +97,11 @@ const handleGoogle = async () => {
     if (!socialConfig?.google?.clientId) return;
     setMessage(""); setInfo("");
     const clientId = socialConfig.google.clientId;
-    if (!window.google?.accounts?.id) {
-      await new Promise((resolve, reject) => {
-        const s = document.createElement("script"); s.src = "https://accounts.google.com/gsi/client"; s.async = true; s.defer = true; s.onload = resolve; s.onerror = () => reject(new Error("โหลด Google SDK ไม่สำเร็จ")); document.head.appendChild(s);
-      }).catch((e) => { setMessage(e.message); });
-    }
+if (!window.google?.accounts?.id) {
+       await new Promise((resolve, reject) => {
+         const s = document.createElement("script"); s.src = "https://accounts.google.com/gsi/client"; s.async = true; s.defer = true; s.onload = resolve; s.onerror = () => reject(new Error("โหลด Google SDK ไม่สำเร็จ")); document.head.appendChild(s);
+       }).catch((e) => { setMessage(e.message); });
+     }
     if (!window.google?.accounts?.id) return;
     if (!googleInitialized.current) {
       window.google.accounts.id.initialize({
@@ -103,19 +111,19 @@ const handleGoogle = async () => {
           setLoading(true);
           try {
             const data = await loginWithGoogle(response.credential, "customer");
-            navigate("/");
+            navigate(redirectTo, { replace: true });
           } catch (err) { setMessage(err.message || "สมัครด้วย Google ไม่สำเร็จ"); }
           finally { setLoading(false); }
         },
       });
       googleInitialized.current = true;
     }
-    window.google.accounts.id.prompt((notification) => {
-      if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-        const reason = notification.getNotDisplayedReason?.() || "unknown";
-        setInfo(`ไม่สามารถแสดงหน้าต่าง Google ได้ (เหตุผล: ${reason}) — โปรดเพิ่ม Origin นี้ใน Google Cloud Console: Authorized JavaScript origins`);
-      }
-    });
+window.google.accounts.id.prompt((notification) => {
+       if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+         const reason = notification.getNotDisplayedReason?.() || "unknown";
+         setInfo(`ไม่สามารถแสดงหน้าต่าง Google ได้ (เหตุผล: ${reason}) โปรดตรวจสอบ Origin ใน Google Cloud Console: Authorized JavaScript origins`);
+       }
+     });
   };
 
 const handleFacebook = async () => {
@@ -129,7 +137,7 @@ const handleFacebook = async () => {
           (async () => {
             try {
               const data = await loginWithFacebook(response.authResponse.accessToken, "customer");
-              navigate("/");
+              navigate(redirectTo, { replace: true });
             } catch (err) { setMessage(err.message || "สมัครด้วย Facebook ไม่สำเร็จ"); }
             finally { setLoading(false); }
           })();
@@ -141,6 +149,7 @@ const handleFacebook = async () => {
   const handleLine = () => {
     if (!socialConfig?.line?.channelId) return;
     setMessage(""); setInfo("");
+    try { sessionStorage.setItem("kindee:postLoginRedirect", redirectTo); } catch {}
     // Use the unified callback page so the redirect_uri matches the value
     // registered in the LINE Developers Console (single URL for all flows).
     const redirectUri = window.location.origin + "/oauth/line/callback";

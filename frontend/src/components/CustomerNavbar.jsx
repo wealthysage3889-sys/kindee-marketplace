@@ -17,8 +17,9 @@ const MENU_ITEMS = [
 export default function CustomerNavbar() {
   const isProductDetail = useMatch("/products/:id");
   const isStoreProfile = useMatch("/stores/:id");
+  const isChatRoom = useMatch("/messages/:conversationId");
 
-  if (isProductDetail || isStoreProfile) return null;
+  if (isProductDetail || isStoreProfile || isChatRoom) return null;
 
   return (
     <nav className="customer-bottom-nav" aria-label="เมนูหลักของลูกค้า">

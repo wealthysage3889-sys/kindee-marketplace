@@ -134,6 +134,8 @@ export default function StoreLocationMap({
   readOnly = false,
   height = 280,
   storeName = "",
+  markerLabel = "ตำแหน่งร้านค้า",
+  hint = "คลิกบนแผนที่เพื่อปักหมุด หรือลากหมุดไปยังตำแหน่งร้านค้าจริง",
 }) {
   const [locating, setLocating] = useState(false);
   const [geoError, setGeoError] = useState("");
@@ -200,7 +202,7 @@ export default function StoreLocationMap({
               }}
             >
               <Popup>
-                {storeName ? <strong>{storeName}</strong> : "ตำแหน่งร้านค้า"}
+                {storeName ? <strong>{storeName}</strong> : <strong>{markerLabel}</strong>}
                 {!readOnly && <br />}
                 {!readOnly && "ลากหมุดเพื่อปรับตำแหน่ง"}
               </Popup>
@@ -227,7 +229,7 @@ export default function StoreLocationMap({
               </button>
             )}
           </div>
-          <p className="form-hint">คลิกบนแผนที่เพื่อปักหมุด หรือลากหมุดไปยังตำแหน่งร้านค้าจริง</p>
+          <p className="form-hint">{hint}</p>
           {geoError && <p className="form-hint store-location-error">{geoError}</p>}
           <CoordinatesInputs value={value} onPick={handlePick} disabled={locating} />
         </>

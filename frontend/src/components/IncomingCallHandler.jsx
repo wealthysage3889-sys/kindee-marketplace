@@ -1,22 +1,55 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useSocket } from "../context/SocketContext";
 import { callAPI } from "../api";
 import VoiceCallUI from "./VoiceCallUI";
+import { ringtone } from "../utils/ringtone";
 import "./IncomingCall.css";
 
+// Incoming calls must be accepted with the session that owns this layout:
+// `/` and `/courier` use the customer token, `/selladmin` uses the admin token.
+function resolveCallMode(pathname) {
+  return pathname.startsWith("/selladmin") ? "admin" : "customer";
+}
+
 export default function IncomingCallHandler({ children }) {
-  const { token, user, isAuthenticated } = useAuth();
-  const { on, off, connected } = useSocket();
+  const { user, isAuthenticated } = useAuth();
+  const location = useLocation();
+  const mode = resolveCallMode(location.pathname);
+  const { on, off, joinCall, leaveCall } = useSocket();
   const [incomingCall, setIncomingCall] = useState(null);
   const [showCallUI, setShowCallUI] = useState(false);
+  // The socket handler is registered once; it reads the current session/user
+  // from refs so an incoming call is never dropped or checked against a stale
+  // closure value (this used to silence the modal in the admin/owner session,
+  // where `isAuthenticated` in the closure referred to the customer session).
+  const sessionRef = useRef({ mode, isAuthenticated, userId: user?.id || user?._id });
+  sessionRef.current = { mode, isAuthenticated, userId: user?.id || user?._id };
 
   const handleIncomingCall = useCallback((callData) => {
-    console.log("Incoming call:", callData);
-    
+    console.info("[call] IncomingCallHandler incomingCall", { callId: callData?.call_id, from: callData?.caller_id, hasConversation: !!callData?.conversation_id });
+
+    const session = sessionRef.current;
+
     // Don't show if already in a call
-    if (showCallUI) return;
-    
+    if (showCallUI) {
+      console.warn("[call] IncomingCallHandler ignored (already in UI)", { callId: callData?.call_id });
+      return;
+    }
+
+    // Ignore our own call (multi-tab / dual socket echo).
+    if (session.userId && callData?.caller_id && String(callData.caller_id) === String(session.userId)) {
+      console.info("[call] IncomingCallHandler ignored own call", { callId: callData?.call_id });
+      return;
+    }
+
+    // Join the call signaling room immediately so the offer (sent by the
+    // caller after the callee accepts) reaches this client before it mounts
+    // VoiceCallUI. Prevents the callee from missing the offer.
+    joinCall(callData.call_id);
+    console.info("[call] IncomingCallHandler joined call room", { callId: callData?.call_id });
+
     setIncomingCall({
       callId: callData.call_id,
       callerId: callData.caller_id,
@@ -26,33 +59,52 @@ export default function IncomingCallHandler({ children }) {
       storeOrderId: callData.store_order_id,
       callType: callData.call_type || "voice"
     });
-    
-    // Play notification sound
-    playNotificationSound();
-    
+
+    // Play incoming-call ringtone (loops until stopped)
+    ringtone.start(callData.call_id);
+
     // Show browser notification if permission granted
     showBrowserNotification(callData);
-  }, [showCallUI]);
+  }, [showCallUI, joinCall]);
 
   const handleCallEnded = useCallback(() => {
-    setIncomingCall(null);
-    setShowCallUI(false);
-  }, []);
-
-  const handleAccept = useCallback(() => {
-    setShowCallUI(true);
-  }, []);
-
-  const handleReject = useCallback(async () => {
+    console.info("[call] IncomingCallHandler call ended/closed", { callId: incomingCall?.callId });
     if (incomingCall) {
-      try {
-        await callAPI.reject(incomingCall.callId);
-      } catch (err) {
-        console.error("Reject error:", err);
-      }
+      leaveCall(incomingCall.callId);
     }
     setIncomingCall(null);
-  }, [incomingCall]);
+    setShowCallUI(false);
+  }, [incomingCall, leaveCall]);
+
+  const handleAccept = useCallback(async () => {
+    const callId = incomingCall?.callId;
+    console.info("[call] IncomingCallHandler accept clicked", { callId, mode });
+    if (!callId) return;
+    // Mount VoiceCallUI first so it joins/subscribes before the caller sends the offer.
+    setShowCallUI(true);
+    try {
+      // Accept must be called with the same session token that owns this layout
+      // (admin on /selladmin, customer elsewhere) so the backend authorizes the callee.
+      console.info("[call] acceptCall() invoking API", { callId, mode });
+      await callAPI.accept(callId, mode);
+      console.info("[call] acceptCall() API accepted", { callId, mode });
+    } catch (err) {
+      console.error("[call] IncomingCallHandler accept failed", { callId, mode, error: err?.message || String(err) });
+    }
+  }, [incomingCall, mode]);
+
+  const handleReject = useCallback(async () => {
+    console.info("[call] IncomingCallHandler reject clicked", { callId: incomingCall?.callId });
+    if (incomingCall) {
+      try {
+        await callAPI.reject(incomingCall.callId, mode);
+      } catch (err) {
+        console.error("[call] IncomingCallHandler reject error", { callId: incomingCall?.callId, error: err?.message || String(err) });
+      }
+      leaveCall(incomingCall.callId);
+    }
+    setIncomingCall(null);
+  }, [incomingCall, leaveCall, mode]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -133,6 +185,7 @@ export default function IncomingCallHandler({ children }) {
       {showCallUI && incomingCall && (
         <VoiceCallUI
           initialCallId={incomingCall.callId}
+          callMode={mode}
           callerName={incomingCall.callerName}
           callerAvatar={incomingCall.callerAvatar}
           onClose={handleCallEnded}

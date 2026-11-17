@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '../config/supabase.js';
 import { AppError, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
 import { v4 as uuidv4 } from 'uuid';
+import { emitIncomingCall, emitCallEnded, emitToUser } from './socketService.js';
 
 // Get WebRTC configuration
 export const getWebRTCConfig = async () => {
@@ -30,8 +31,45 @@ export const getWebRTCConfig = async () => {
   return config;
 };
 
+// An absent/null id means the call is not bound to a conversation or order.
+const optionalId = (value) => (value === undefined || value === null ? null : value);
+
+// A ringing call that nobody answered/ended (tab closed, socket dropped, device
+// offline) would otherwise block every later call between the same two users
+// with "Call already in progress" forever, because no code path closes it.
+// Once it is this old it is considered abandoned.
+const RINGING_TIMEOUT_MS = Number(process.env.CALL_RINGING_TIMEOUT_MS) > 0
+  ? Number(process.env.CALL_RINGING_TIMEOUT_MS)
+  : 60 * 1000;
+
+// Close abandoned ringing calls and return how many were closed.
+export const expireStaleCalls = async () => {
+  const cutoff = new Date(Date.now() - RINGING_TIMEOUT_MS).toISOString();
+  const { data: stale } = await supabaseAdmin
+    .from('call_history')
+    .select('id, caller_id, callee_id')
+    .eq('status', 'ringing')
+    .lt('created_at', cutoff)
+    .limit(100);
+  if (!stale || stale.length === 0) return 0;
+
+  await supabaseAdmin
+    .from('call_history')
+    .update({ status: 'missed', ended_at: new Date().toISOString(), end_reason: 'missed' })
+    .eq('status', 'ringing')
+    .lt('created_at', cutoff);
+
+  for (const call of stale) {
+    emitToUser(call.caller_id, 'callEnded', { call_id: call.id, status: 'missed' });
+    emitToUser(call.callee_id, 'callEnded', { call_id: call.id, status: 'missed' });
+  }
+  return stale.length;
+};
+
 // Initiate call
 export const initiateCall = async (callerId, calleeId, conversationId = null, storeOrderId = null, callType = 'voice') => {
+  conversationId = optionalId(conversationId);
+  storeOrderId = optionalId(storeOrderId);
   // Check if callee exists and is active
   const { data: callee } = await supabaseAdmin
     .from('profiles')
@@ -43,6 +81,9 @@ export const initiateCall = async (callerId, calleeId, conversationId = null, st
     throw new ValidationError('Callee not available');
   }
   
+  // Expire abandoned calls first so they cannot block a new call indefinitely.
+  await expireStaleCalls();
+
   // Check for existing active call between these users
   const { data: existingCall } = await supabaseAdmin
     .from('call_history')
@@ -50,10 +91,28 @@ export const initiateCall = async (callerId, calleeId, conversationId = null, st
     .eq('caller_id', callerId)
     .eq('callee_id', calleeId)
     .in('status', ['ringing', 'accepted'])
-    .single();
+    .limit(1)
+    .maybeSingle();
   
   if (existingCall) {
     throw new ValidationError('Call already in progress');
+  }
+  
+  // Verify both parties are active members of the bound conversation (if any)
+  // so a user who is not a conversation participant cannot start a call.
+  if (conversationId) {
+    for (const memberId of [callerId, calleeId]) {
+      const { data: member } = await supabaseAdmin
+        .from('conversation_members')
+        .select('id')
+        .eq('conversation_id', conversationId)
+        .eq('profile_id', memberId)
+        .is('left_at', null)
+        .single();
+      if (!member) {
+        throw new AppError('ผู้ใช้ไม่ใช่สมาชิกในการสนทนานี้', 403);
+      }
+    }
   }
   
   // Create call record
@@ -84,7 +143,7 @@ export const initiateCall = async (callerId, calleeId, conversationId = null, st
     .eq('id', callerId)
     .single();
   
-  // Create notification for callee
+// Create notification for callee
   await supabaseAdmin.rpc('create_notification', {
     p_recipient_id: calleeId,
     p_type: 'incoming_call',
@@ -102,7 +161,20 @@ export const initiateCall = async (callerId, calleeId, conversationId = null, st
     p_related_id: callId,
     p_related_type: 'call'
   });
-  
+
+  // Push the incoming-call event over Socket.IO so the callee's IncomingCallHandler
+  // rings immediately. Without this the notification only lands in the DB and the
+  // callee would need to poll /notifications to see it.
+  emitIncomingCall(calleeId, {
+    call_id: callId,
+    caller_id: callerId,
+    caller_name: caller?.name,
+    caller_avatar: caller?.avatar_url,
+    conversation_id: conversationId,
+    store_order_id: storeOrderId,
+    call_type: callType
+  });
+
   return call;
 };
 
@@ -120,6 +192,32 @@ export const acceptCall = async (callId, userId) => {
     throw new NotFoundError('Call');
   }
   
+  // Verify conversation membership so only participants can accept.
+  if (call.conversation_id) {
+    for (const memberId of [call.caller_id, call.callee_id]) {
+      const { data: member } = await supabaseAdmin
+        .from('conversation_members')
+        .select('id')
+        .eq('conversation_id', call.conversation_id)
+        .eq('profile_id', memberId)
+        .is('left_at', null)
+        .single();
+      if (!member) {
+        throw new AppError('ผู้ใช้ไม่ใช่สมาชิกในการสนทนานี้', 403);
+      }
+    }
+  }
+
+  // An abandoned ringing call must not be answerable later.
+  const ageMs = Date.now() - new Date(call.created_at || call.started_at || 0).getTime();
+  if (ageMs > RINGING_TIMEOUT_MS) {
+    await supabaseAdmin
+      .from('call_history')
+      .update({ status: 'missed', ended_at: new Date().toISOString(), end_reason: 'missed' })
+      .eq('id', callId);
+    throw new AppError('สายนี้หมดอายุแล้ว', 410);
+  }
+  
   const { data: updatedCall, error } = await supabaseAdmin
     .from('call_history')
     .update({ 
@@ -130,10 +228,15 @@ export const acceptCall = async (callId, userId) => {
     .select()
     .single();
   
-  if (error) {
+if (error) {
     throw new AppError(`Call acceptance failed: ${error.message}`, 500);
   }
-  
+
+  // Tell the caller that the callee picked up. Do NOT emit callEnded here:
+  // callEnded(accepted) previously tore down the WebRTC peer connection on
+  // both sides right when the call should be connecting.
+  emitToUser(call.caller_id, 'callAccepted', { call_id: callId, accepted_by: userId });
+
   return updatedCall;
 };
 
@@ -162,10 +265,14 @@ export const rejectCall = async (callId, userId) => {
     .select()
     .single();
   
-  if (error) {
+if (error) {
     throw new AppError(`Call rejection failed: ${error.message}`, 500);
   }
-  
+
+  // Notify the caller that the callee declined.
+  emitCallEnded(callId, { status: 'rejected', rejected_by: userId });
+  emitToUser(call.caller_id, 'callRejected', { call_id: callId, rejected_by: userId });
+
   // Create missed call notification for caller
   await supabaseAdmin.rpc('create_notification', {
     p_recipient_id: call.caller_id,
@@ -176,7 +283,7 @@ export const rejectCall = async (callId, userId) => {
     p_related_id: callId,
     p_related_type: 'call'
   });
-  
+
   return updatedCall;
 };
 
@@ -212,10 +319,15 @@ export const endCall = async (callId, userId) => {
     .select()
     .single();
   
-  if (error) {
+if (error) {
     throw new AppError(`Call end failed: ${error.message}`, 500);
   }
-  
+
+  // Broadcast end to everyone in the call room and to each participant's user room.
+  emitCallEnded(callId, { status: endReason, ended_by: userId, duration_seconds: duration });
+  emitToUser(call.caller_id, 'callEnded', { call_id: callId, status: endReason });
+  emitToUser(call.callee_id, 'callEnded', { call_id: callId, status: endReason });
+
   // Create missed call notification if missed
   if (endReason === 'missed') {
     const otherUserId = call.caller_id === userId ? call.callee_id : call.caller_id;
@@ -230,7 +342,7 @@ export const endCall = async (callId, userId) => {
       p_related_type: 'call'
     });
   }
-  
+
   return updatedCall;
 };
 

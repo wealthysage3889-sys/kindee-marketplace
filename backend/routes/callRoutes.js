@@ -2,6 +2,7 @@ import express from 'express';
 import { body, query, param } from 'express-validator';
 import { validate, validateId } from '../middleware/validate.js';
 import { verifyToken } from '../middleware/auth.js';
+import { supabaseAdmin } from '../config/supabase.js';
 import * as callService from '../services/callService.js';
 import { asyncHandler, AppError, NotFoundError } from '../middleware/errorHandler.js';
 
@@ -19,9 +20,12 @@ router.get('/config', verifyToken, asyncHandler(async (req, res) => {
 
 // Initiate call
 router.post('/', verifyToken, [
+  // storeOrderId/conversationId may be sent as null when the call is not bound
+  // to an order: treat an explicit null like an omitted optional field instead
+  // of failing UUID validation with a generic 400.
   body('calleeId').isUUID().withMessage('Callee ID required'),
-  body('conversationId').optional().isUUID(),
-  body('storeOrderId').optional().isUUID(),
+  body('conversationId').optional({ nullable: true }).isUUID(),
+  body('storeOrderId').optional({ nullable: true }).isUUID(),
   body('callType').optional().isIn(['voice', 'video']).withMessage('Invalid call type')
 ], validate, asyncHandler(async (req, res) => {
   const { calleeId, conversationId, storeOrderId, callType = 'voice' } = req.body;

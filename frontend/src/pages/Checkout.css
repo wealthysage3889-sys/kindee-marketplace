@@ -109,8 +109,10 @@
   color: #555;
 }
 
-.form-group input,
-.form-group textarea {
+/* Scoped to the checkout page: these bare-element rules must not leak into
+   shared forms elsewhere (they forced 12px padding on every .form-group input). */
+.checkout-container .form-group input,
+.checkout-container .form-group textarea {
   padding: 12px;
   border: 1px solid #ddd;
   border-radius: 8px;
@@ -118,8 +120,8 @@
   transition: border-color 0.2s;
 }
 
-.form-group input:focus,
-.form-group textarea:focus {
+.checkout-container .form-group input:focus,
+.checkout-container .form-group textarea:focus {
   outline: none;
   border-color: #2196f3;
 }
@@ -342,6 +344,70 @@
 
 .address-summary p {
   margin: 4px 0;
+}
+
+.saved-address-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.saved-address-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 13px 14px;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  background: #fff;
+  color: #333;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.saved-address-card:hover {
+  border-color: #2196f3;
+}
+
+.saved-address-card.selected {
+  border-color: #2196f3;
+  background: #e3f2fd;
+}
+
+.saved-address-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.saved-address-card span {
+  color: #666;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.saved-address-default {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #bbdefb;
+  color: #0d47a1 !important;
+  font-size: 11px !important;
+  font-weight: 700;
+}
+
+.saved-address-coordinates {
+  font-family: monospace;
+  font-size: 12px !important;
+}
+
+@media (max-width: 640px) {
+  .saved-address-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .form-actions {

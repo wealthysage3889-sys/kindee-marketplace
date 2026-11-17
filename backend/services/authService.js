@@ -2,6 +2,7 @@ import { supabase, supabaseAdmin } from '../config/supabase.js';
 import { generateToken, generateRefreshToken, verifyRefreshToken } from '../middleware/auth.js';
 import { AppError, NotFoundError, ConflictError } from '../middleware/errorHandler.js';
 import { randomBytes } from 'node:crypto';
+import { toE164ThaiPhone } from '../utils/phone.js';
 
 // ---------------------------------------------------------------------------
 // Supabase session helpers
@@ -55,21 +56,53 @@ export const registerUser = async (userData) => {
     throw new AppError('Invalid role. Must be customer or seller', 400);
   }
 
-  // Check if user exists
-  const { data: existingUser } = await supabaseAdmin
-    .from('profiles')
-    .select('id')
-    .or(`email.eq.${email},phone.eq.${phone}`)
-    .single();
-
-  if (existingUser) {
-    throw new ConflictError('Email or phone already registered');
+  // Convert phone to E.164 format for Supabase Auth (if provided)
+  const phoneE164 = phone ? toE164ThaiPhone(phone) : null;
+  if (phone && !phoneE164) {
+    throw new AppError('Invalid phone number format. Use Thai format (0812345678) or E.164 (+66812345678)', 400);
   }
 
-  // Create auth user
+  // Check if user exists (use E.164 for phone comparison if available)
+  const phoneForCheck = phoneE164 || phone;
+  
+  // Check email separately
+  if (email) {
+    const { data: existingEmail, error: emailError } = await supabaseAdmin
+      .from('profiles')
+      .select('id')
+      .eq('email', email)
+      .maybeSingle();
+    
+    // PGRST116 = no rows found (expected for maybeSingle), treat as no user
+    if (emailError && emailError.code !== 'PGRST116') {
+      throw new AppError(`Email lookup failed: ${emailError.message}`, 500);
+    }
+    if (existingEmail) {
+      throw new ConflictError('Email already registered');
+    }
+  }
+  
+  // Check phone separately
+  if (phoneForCheck) {
+    const { data: existingPhone, error: phoneError } = await supabaseAdmin
+      .from('profiles')
+      .select('id')
+      .eq('phone', phoneForCheck)
+      .maybeSingle();
+    
+    // PGRST116 = no rows found (expected for maybeSingle), treat as no user
+    if (phoneError && phoneError.code !== 'PGRST116') {
+      throw new AppError(`Phone lookup failed: ${phoneError.message}`, 500);
+    }
+    if (existingPhone) {
+      throw new ConflictError('Phone number already registered');
+    }
+  }
+
+  // Create auth user with E.164 phone format
   const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
     email,
-    phone,
+    phone: phoneE164,
     password,
     email_confirm: true,
     user_metadata: { name, role }
@@ -79,13 +112,13 @@ export const registerUser = async (userData) => {
     throw new AppError(`Auth creation failed: ${authError.message}`, 500);
   }
 
-  // Create profile
+  // Create profile with E.164 phone format
   const { data: profile, error: profileError } = await supabaseAdmin
     .from('profiles')
     .insert({
       id: authData.user.id,
       email,
-      phone,
+      phone: phoneE164,
       name,
       role,
       is_active: true
@@ -102,7 +135,7 @@ export const registerUser = async (userData) => {
   // Register with phone-only account: Supabase signInWithPassword accepts a
   // phone identifier too, so both email and phone registration obtain a real
   // Supabase session the same way.
-  const session = await signInWithPassword({ email, phone }, password);
+  const session = await signInWithPassword({ email, phone: phoneE164 }, password);
 
   return toSessionResult(profile, session);
 };
@@ -113,11 +146,15 @@ export const loginUser = async (emailOrPhone, password) => {
     throw new AppError('SUPABASE_ANON_KEY is not configured', 500);
   }
 
-  // Find user by email or phone
+  // Convert input to E.164 if it's a Thai phone number for consistent lookup
+  const lookupPhone = toE164ThaiPhone(emailOrPhone);
+  const emailOrPhoneForLookup = lookupPhone || emailOrPhone;
+
+  // Find user by email or phone (try both original and E.164 format for phone)
   const { data: profile, error } = await supabaseAdmin
     .from('profiles')
     .select('*')
-    .or(`email.eq.${emailOrPhone},phone.eq.${emailOrPhone}`)
+    .or(`email.eq.${emailOrPhoneForLookup},phone.eq.${emailOrPhoneForLookup}`)
     .single();
 
   if (error || !profile) {
@@ -130,6 +167,7 @@ export const loginUser = async (emailOrPhone, password) => {
 
   // Verify the password and obtain a Supabase session. Supabase
   // signInWithPassword accepts either an email or a phone identifier.
+  // Use E.164 format for phone (already stored in profile)
   const session = await signInWithPassword({ email: profile.email, phone: profile.phone }, password);
 
   return toSessionResult(profile, session);
@@ -356,7 +394,7 @@ export const getProfile = async (userId) => {
 
 // Update user profile
 export const updateProfile = async (userId, updates) => {
-  const allowedFields = ['name', 'phone', 'address', 'avatar_url'];
+  const allowedFields = ['name', 'phone', 'avatar_url'];
   const filteredUpdates = {};
   
   for (const field of allowedFields) {
@@ -369,8 +407,15 @@ export const updateProfile = async (userId, updates) => {
     throw new AppError('No valid fields to update', 400);
   }
   
-  // Check for unique constraints
+  // Convert phone to E.164 format if provided
   if (filteredUpdates.phone) {
+    const phoneE164 = toE164ThaiPhone(filteredUpdates.phone);
+    if (!phoneE164) {
+      throw new AppError('Invalid phone number format. Use Thai format (0812345678) or E.164 (+66812345678)', 400);
+    }
+    filteredUpdates.phone = phoneE164;
+    
+    // Check for unique constraints
     const { data: existing } = await supabaseAdmin
       .from('profiles')
       .select('id')
@@ -394,6 +439,107 @@ export const updateProfile = async (userId, updates) => {
     throw new AppError(`Profile update failed: ${error.message}`, 500);
   }
   
+  return profile;
+};
+
+// Admin: Activate or deactivate a user account (soft toggle of profiles.is_active).
+//
+// Safety rules enforced server-side (never rely on the UI alone):
+//  - Cannot deactivate the requesting admin's own account.
+//  - Cannot deactivate the last remaining active owner.
+//  - Cannot deactivate an owner unless the caller is also an owner.
+//  - Reactivation is allowed from any state (active or inactive) so an operator
+//    can always re-enable an account.
+//  - When deactivating, also revoke existing sessions via ban so the user is
+//    signed out immediately. When reactivating, clear the ban so the user can
+//    log back in.
+//
+// The profiles UPDATE is verified against the returned row: the API never
+// reports success unless Supabase actually persisted the requested is_active
+// value (see the post-update assertion below).
+export const setUserActive = async (userId, isActive, callerId, callerRole) => {
+  const { data: targetUser, error: targetError } = await supabaseAdmin
+    .from('profiles')
+    .select('id, role, is_active, name, email')
+    .eq('id', userId)
+    .single();
+
+  if (targetError || !targetUser) {
+    throw new AppError('ไม่พบผู้ใช้งาน', 404);
+  }
+
+  // Cannot touch your own account.
+  if (callerId && targetUser.id === callerId) {
+    throw new AppError('ไม่สามารถเปลี่ยนสถานะบัญชีของตัวเองได้', 400);
+  }
+
+  // Only owners may manage owner accounts.
+  if (targetUser.role === 'owner' && callerRole !== 'owner') {
+    throw new AppError('ไม่มีสิทธิ์จัดการบัญชีเจ้าของระบบ', 403);
+  }
+
+  // Deactivating an account that is already inactive is a no-op from the
+  // caller's point of view. Report it as an error so the UI does not show a
+  // misleading success toast.
+  if (!isActive && targetUser.is_active === false) {
+    throw new AppError('บัญชีนี้ถูกปิดใช้งานอยู่แล้ว', 400);
+  }
+
+  if (isActive) {
+    // Reactivation is idempotent with respect to the ban: always clear any
+    // existing ban so the user can log in again, regardless of prior state.
+    const { error: unbanError } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+      ban_duration: 'none'
+    });
+    if (unbanError) {
+      // Non-fatal: is_active=true already re-enables API access via middleware.
+      console.error(`Failed to unban reactivated user ${userId}: ${unbanError.message}`);
+    }
+  } else {
+    // Deactivating: guard against removing the last active owner.
+    if (targetUser.role === 'owner') {
+      const { count: ownerCount, error: ownerCountError } = await supabaseAdmin
+        .from('profiles')
+        .select('id', { count: 'exact', head: true })
+        .eq('role', 'owner')
+        .eq('is_active', true);
+
+      if (ownerCountError) {
+        throw new AppError(`ตรวจสอบจำนวนเจ้าของระบบไม่สำเร็จ: ${ownerCountError.message}`, 500);
+      }
+      if ((ownerCount || 0) <= 1) {
+        throw new AppError('ไม่สามารถปิดใช้งานเจ้าของระบบรายสุดท้ายได้ ระบบต้องมีเจ้าของระบบอย่างน้อย 1 บัญชี', 400);
+      }
+    }
+
+    // Revoke all sessions by banning the user.
+    const { error: banError } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+      ban_duration: '876000h'
+    });
+    if (banError) {
+      // Non-fatal: is_active=false already blocks API access via middleware.
+      console.error(`Failed to revoke sessions for ${userId}: ${banError.message}`);
+    }
+  }
+
+  const { data: profile, error } = await supabaseAdmin
+    .from('profiles')
+    .update({ is_active: isActive })
+    .eq('id', userId)
+    .select()
+    .single();
+
+  if (error) {
+    throw new AppError(`อัปเดตสถานะผู้ใช้ไม่สำเร็จ: ${error.message}`, 500);
+  }
+
+  // Verify the UPDATE actually persisted the requested value. Supabase returns
+  // the updated row when .select() is chained; a missing row (or a stale value)
+  // means the write did not take effect, so we must not report success.
+  if (!profile || profile.is_active !== isActive) {
+    throw new AppError('อัปเดตสถานะผู้ใช้ไม่สำเร็จ: ไม่พบการเปลี่ยนแปลงในฐานข้อมูล', 500);
+  }
+
   return profile;
 };
 
@@ -704,6 +850,11 @@ export const lineLogin = async (code, redirectUri) => {
 // user's JWT), so we revoke all refresh tokens by banning the user
 // (ban_duration). A banned user cannot obtain new tokens either.
 //
+// This is a "soft" deactivation used both by the admin status toggle and by the
+// "remove from list" action: it NEVER deletes the profiles row, Supabase Auth
+// user, orders, or any relationship data. The row simply stops appearing in the
+// default (active-only) admin list.
+//
 // REACTIVATION: when re-enabling an account, you MUST also clear the ban by
 // calling admin.updateUserById(userId, { ban_duration: 'none' }) in addition to
 // setting is_active = true; otherwise the user stays signed out / unable to log in.
@@ -717,6 +868,12 @@ export const deactivateAccount = async (userId) => {
 
   if (error) {
     throw new AppError(`Deactivation failed: ${error.message}`, 500);
+  }
+
+  // Verify the UPDATE actually persisted. A missing row (or a stale is_active)
+  // means the write did not take effect; never report success in that case.
+  if (!profile || profile.is_active !== false) {
+    throw new AppError('Deactivation failed: ไม่พบการเปลี่ยนแปลงในฐานข้อมูล', 500);
   }
 
   // Revoke all sessions (refresh tokens) for this user. ban_duration is the
@@ -733,42 +890,361 @@ export const deactivateAccount = async (userId) => {
   return profile;
 };
 
-// Admin: Get all users
+// Admin: Get all users (fetches all matching rows; batches to avoid PostgREST row caps)
 export const getAllUsers = async (filters = {}, pagination = {}) => {
   const { role, is_active, search } = filters;
-  const { page = 1, limit = 20 } = pagination;
-  
-  let query = supabaseAdmin
-    .from('profiles')
-    .select('*', { count: 'exact' });
-  
-  if (role) query = query.eq('role', role);
-  if (is_active !== undefined) query = query.eq('is_active', is_active);
-  if (search) {
-    query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%`);
+  const BATCH_SIZE = 1000;
+  let from = 0;
+  let total = 0;
+  const users = [];
+
+  while (true) {
+    let query = supabaseAdmin
+      .from('profiles')
+      .select('*', { count: 'exact' });
+
+    if (role) query = query.eq('role', role);
+    if (is_active !== undefined) query = query.eq('is_active', is_active);
+    if (search) {
+      query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%`);
+    }
+
+    query = query
+      .order('created_at', { ascending: false })
+      .range(from, from + BATCH_SIZE - 1);
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      throw new AppError(`Failed to fetch users: ${error.message}`, 500);
+    }
+
+    if (typeof count === 'number') total = count;
+    const batch = data || [];
+    users.push(...batch);
+
+    if (batch.length < BATCH_SIZE) break;
+    if (total && users.length >= total) break;
+    from += BATCH_SIZE;
   }
-  
-  query = query
-    .order('created_at', { ascending: false })
-    .range((page - 1) * limit, page * limit - 1);
-  
-  const { data, error, count } = await query;
-  
-  if (error) {
-    throw new AppError(`Failed to fetch users: ${error.message}`, 500);
-  }
-  
+
   return {
-    users: data,
+    users,
     pagination: {
-      page,
-      limit,
-      total: count,
-      totalPages: Math.ceil(count / limit)
+      page: 1,
+      limit: users.length,
+      total: typeof total === 'number' ? total : users.length,
+      totalPages: 1
     }
   };
 };
 
+// Admin: permanently delete a user account (for test accounts) with safeguards.
+//
+// - Never deletes orders/messages/transaction history.
+// - If the user has protected business/history references (e.g. orders, store
+//   orders, messages, conversations, reviews, payments, refunds, deliveries,
+//   call history, courier records) deletion is blocked; caller should handle as
+//   deactivate + PII handling instead of destroying history.
+// - If safe to remove: delete dependent non-business records we own (stores and
+//   their cascaded catalog data, carts/wishlists/notifications, etc.), then
+//   delete the Supabase Auth user (admin API) which cascades to profiles where
+//   allowed.
+// - Returns { action: 'deleted'|'deactivated', reason?, references?, profile }.
+export const adminDeleteUserAccount = async (userId, callerId, callerRole) => {
+  const { data: targetUser, error: targetError } = await supabaseAdmin
+    .from('profiles')
+    .select('*')
+    .eq('id', userId)
+    .single();
+
+  if (targetError || !targetUser) {
+    throw new AppError('ไม่พบผู้ใช้งาน', 404);
+  }
+
+  if (callerId && targetUser.id === callerId) {
+    throw new AppError('ไม่สามารถลบบัญชีของตนเองได้', 400);
+  }
+
+  if (targetUser.role === 'owner') {
+    if (callerRole !== 'owner') {
+      throw new AppError('ไม่มีสิทธิ์จัดการบัญชีเจ้าของระบบ', 403);
+    }
+    const { count: ownerCount, error: ownerCountError } = await supabaseAdmin
+      .from('profiles')
+      .select('id', { count: 'exact', head: true })
+      .eq('role', 'owner');
+    if (ownerCountError) {
+      throw new AppError(`ตรวจสอบจำนวนเจ้าของระบบไม่สำเร็จ: ${ownerCountError.message}`, 500);
+    }
+    if ((ownerCount || 0) <= 1) {
+      throw new AppError('ไม่สามารถลบเจ้าของระบบรายสุดท้ายได้', 400);
+    }
+  }
+
+  // Use explicit queries for clarity and to detect blocking refs.
+  // Reference verification must be reliable: if a required check cannot be
+  // completed (missing schema object, permission, network, column mismatch, etc.)
+  // we must NOT assume "no references" and must NOT hard-delete.
+  const blocking = [];
+  const verificationIssues = [];
+  const isMissingSchemaObject = (error) => {
+    if (!error) return false;
+    const code = String(error.code || '');
+    const msg = String(error.message || '').toLowerCase();
+    return (
+      code === '42P01' || // undefined_table
+      code === '42703' || // undefined_column
+      code === 'PGRST205' || // relation not found in schema cache
+      msg.includes('does not exist') ||
+      msg.includes('could not find the') ||
+      msg.includes('schema cache') ||
+      msg.includes('relation') && msg.includes('not found')
+    );
+  };
+  const recordCheckFailure = (label, table, column, error, scope = 'profile') => {
+    const issue = {
+      label,
+      table,
+      column,
+      scope,
+      code: error?.code || null,
+      message: error?.message || String(error || 'unknown error'),
+      kind: isMissingSchemaObject(error) ? 'schema_missing_or_mismatch' : 'query_failed',
+    };
+    verificationIssues.push(issue);
+    console.warn(`adminDeleteUserAccount ref check failed (${issue.kind}) ${table}.${column}: ${issue.message}`);
+  };
+  const countRef = async (label, table, column) => {
+    try {
+      const { count, error } = await supabaseAdmin
+        .from(table)
+        .select('id', { count: 'exact', head: true })
+        .eq(column, userId);
+      if (error) {
+        recordCheckFailure(label, table, column, error, 'profile');
+        return;
+      }
+      if ((count || 0) > 0) blocking.push({ label, table, column, count });
+    } catch (err) {
+      recordCheckFailure(label, table, column, err, 'profile');
+    }
+  };
+  const countRefsIn = async (label, table, column, values, extra = {}) => {
+    if (!Array.isArray(values) || values.length === 0) return;
+    try {
+      const { count, error } = await supabaseAdmin
+        .from(table)
+        .select('id', { count: 'exact', head: true })
+        .in(column, values);
+      if (error) {
+        recordCheckFailure(label, table, column, error, 'store');
+        return;
+      }
+      if ((count || 0) > 0) blocking.push({ label, table, column, count, ...extra });
+    } catch (err) {
+      recordCheckFailure(label, table, column, err, 'store');
+    }
+  };
+
+  try {
+    await countRef('orders (ลูกค้า)', 'orders', 'customer_id');
+    await countRef('store_orders (คนส่ง)', 'store_orders', 'courier_id');
+    await countRef('messages (ผู้ส่ง)', 'messages', 'sender_id');
+    await countRef('conversation_members', 'conversation_members', 'profile_id');
+    await countRef('reviews (ลูกค้า)', 'reviews', 'customer_id');
+    await countRef('call_history (ผู้โทร)', 'call_history', 'caller_id');
+    await countRef('call_history (ผู้รับสาย)', 'call_history', 'callee_id');
+    await countRef('refunds (ผู้อนุมัติ)', 'refunds', 'approved_by');
+    await countRef('order_status_history (ผู้เปลี่ยนสถานะ)', 'order_status_history', 'changed_by');
+    await countRef('delivery_status_history (ผู้เปลี่ยนสถานะ)', 'delivery_status_history', 'changed_by');
+    await countRef('couriers (โปรไฟล์คนส่ง)', 'couriers', 'profile_id');
+  } catch (err) {
+    recordCheckFailure('profile reference checks', 'profiles', 'id', err, 'profile');
+  }
+
+  // Stores owned by user: if any store has order/interaction history, preserve it.
+  let ownedStores = [];
+  try {
+    const { data, error: storesErr } = await supabaseAdmin
+      .from('stores')
+      .select('id, name')
+      .eq('owner_id', userId);
+    if (storesErr) {
+      recordCheckFailure('stores (ร้านของผู้ใช้)', 'stores', 'owner_id', storesErr, 'store');
+    } else {
+      ownedStores = data || [];
+    }
+  } catch (err) {
+    recordCheckFailure('stores (ร้านของผู้ใช้)', 'stores', 'owner_id', err, 'store');
+  }
+  const storeIds = ownedStores.map((s) => s.id);
+
+  if (storeIds.length > 0) {
+    // store_orders.store_id and conversations.store_id exist in schema.
+    await countRefsIn('store_orders (ร้านของผู้ใช้มีประวัติคำสั่งซื้อ)', 'store_orders', 'store_id', storeIds, {
+      stores: ownedStores.map((s) => ({ id: s.id, name: s.name })),
+    });
+    await countRefsIn('conversations (ร้านของผู้ใช้)', 'conversations', 'store_id', storeIds, {
+      stores: ownedStores.map((s) => ({ id: s.id, name: s.name })),
+    });
+
+    // Deliveries are related to stores via store_orders in this schema (no deliveries.store_id).
+    // If store_orders rows cannot be fetched reliably, record verification issue (fail-safe).
+    let storeOrders = [];
+    let storeOrdersRowsFailed = false;
+    try {
+      const { data, error: soRowsErr } = await supabaseAdmin
+        .from('store_orders')
+        .select('id')
+        .in('store_id', storeIds);
+      if (soRowsErr) {
+        recordCheckFailure('store_orders (rows, ร้านของผู้ใช้)', 'store_orders', 'store_id', soRowsErr, 'store');
+        storeOrdersRowsFailed = true;
+      } else {
+        storeOrders = data || [];
+      }
+    } catch (err) {
+      recordCheckFailure('store_orders (rows, ร้านของผู้ใช้)', 'store_orders', 'store_id', err, 'store');
+      storeOrdersRowsFailed = true;
+    }
+
+    if (!storeOrdersRowsFailed) {
+      const storeOrderIds = storeOrders.map((r) => r.id);
+      if (storeOrderIds.length > 0) {
+        await countRefsIn('deliveries (ร้านของผู้ใช้/คำสั่งซื้อร้าน)', 'deliveries', 'store_order_id', storeOrderIds, {
+          stores: ownedStores.map((s) => ({ id: s.id, name: s.name })),
+        });
+      }
+    }
+  }
+
+  if (verificationIssues.length > 0) {
+    // Do not guess. If we cannot verify references reliably, never hard-delete.
+    const issueSummary = verificationIssues
+      .map((i) => `${i.table}.${i.column} (${i.kind})`)
+      .join(', ');
+    await setUserActive(userId, false, callerId, callerRole).catch(() => deactivateAccount(userId));
+    const { data: anonymized } = await supabaseAdmin
+      .from('profiles')
+      .update({
+        name: 'บัญชีที่ถูกปิดใช้งาน',
+        phone: null,
+        avatar_url: null,
+      })
+      .eq('id', userId)
+      .select()
+      .single();
+    return {
+      action: 'deactivated',
+      reason: `ไม่สามารถตรวจสอบข้อมูลอ้างอิงที่จำเป็นได้อย่างครบถ้วน (${issueSummary}) ระบบจึงปิดใช้งานแทนการลบถาวรเพื่อความปลอดภัย (ไม่ลบประวัติธุรกรรม)`,
+      references: blocking,
+      verificationIssues,
+      profile: anonymized || targetUser,
+    };
+  }
+
+  if (blocking.length > 0) {
+    // Preserve business/transaction history: do not hard-delete; deactivate and keep data.
+    // Anonymize minimal PII on profile if deactivating (keep id for FK integrity).
+    await setUserActive(userId, false, callerId, callerRole).catch(() => deactivateAccount(userId));
+  const { data: anonymized } = await supabaseAdmin
+      .from('profiles')
+      .update({
+        name: 'บัญชีที่ถูกปิดใช้งาน',
+        phone: null,
+        avatar_url: null,
+      })
+      .eq('id', userId)
+      .select()
+      .single();
+
+    return {
+      action: 'deactivated',
+      reason: 'มีข้อมูลธุรกิจ/ประวัติที่ต้องรักษา ระบบจึงปิดใช้งานและจัดการข้อมูลส่วนบุคคลแทนการลบถาวร (ไม่ลบคำสั่งซื้อ/ข้อความ/ประวัติธุรกรรม)',
+      references: blocking,
+      profile: anonymized || targetUser,
+    };
+  }
+
+  // Safe to hard-delete: remove owned stores (cascade will remove products,
+  // store_products etc. — but we already verified no blocking store history above).
+  if (storeIds.length > 0) {
+    try {
+      const { error: delStoresErr } = await supabaseAdmin
+        .from('stores')
+        .delete()
+        .eq('owner_id', userId);
+      if (delStoresErr) {
+        throw new AppError(`ลบร้านค้าของผู้ใช้ไม่สำเร็จ: ${delStoresErr.message}`, 500);
+      }
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      throw new AppError(`ลบร้านค้าของผู้ใช้ไม่สำเร็จ: ${err?.message || String(err)}`, 500);
+    }
+  }
+
+  // Best-effort cleanup of user-owned non-critical rows that may block profile/auth deletion.
+  // These are not business/transaction history and may not exist in every environment.
+  const safeDeletes = [
+    ['notifications', 'recipient_id'],
+    ['carts', 'user_id'],
+    ['wishlists', 'user_id'],
+    ['addresses', 'user_id'],
+    ['profile_addresses', 'profile_id'],
+    ['user_sessions', 'user_id'],
+  ];
+  for (const [table, column] of safeDeletes) {
+    try {
+      const { error } = await supabaseAdmin.from(table).delete().eq(column, userId);
+      if (error) {
+        console.warn(`adminDeleteUserAccount cleanup skipped ${table}.${column}: ${error.message}`);
+      }
+    } catch (err) {
+      console.warn(`adminDeleteUserAccount cleanup skipped ${table}.${column}: ${err?.message || String(err)}`);
+    }
+  }
+
+  // Revoke/cleanup auth-related state best-effort, then delete auth user.
+  // If auth delete fails or cannot be confirmed, do NOT report success as deleted.
+  try {
+    const { error: authDeleteError } = await supabaseAdmin.auth.admin.deleteUser(userId);
+    if (authDeleteError) {
+      throw authDeleteError;
+    }
+  } catch (err) {
+    // Fallback: attempt profile removal only if auth deletion failed (e.g. auth row missing),
+    // but never report "deleted" if auth state is uncertain/inconsistent.
+    let profileDelErr = null;
+    try {
+      const res = await supabaseAdmin.from('profiles').delete().eq('id', userId);
+      profileDelErr = res?.error || null;
+    } catch (e) {
+      profileDelErr = e;
+    }
+    if (profileDelErr) {
+      throw new AppError(`ลบบัญชีจากระบบยืนยันตัวตนไม่สำเร็จ: ${err?.message || 'unknown error'} (${profileDelErr.message || profileDelErr})`, 500);
+    }
+    throw new AppError(`ลบบัญชีจากระบบยืนยันตัวตนไม่สำเร็จ: ${err?.message || 'unknown error'} (สถานะ Auth/โปรไฟล์อาจไม่สอดคล้องกัน กรุณาตรวจสอบ)`, 500);
+  }
+
+  // Ensure profile is gone (if cascade didn't apply in some env). If this fails after auth delete,
+  // report error clearly so caller does not assume full success.
+  try {
+    const { error: profileCleanupErr } = await supabaseAdmin
+      .from('profiles')
+      .delete()
+      .eq('id', userId);
+    if (profileCleanupErr) {
+      throw new AppError(`ลบโปรไฟล์หลังลบจากระบบยืนยันตัวตนไม่สมบูรณ์ กรุณาตรวจสอบสถานะบัญชี (Auth อาจถูกลบแล้ว): ${profileCleanupErr.message}`, 500);
+    }
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    throw new AppError(`ลบโปรไฟล์หลังลบจากระบบยืนยันตัวตนไม่สมบูรณ์ กรุณาตรวจสอบสถานะบัญชี (Auth อาจถูกลบแล้ว): ${err?.message || String(err)}`, 500);
+  }
+
+  return { action: 'deleted', profile: { id: targetUser.id, email: targetUser.email, name: targetUser.name } };
+};
 // Admin: Update user role
 export const updateUserRole = async (userId, newRole, adminId) => {
   if (!['customer', 'seller', 'admin', 'owner', 'courier'].includes(newRole)) {

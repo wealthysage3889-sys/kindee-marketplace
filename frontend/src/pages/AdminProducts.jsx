@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { productAPI } from "../api/product";
+import { adminAPI } from "../api/admin";
 import { extractList } from "../utils/helpers";
 
 const IMAGE_COUNT = 3;
@@ -47,14 +48,19 @@ export default function AdminProducts() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
   const [formSuccess, setFormSuccess] = useState("");
+  const [openedImage, setOpenedImage] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const [deleteSuccess, setDeleteSuccess] = useState("");
 
   const fetchProducts = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await productAPI.getProducts({}, "admin");
+      // Admin management must see EVERY product (active + inactive), so use the
+      // admin endpoint. The public /products endpoint only returns active items
+      // and would hide deactivated products from this screen.
+      const response = await adminAPI.getProducts();
       // API responds { success: true, data: { products, pagination } }
       setProducts(extractList(response, "products"));
     } catch (err) {
@@ -157,6 +163,14 @@ export default function AdminProducts() {
   const closeModal = () => {
     setShowModal(false);
     resetForm();
+  };
+
+  const openImageViewer = (url) => {
+    setOpenedImage(url);
+  };
+
+  const closeImageViewer = () => {
+    setOpenedImage(null);
   };
 
   const handleSubmit = async (event) => {
@@ -273,14 +287,37 @@ export default function AdminProducts() {
 
   const confirmDelete = async () => {
     if (!deleteTarget || deleting) return;
-    const productId = deleteTarget._id || deleteTarget.id;
+    // Prefer the canonical id; fall back to _id for legacy payloads. Never use
+    // the row index here.
+    const productId = deleteTarget.id || deleteTarget._id;
+    if (!productId) {
+      setDeleteError("ไม่พบรหัสสินค้า ไม่สามารถลบได้");
+      return;
+    }
+
     setDeleting(true);
     setDeleteError("");
     try {
-      await productAPI.deleteProduct(productId, "admin");
+      const response = await adminAPI.deleteProduct(productId);
+      // The backend either hard-deletes an unreferenced product or deactivates a
+      // product that still has order history. Report the real outcome so the UI
+      // never claims a permanent deletion that did not happen.
+      const action = response?.data?.action;
+      if (action === "deactivated") {
+        setDeleteSuccess(
+          response?.message ||
+            "สินค้านี้มีประวัติคำสั่งซื้ออ้างอิงอยู่ จึงปิดการขายแทนการลบถาวร เพื่อรักษาประวัติการซื้อ"
+        );
+      } else {
+        setDeleteSuccess(response?.message || "ลบสินค้าสำเร็จ");
+      }
       setDeleteTarget(null);
+      // Reload so the row disappears (hard delete) or shows as inactive
+      // (soft delete) immediately.
       await fetchProducts();
+      setTimeout(() => setDeleteSuccess(""), 5000);
     } catch (err) {
+      // Surface the real failure reason (404 not found / 403 / 500 ...).
       setDeleteError(errorMessage(err, "ลบสินค้าไม่สำเร็จ"));
     } finally {
       setDeleting(false);
@@ -308,7 +345,7 @@ export default function AdminProducts() {
   }, [deleteTarget, deleting]);
 
   return (
-    <div className="page">
+    <div className="page admin-products-page">
       <div className="admin-products-header">
         <h1>จัดการสินค้า</h1>
         <button type="button" className="btn" onClick={openCreateModal}>
@@ -317,6 +354,7 @@ export default function AdminProducts() {
       </div>
 
       {error && <div className="form-error" role="alert">{error}</div>}
+      {deleteSuccess && <div className="form-success" role="status">{deleteSuccess}</div>}
 
       {loading ? (
         <div className="home-loading">กำลังโหลดสินค้า...</div>
@@ -458,7 +496,7 @@ export default function AdminProducts() {
             {formSuccess && <div className="form-success" role="status">{formSuccess}</div>}
 
             <form onSubmit={handleSubmit} className="product-form account-modal-form" noValidate>
-              <div className="form-group">
+              <div className="form-group form-full-width">
                 <label className="form-label">{fieldLabels.name}</label>
                 <input
                   className="form-input"
@@ -499,7 +537,7 @@ export default function AdminProducts() {
                     onChange={handleInput("discountPrice")}
                     placeholder="ราคาพิเศษ (ถ้ามี)"
                   />
-                  <span className="form-hint">เว้นว่างได้หากไม่มีส่วนลด และต้องน้อยกว่าราคาปกติ</span>
+                  <span className="form-hint">เว้นว่างได้หากไม่มีส่วนลด</span>
                 </div>
               </div>
 
@@ -531,7 +569,7 @@ export default function AdminProducts() {
                 </div>
               </div>
 
-              <div className="form-group">
+              <div className="form-group form-full-width">
                 <label className="form-label">{fieldLabels.description}</label>
                 <textarea
                   className="form-input"
@@ -543,14 +581,14 @@ export default function AdminProducts() {
                 />
               </div>
 
-              <div className="form-group">
+              <div className="form-group form-full-width">
                 <label className="form-label">รูปภาพสินค้า (สูงสุด 3 รูป)</label>
                 <div className="image-grid">
                   {/* Existing images */}
                   {existingImages.map((img, index) => (
-                    <div key={`existing-${index}`} className="image-slot">
+                    <div key={`existing-${index}`} className="image-slot" onClick={() => openImageViewer(img)}>
                       <img src={img} alt={`รูปที่ ${index + 1}`} className="image-preview" />
-                      <button type="button" className="image-remove" onClick={() => removeExistingImage(index)}>ลบ</button>
+                      <button type="button" className="image-remove" onClick={(e) => { e.stopPropagation(); removeExistingImage(index); }}>ลบ</button>
                     </div>
                   ))}
                   {/* New image slots */}
@@ -558,8 +596,8 @@ export default function AdminProducts() {
                     <div key={`new-${index}`} className="image-slot">
                       {previews[index] && !existingImages[index] ? (
                         <>
-                          <img src={previews[index]} alt={`รูปใหม่ ${index + 1}`} className="image-preview" />
-                          <button type="button" className="image-remove" onClick={() => removeImage(index)}>ลบ</button>
+                          <img src={previews[index]} alt={`รูปใหม่ ${index + 1}`} className="image-preview" onClick={() => openImageViewer(previews[index])} />
+                          <button type="button" className="image-remove" onClick={(e) => { e.stopPropagation(); removeImage(index); }}>ลบ</button>
                         </>
                       ) : (
                         <>
@@ -587,6 +625,16 @@ export default function AdminProducts() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {openedImage && (
+        <div className="image-viewer-overlay" onClick={closeImageViewer}>
+          <div className="image-viewer" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="image-viewer-close" onClick={closeImageViewer} aria-label="ปิด">×</button>
+            <img src={openedImage} alt="ตัวอย่างรูปสินค้า" />
+            <div className="image-viewer-caption">คลิกที่พื้นที่รอบนอกเพื่อปิด</div>
           </div>
         </div>
       )}
@@ -636,6 +684,10 @@ export default function AdminProducts() {
 
             <p className="delete-warning">
               คุณต้องการลบสินค้านี้ใช่หรือไม่? การดำเนินการนี้ไม่สามารถย้อนกลับได้
+            </p>
+            <p className="delete-hint">
+              หากสินค้านี้มีประวัติคำสั่งซื้ออ้างอิงอยู่ ระบบจะปิดการขายสินค้าแทน
+              เพื่อรักษาประวัติการซื้อไว้
             </p>
 
             <div className="account-modal-actions">

@@ -1,5 +1,9 @@
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { addressAPI, orderAPI } from "../api";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { extractList, formatThaiPhone, validateThaiPhone } from "../utils/helpers";
+import StoreLocationMap from "../components/StoreLocationMap";
 
 const UserIcon = ({ size = 26 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -84,6 +88,87 @@ const LOGOUT_ICON = (
   </svg>
 );
 
+const ThreeDotsIcon = ({ size = 22 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="6" r="1" />
+    <circle cx="12" cy="12" r="1" />
+    <circle cx="12" cy="18" r="1" />
+  </svg>
+);
+
+const SettingsIcon = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+  </svg>
+);
+
+const EditProfileIcon = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+  </svg>
+);
+
+const AddressIcon = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+    <circle cx="12" cy="10" r="3" />
+  </svg>
+);
+
+const SecurityIcon = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="2" y="6" width="20" height="12" rx="2" />
+    <path d="M12 6v-4" />
+    <path d="M12 18v4" />
+    <path d="M8 12h8" />
+  </svg>
+);
+
+const EMPTY_ADDRESS_FORM = {
+  label: "",
+  recipient_name: "",
+  phone: "",
+  street: "",
+  district: "",
+  province: "",
+  postal_code: "",
+  coordinates: null,
+  is_default: false,
+};
+
+const addressToForm = (address) => ({
+  label: address?.label || "",
+  recipient_name: address?.recipient_name || "",
+  phone: address?.phone || "",
+  street: address?.street || "",
+  district: address?.district || "",
+  province: address?.province || "",
+  postal_code: address?.postal_code || "",
+  coordinates:
+    address?.lat !== undefined &&
+    address?.lat !== null &&
+    address?.lng !== undefined &&
+    address?.lng !== null
+      ? { lat: Number(address.lat), lng: Number(address.lng) }
+      : null,
+  is_default: Boolean(address?.is_default),
+});
+
+const addressLines = (address) =>
+  [address?.street, address?.district, address?.province, address?.postal_code]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+
+const hasValidCoordinates = (address) =>
+  address?.lat !== undefined &&
+  address?.lat !== null &&
+  address?.lng !== undefined &&
+  address?.lng !== null &&
+  Number.isFinite(Number(address.lat)) &&
+  Number.isFinite(Number(address.lng));
+
 const PURCHASE_TILES = [
   { key: "topay", label: "ที่ต้องชำระ", Icon: WalletPayIcon, badge: 0 },
   { key: "toreceive", label: "ที่ต้องจัดส่ง", Icon: BoxIcon, badge: 0 },
@@ -116,6 +201,264 @@ export default function Account() {
   const navigate = useNavigate();
   const isLoggedIn = Boolean(user);
 
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+  const [activeModal, setActiveModal] = useState(null);
+
+  const [orders, setOrders] = useState([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [ordersError, setOrdersError] = useState("");
+  const [addresses, setAddresses] = useState([]);
+  const [addressesLoading, setAddressesLoading] = useState(false);
+  const [addressesError, setAddressesError] = useState("");
+  const [addressFormOpen, setAddressFormOpen] = useState(false);
+  const [editingAddressId, setEditingAddressId] = useState(null);
+  const [addressForm, setAddressForm] = useState(EMPTY_ADDRESS_FORM);
+  const [addressFormError, setAddressFormError] = useState("");
+  const [addressSaving, setAddressSaving] = useState(false);
+  const [addressActionId, setAddressActionId] = useState(null);
+  const [walletBalance, setWalletBalance] = useState(0);
+  const [walletCoins, setWalletCoins] = useState(0);
+  const [walletVouchers, setWalletVouchers] = useState([]);
+  const [cards, setCards] = useState([]);
+  const [bankAccounts, setBankAccounts] = useState([]);
+  const [financeHistory, setFinanceHistory] = useState([]);
+
+  const loadOrders = useCallback(async () => {
+    if (!isLoggedIn) return;
+    setOrdersLoading(true);
+    setOrdersError("");
+    try {
+      const result = await orderAPI.getMyOrders({ limit: 50 });
+      const list = result?.data?.orders || result?.data || [];
+      setOrders(Array.isArray(list) ? list : []);
+    } catch (err) {
+      setOrdersError(err.message || "ไม่สามารถ加载ประวัติคำสั่งซื้อได้");
+    } finally {
+      setOrdersLoading(false);
+    }
+  }, [isLoggedIn]);
+
+  const loadAddresses = useCallback(async () => {
+    if (!isLoggedIn) return;
+    setAddressesLoading(true);
+    setAddressesError("");
+    try {
+      const result = await addressAPI.getAddresses();
+      setAddresses(extractList(result, "addresses"));
+    } catch (err) {
+      setAddressesError(err.message || "ไม่สามารถโหลดที่อยู่ได้");
+    } finally {
+      setAddressesLoading(false);
+    }
+  }, [isLoggedIn]);
+
+  const loadWallet = useCallback(async () => {
+    if (!isLoggedIn) return;
+    try {
+      const result = await orderAPI.getWallet ? await orderAPI.getWallet() : null;
+      const data = result?.data || result || {};
+      setWalletBalance(data.balance ?? 0);
+      setWalletCoins(data.coins ?? 0);
+      setWalletVouchers(Array.isArray(data.vouchers) ? data.vouchers : []);
+    } catch {
+      // silent
+    }
+  }, [isLoggedIn]);
+
+  const loadFinance = useCallback(async () => {
+    if (!isLoggedIn) return;
+    try {
+      const result = await orderAPI.getFinance ? await orderAPI.getFinance() : null;
+      const data = result?.data || result || {};
+      setCards(Array.isArray(data.cards) ? data.cards : []);
+      setBankAccounts(Array.isArray(data.banks) ? data.banks : []);
+      setFinanceHistory(Array.isArray(data.history) ? data.history : []);
+    } catch {
+      // silent
+    }
+  }, [isLoggedIn]);
+
+  useEffect(() => {
+    if (activeModal === "orders-all" || activeModal === "orders-topay" || activeModal === "orders-toreceive" || activeModal === "orders-toship" || activeModal === "orders-toreview") {
+      loadOrders();
+    }
+    if (activeModal === "addresses") {
+      loadAddresses();
+    }
+    if (activeModal === "wallet-balance" || activeModal === "wallet-coins" || activeModal === "wallet-voucher") {
+      loadWallet();
+    }
+    if (activeModal === "finance-cards" || activeModal === "finance-bank" || activeModal === "finance-history") {
+      loadFinance();
+    }
+  }, [activeModal, loadOrders, loadAddresses, loadWallet, loadFinance]);
+
+  const handleOpenModal = (modalName) => setActiveModal(modalName);
+
+  const handleCloseModal = () => {
+    setActiveModal(null);
+    setAddressFormOpen(false);
+    setEditingAddressId(null);
+    setAddressForm(EMPTY_ADDRESS_FORM);
+    setAddressFormError("");
+  };
+
+  const openAddressForm = (address = null) => {
+    setEditingAddressId(address?.id || null);
+    setAddressForm(addressToForm(address));
+    setAddressFormError("");
+    setAddressFormOpen(true);
+  };
+
+  const handleAddressFieldChange = (field, value) => {
+    setAddressForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleAddressSubmit = async (event) => {
+    event.preventDefault();
+    setAddressFormError("");
+
+    if (!addressForm.label.trim()) {
+      setAddressFormError("กรุณาระบุชื่อที่อยู่");
+      return;
+    }
+    if (!addressForm.recipient_name.trim()) {
+      setAddressFormError("กรุณาระบุชื่อผู้รับ");
+      return;
+    }
+    if (!validateThaiPhone(addressForm.phone)) {
+      setAddressFormError("กรุณากรอกเบอร์โทรศัพท์ให้ถูกต้อง");
+      return;
+    }
+    if (!addressForm.street.trim() || !addressForm.district.trim() || !addressForm.province.trim()) {
+      setAddressFormError("กรุณากรอกที่อยู่ ตำบล/แขวง และจังหวัด");
+      return;
+    }
+    if (!/^[0-9]{5}$/.test(addressForm.postal_code.trim())) {
+      setAddressFormError("รหัสไปรษณีย์ต้องมี 5 หลัก");
+      return;
+    }
+
+    const payload = {
+      label: addressForm.label.trim(),
+      recipient_name: addressForm.recipient_name.trim(),
+      phone: addressForm.phone.trim(),
+      street: addressForm.street.trim(),
+      district: addressForm.district.trim(),
+      province: addressForm.province.trim(),
+      postal_code: addressForm.postal_code.trim(),
+      lat: addressForm.coordinates?.lat ?? null,
+      lng: addressForm.coordinates?.lng ?? null,
+      is_default: Boolean(addressForm.is_default),
+    };
+
+    setAddressSaving(true);
+    try {
+      if (editingAddressId) {
+        await addressAPI.update(editingAddressId, payload);
+      } else {
+        await addressAPI.create(payload);
+      }
+      await loadAddresses();
+      setAddressFormOpen(false);
+      setEditingAddressId(null);
+      setAddressForm(EMPTY_ADDRESS_FORM);
+    } catch (err) {
+      setAddressFormError(err.message || "ไม่สามารถบันทึกที่อยู่ได้");
+    } finally {
+      setAddressSaving(false);
+    }
+  };
+
+  const handleDeleteAddress = async (address) => {
+    const confirmed = window.confirm(`ต้องการลบที่อยู่ "${address.label || address.recipient_name}" หรือไม่?`);
+    if (!confirmed) return;
+
+    setAddressesError("");
+    setAddressActionId(address.id);
+    try {
+      await addressAPI.remove(address.id);
+      if (editingAddressId === address.id) {
+        setAddressFormOpen(false);
+        setEditingAddressId(null);
+      }
+      await loadAddresses();
+    } catch (err) {
+      setAddressesError(err.message || "ไม่สามารถลบที่อยู่ได้");
+    } finally {
+      setAddressActionId(null);
+    }
+  };
+
+  const handleSetDefaultAddress = async (address) => {
+    setAddressesError("");
+    setAddressActionId(address.id);
+    try {
+      await addressAPI.setDefault(address.id);
+      await loadAddresses();
+    } catch (err) {
+      setAddressesError(err.message || "ไม่สามารถตั้งค่าที่อยู่หลักได้");
+    } finally {
+      setAddressActionId(null);
+    }
+  };
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setIsMenuOpen(false);
+      }
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === "Escape") {
+        setIsMenuOpen(false);
+      }
+    };
+
+    if (isMenuOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+      document.addEventListener("keydown", handleEscape);
+    }
+
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [isMenuOpen]);
+
+  const closeMenu = () => setIsMenuOpen(false);
+
+  const handleMenuItemClick = (action) => {
+    closeMenu();
+    switch (action) {
+      case "settings":
+        handleOpenModal("settings");
+        break;
+      case "profile":
+        handleOpenModal("profile");
+        break;
+      case "address":
+        handleOpenModal("addresses");
+        break;
+      case "security":
+        handleOpenModal("security");
+        break;
+      case "wallet":
+        handleOpenModal("wallet");
+        break;
+      case "orders":
+        handleOpenModal("orders");
+        break;
+      case "logout":
+        handleLogout();
+        break;
+      default:
+        break;
+    }
+  };
+
   const handleLogout = () => {
     logout("customer");
     navigate("/");
@@ -130,7 +473,16 @@ export default function Account() {
       key={key}
       type="button"
       className="acct-tile"
-      onClick={handleLockedAction}
+      onClick={() => {
+        if (!isLoggedIn) {
+          navigate("/login");
+          return;
+        }
+        if (key === "topay") handleOpenModal("orders-topay");
+        else if (key === "toreceive") handleOpenModal("orders-toreceive");
+        else if (key === "toship") handleOpenModal("orders-toship");
+        else if (key === "toreview") handleOpenModal("orders-toreview");
+      }}
     >
       <span className="acct-tile-icon">
         <Icon />
@@ -141,7 +493,23 @@ export default function Account() {
   );
 
   const renderRowItem = ({ key, label, Icon }) => (
-    <button key={key} type="button" className="acct-row-item" onClick={handleLockedAction}>
+    <button
+      key={key}
+      type="button"
+      className="acct-row-item"
+      onClick={() => {
+        if (!isLoggedIn) {
+          navigate("/login");
+          return;
+        }
+        if (key === "balance") handleOpenModal("wallet-balance");
+        else if (key === "coins") handleOpenModal("wallet-coins");
+        else if (key === "voucher") handleOpenModal("wallet-voucher");
+        else if (key === "cards") handleOpenModal("finance-cards");
+        else if (key === "bank") handleOpenModal("finance-bank");
+        else if (key === "history") handleOpenModal("finance-history");
+      }}
+    >
       <span className="acct-row-item-icon">
         <Icon />
       </span>
@@ -152,9 +520,9 @@ export default function Account() {
     </button>
   );
 
-  return (
+return (
     <div className="page acct-page">
-      <section className="acct-hero">
+      <section className="acct-hero" style={{ position: "relative" }}>
         <div className="acct-hero-inner">
           <div className="acct-profile">
             <div className="acct-avatar">
@@ -180,30 +548,118 @@ export default function Account() {
             </div>
           </div>
 
-          <div className="acct-hero-actions">
-            {isLoggedIn ? (
-              <button type="button" className="acct-btn acct-btn-ghost" onClick={handleLogout}>
-                <span className="acct-btn-icon">{LOGOUT_ICON}</span>
-                ออกจากระบบ
+          {isLoggedIn && (
+            <div
+              className="acct-menu-wrapper"
+              style={{ position: "absolute", top: "16px", right: "16px", zIndex: "20" }}
+              ref={menuRef}
+            >
+              <button
+                type="button"
+                className="acct-menu-btn"
+                onClick={() => setIsMenuOpen(!isMenuOpen)}
+                aria-expanded={isMenuOpen}
+                aria-haspopup="true"
+                aria-label="菜单设置账户"
+              >
+                <ThreeDotsIcon size={22} />
               </button>
-            ) : (
-              <>
-                <Link to="/register" className="acct-btn acct-btn-ghost">
-                  ลงทะเบียน
-                </Link>
-                <Link to="/login" className="acct-btn acct-btn-solid">
-                  เข้าสู่ระบบ
-                </Link>
-              </>
-            )}
-          </div>
+
+              {isMenuOpen && (
+                <div
+                  className="acct-dropdown-menu"
+                  style={{ position: "absolute", top: "100%", right: "0", marginTop: "8px", zIndex: "30" }}
+                  role="menu"
+                >
+                  <button
+                    type="button"
+                    className="acct-dropdown-item"
+                    role="menuitem"
+                    onClick={() => handleMenuItemClick("settings")}
+                  >
+                    <span className="acct-dropdown-icon">
+                      <SettingsIcon />
+                    </span>
+                    ตั้งค่าบัญชี
+                  </button>
+<button
+                     type="button"
+                     className="acct-dropdown-item"
+                     role="menuitem"
+                     onClick={() => handleMenuItemClick("profile")}
+                   >
+                     <span className="acct-dropdown-icon">
+                       <EditProfileIcon />
+                     </span>
+                     แก้ไขข้อมูลส่วนตัว
+                   </button>
+                   <button
+                     type="button"
+                     className="acct-dropdown-item"
+                     role="menuitem"
+                     onClick={() => handleMenuItemClick("address")}
+                   >
+                     <span className="acct-dropdown-icon">
+                       <AddressIcon />
+                     </span>
+                     จัดการที่อยู่จัดส่ง
+                   </button>
+                  <button
+                    type="button"
+                    className="acct-dropdown-item"
+                    role="menuitem"
+                    onClick={() => handleMenuItemClick("security")}
+                  >
+                    <span className="acct-dropdown-icon">
+                      <SecurityIcon />
+                    </span>
+                    ความปลอดภัย / บัญชีที่เชื่อมต่อ
+                  </button>
+                  <button
+                    type="button"
+                    className="acct-dropdown-item"
+                    role="menuitem"
+                    onClick={() => handleMenuItemClick("wallet")}
+                  >
+                    <span className="acct-dropdown-icon">
+                      <WalletIcon />
+                    </span>
+                    กระเป๋าเงิน
+                  </button>
+                  <button
+                    type="button"
+                    className="acct-dropdown-item"
+                    role="menuitem"
+                    onClick={() => handleMenuItemClick("orders")}
+                  >
+                    <span className="acct-dropdown-icon">
+                      <BoxIcon />
+                    </span>
+                    รายการซื้อ
+                  </button>
+                  <hr className="acct-dropdown-divider" />
+                  <button
+                    type="button"
+                    className="acct-dropdown-item acct-dropdown-item-danger"
+                    role="menuitem"
+                    onClick={() => handleMenuItemClick("logout")}
+                  >
+                    <span className="acct-dropdown-icon">
+                      {LOGOUT_ICON}
+                    </span>
+                    ออกจากระบบ
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </section>
 
       <section className="acct-card">
         <header className="acct-card-head">
           <h2 className="acct-card-title">การซื้อของฉัน</h2>
-          <button type="button" className="acct-link-more" onClick={handleLockedAction}>
+          <button type="button" className="acct-link-more" onClick={() => (isLoggedIn ? handleOpenModal("orders-all") : navigate("/login"))}>
             ดูทั้งหมด
             <ChevronRightIcon />
           </button>
@@ -236,6 +692,268 @@ export default function Account() {
           <div className="acct-row-list">{FINANCE_ITEMS.map(renderRowItem)}</div>
         </section>
       </div>
+
+      {activeModal && (
+        <div className="modal-backdrop" onClick={handleCloseModal}>
+          <div className="modal-container" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="modal-close" onClick={handleCloseModal} aria-label="ปิด">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 6 6 18" />
+                <path d="m6 6 12 12" />
+              </svg>
+            </button>
+            <div className="modal-body">
+              {activeModal === "settings" && (
+                <div>
+                  <h3>ตั้งค่าบัญชี</h3>
+                  <p>ตัวเลือกการจัดการบัญชีของคุณ</p>
+                </div>
+              )}
+              {activeModal === "edit-profile" && (
+                <div>
+                  <h3>แก้ไขข้อมูลส่วนตัว</h3>
+                  <form className="modal-form">
+                    <div className="form-group">
+                      <label className="form-label">ชื่อ</label>
+                      <input type="text" className="form-input" defaultValue={user?.name || ""} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">เบอร์||(number)</label>
+                      <input type="tel" className="form-input" defaultValue={user?.phone || ""} />
+                    </div>
+                    <div className="form-actions">
+                      <button type="button" className="btn-outline" onClick={handleCloseModal}>Cancel</button>
+                      <button type="button" className="btn">Save</button>
+                    </div>
+                  </form>
+                </div>
+              )}
+              {activeModal === "addresses" && (
+                <div>
+                  <h3>จัดการที่อยู่จัดส่ง</h3>
+                  {addressesLoading ? (
+                    <p>กำลังโหลดที่อยู่...</p>
+                  ) : (
+                    <>
+                      {addressesError && <p className="form-hint-error">{addressesError}</p>}
+                      {addressFormOpen ? (
+                        <form className="modal-form" onSubmit={handleAddressSubmit}>
+                          <div className="form-group">
+                            <label className="form-label" htmlFor="address-label">ชื่อที่อยู่ *</label>
+                            <input
+                              id="address-label"
+                              type="text"
+                              className="form-input"
+                              value={addressForm.label}
+                              onChange={(event) => handleAddressFieldChange("label", event.target.value)}
+                              placeholder="เช่น บ้าน ที่ทำงาน"
+                              maxLength={50}
+                            />
+                          </div>
+                          <div className="form-row">
+                            <div className="form-group">
+                              <label className="form-label" htmlFor="address-recipient">ชื่อผู้รับ *</label>
+                              <input
+                                id="address-recipient"
+                                type="text"
+                                className="form-input"
+                                value={addressForm.recipient_name}
+                                onChange={(event) => handleAddressFieldChange("recipient_name", event.target.value)}
+                                maxLength={120}
+                              />
+                            </div>
+                            <div className="form-group">
+                              <label className="form-label" htmlFor="address-phone">เบอร์โทรศัพท์ *</label>
+                              <input
+                                id="address-phone"
+                                type="tel"
+                                className="form-input"
+                                value={addressForm.phone}
+                                onChange={(event) => handleAddressFieldChange("phone", event.target.value)}
+                                placeholder="08X-XXX-XXXX"
+                              />
+                            </div>
+                          </div>
+                          <div className="form-group">
+                            <label className="form-label" htmlFor="address-street">ที่อยู่/ถนน/ซอย *</label>
+                            <input
+                              id="address-street"
+                              type="text"
+                              className="form-input"
+                              value={addressForm.street}
+                              onChange={(event) => handleAddressFieldChange("street", event.target.value)}
+                              maxLength={500}
+                            />
+                          </div>
+                          <div className="form-row">
+                            <div className="form-group">
+                              <label className="form-label" htmlFor="address-district">ตำบล/แขวง *</label>
+                              <input
+                                id="address-district"
+                                type="text"
+                                className="form-input"
+                                value={addressForm.district}
+                                onChange={(event) => handleAddressFieldChange("district", event.target.value)}
+                              />
+                            </div>
+                            <div className="form-group">
+                              <label className="form-label" htmlFor="address-province">จังหวัด *</label>
+                              <input
+                                id="address-province"
+                                type="text"
+                                className="form-input"
+                                value={addressForm.province}
+                                onChange={(event) => handleAddressFieldChange("province", event.target.value)}
+                              />
+                            </div>
+                          </div>
+                          <div className="form-group">
+                            <label className="form-label" htmlFor="address-postal">รหัสไปรษณีย์ *</label>
+                            <input
+                              id="address-postal"
+                              type="text"
+                              className="form-input"
+                              value={addressForm.postal_code}
+                              onChange={(event) => handleAddressFieldChange("postal_code", event.target.value)}
+                              inputMode="numeric"
+                              maxLength={5}
+                            />
+                          </div>
+                          <div className="form-group">
+                            <label className="form-label">พิกัดจัดส่งบนแผนที่</label>
+                            <StoreLocationMap
+                              value={addressForm.coordinates}
+                              onChange={(coordinates) => handleAddressFieldChange("coordinates", coordinates)}
+                              markerLabel="ตำแหน่งจัดส่ง"
+                              hint="คลิกบนแผนที่เพื่อปักหมุด หรือลากหมุดไปยังตำแหน่งจัดส่งจริง"
+                              height={220}
+                            />
+                          </div>
+                          <label className="address-default-toggle">
+                            <input
+                              type="checkbox"
+                              checked={addressForm.is_default}
+                              onChange={(event) => handleAddressFieldChange("is_default", event.target.checked)}
+                            />
+                            ตั้งเป็นที่อยู่หลัก
+                          </label>
+                          {addressFormError && <p className="form-hint-error">{addressFormError}</p>}
+                          <div className="form-actions">
+                            <button
+                              type="button"
+                              className="btn-outline"
+                              onClick={() => {
+                                setAddressFormOpen(false);
+                                setAddressFormError("");
+                              }}
+                            >
+                              ยกเลิก
+                            </button>
+                            <button type="submit" className="btn" disabled={addressSaving}>
+                              {addressSaving ? "กำลังบันทึก..." : "บันทึกที่อยู่"}
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <div className="address-book">
+                          {addresses.length === 0 ? (
+                            <p>ยังไม่มีที่อยู่ที่บันทึกไว้</p>
+                          ) : (
+                            <div className="address-list">
+                              {addresses.map((address) => {
+                                const lines = addressLines(address);
+                                const busy = addressActionId === address.id;
+                                return (
+                                  <article
+                                    className={`address-card ${address.is_default ? "is-default" : ""}`}
+                                    key={address.id}
+                                  >
+                                    <div className="address-card-head">
+                                      <div>
+                                        <h4>{address.label || "ที่อยู่"}</h4>
+                                        {address.is_default && <span className="address-default-badge">ที่อยู่หลัก</span>}
+                                      </div>
+                                      <div className="address-card-actions">
+                                        <button
+                                          type="button"
+                                          className="address-action"
+                                          onClick={() => openAddressForm(address)}
+                                          disabled={busy}
+                                        >
+                                          แก้ไข
+                                        </button>
+                                        {!address.is_default && (
+                                          <button
+                                            type="button"
+                                            className="address-action"
+                                            onClick={() => handleSetDefaultAddress(address)}
+                                            disabled={busy}
+                                          >
+                                            ตั้งเป็นหลัก
+                                          </button>
+                                        )}
+                                        <button
+                                          type="button"
+                                          className="address-action address-action-danger"
+                                          onClick={() => handleDeleteAddress(address)}
+                                          disabled={busy}
+                                        >
+                                          ลบ
+                                        </button>
+                                      </div>
+                                    </div>
+                                    <p className="address-recipient">
+                                      <strong>{address.recipient_name}</strong>
+                                      <span> · {formatThaiPhone(address.phone)}</span>
+                                    </p>
+                                    {lines.length > 0 && <p>{lines.join(" ")}</p>}
+                                    {hasValidCoordinates(address) && (
+                                      <p className="coordinates">
+                                        พิกัด: {Number(address.lat).toFixed(6)}, {Number(address.lng).toFixed(6)}
+                                      </p>
+                                    )}
+                                  </article>
+                                );
+                              })}
+                            </div>
+                          )}
+                          <button type="button" className="btn address-add-btn" onClick={() => openAddressForm()}>
+                            เพิ่มที่อยู่ใหม่
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+              {activeModal === "security" && (
+                <div>
+                  <h3>ความปลอดภัย / บัญชีที่เชื่อมต่อ</h3>
+                  <p>จัดการความปลอดภัยและบัญชีที่เชื่อมต่อ</p>
+                </div>
+              )}
+              {["orders-all", "orders-topay", "orders-toreceive", "orders-toship", "orders-toreview"].includes(activeModal) && (
+                <div>
+                  <h3>คำสั่งซื้อของฉัน</h3>
+                  <p>แสดงosi สถานะคำสั่งซื้อ</p>
+                </div>
+              )}
+              {["wallet-balance", "wallet-coins", "wallet-voucher"].includes(activeModal) && (
+                <div>
+                  <h3>My Wallet</h3>
+                  <p>ข้อมูลwallet</p>
+                </div>
+              )}
+              {["finance-cards", "finance-bank", "finance-history"].includes(activeModal) && (
+                <div>
+                  <h3>บริการทางการเงิน</h3>
+                  <p>ข้อมูลการเงิน</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

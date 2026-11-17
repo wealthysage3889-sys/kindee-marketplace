@@ -53,9 +53,16 @@ export default function LineCallback() {
     setMessage("");
     loginWithLine(code, redirectUri, "customer")
       .then(() => {
-        navigate("/", { replace: true });
+        let target = "/";
+        try {
+          const stored = sessionStorage.getItem("kindee:postLoginRedirect");
+          if (stored && stored.startsWith("/") && !stored.startsWith("//")) target = stored;
+          sessionStorage.removeItem("kindee:postLoginRedirect");
+        } catch {}
+        navigate(target, { replace: true });
       })
       .catch((err) => {
+        try { sessionStorage.removeItem("kindee:postLoginRedirect"); } catch {}
         setMessage(err.message || "เข้าสู่ระบบด้วย LINE ไม่สำเร็จ");
         setLoading(false);
       });

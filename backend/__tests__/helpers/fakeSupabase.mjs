@@ -18,7 +18,7 @@ const sameValue = (left, right) => String(left ?? null) === String(right ?? null
 const MISSING_ROW = { message: 'JSON object requested, multiple (or no) rows returned', code: 'PGRST116' };
 
 export function createFakeSupabase(seed = {}) {
-  const tables = {
+  const baseTables = {
     profiles: new Map(seed.profiles || []),
     stores: new Map(seed.stores || []),
     conversations: new Map(seed.conversations || []),
@@ -28,6 +28,10 @@ export function createFakeSupabase(seed = {}) {
     notifications: new Map(seed.notifications || []),
     settings: new Map(seed.settings || []),
   };
+  const tables = { ...baseTables };
+  for (const [name, rows] of Object.entries(seed || {})) {
+    if (!tables[name]) tables[name] = new Map(rows || []);
+  }
 
   const calls = [];
   const rpcCalls = [];
@@ -41,6 +45,7 @@ export function createFakeSupabase(seed = {}) {
     conversations: { type: 'direct', title: null, last_message_at: null, metadata: {} },
     message_attachments: { width: null, height: null, duration_seconds: null, thumbnail_url: null },
     notifications: { is_read: false, data: {} },
+    call_history: { status: 'ringing', metadata: {}, answered_at: null, ended_at: null, end_reason: null, duration_seconds: null },
   };
 
   const withDefaults = (table, payload) => ({
@@ -81,6 +86,11 @@ export function createFakeSupabase(seed = {}) {
 
   const comparable = (value) => {
     if (value === null || value === undefined) return null;
+    // ISO timestamp strings are compared as instants, never lexicographically.
+    if (typeof value === 'string') {
+      const time = Date.parse(value);
+      if (!Number.isNaN(time) && /T.*Z$|[+-]\d\d:\d\d$/.test(value)) return time;
+    }
     const time = new Date(value).getTime();
     return Number.isNaN(time) ? value : time;
   };
@@ -103,17 +113,23 @@ export function createFakeSupabase(seed = {}) {
       return !sameValue(row[key], expected);
     }
 
-    const comparisonMatch = (key, expectedValue) => {
-      const actualValue = comparable(row[key]);
+    // Comparison filters arrive as `lt.<column>` / `gt.<column>` from the
+    // builder; values are compared with `comparable()` so ISO timestamps are
+    // ordered as instants (a raw string compare would be lexicographic).
+    const comparisonMatch = (opColumn, expectedValue) => {
+      const opMatch = opColumn.match(/^(gt|gte|lt|lte)\.(.+)$/);
+      const operator = opMatch ? opMatch[1] : null;
+      const column = opMatch ? opMatch[2] : opColumn;
+      const actualValue = comparable(row[column]);
       const targetValue = comparable(expectedValue);
       if (actualValue === null || targetValue === null) return false;
-      if (key.startsWith('gt.')) return actualValue > targetValue;
-      if (key.startsWith('gte.')) return actualValue >= targetValue;
-      if (key.startsWith('lt.')) return actualValue < targetValue;
+      if (operator === 'gt') return actualValue > targetValue;
+      if (operator === 'gte') return actualValue >= targetValue;
+      if (operator === 'lt') return actualValue < targetValue;
       return actualValue <= targetValue;
     };
 
-    if (['gt', 'gte', 'lt', 'lte'].some((prefix) => column.startsWith(`${prefix}.`))) {
+    if (/^(gt|gte|lt|lte)\./.test(column)) {
       return comparisonMatch(column, expected);
     }
 
@@ -310,7 +326,7 @@ export function createFakeSupabase(seed = {}) {
     rpcCalls,
     from: (table) => {
       if (!tables[table]) {
-        throw new Error(`fake supabase: unknown table ${table}`);
+        tables[table] = new Map();
       }
       return makeQuery(table);
     },

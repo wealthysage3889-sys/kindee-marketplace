@@ -252,7 +252,97 @@ export const updateProduct = async (productId, storeId, ownerId, updates) => {
   return updatedProduct;
 };
 
-// Delete product
+// Count rows in other tables that reference a product. order_items uses
+// ON DELETE RESTRICT, so a product with order history can never be hard-deleted
+// without destroying purchase history. reviews / inventory_reservations use
+// ON DELETE CASCADE, which would silently wipe related data, so they are also
+// treated as references that force the safe (soft-delete) path.
+export const countProductReferences = async (productId) => {
+  const [orderItems, reviews, reservations] = await Promise.all([
+    supabaseAdmin.from('order_items').select('id', { count: 'exact', head: true }).eq('product_id', productId),
+    supabaseAdmin.from('reviews').select('id', { count: 'exact', head: true }).eq('product_id', productId),
+    supabaseAdmin.from('inventory_reservations').select('id', { count: 'exact', head: true }).eq('product_id', productId)
+  ]);
+
+  const orderItemsCount = orderItems.count || 0;
+  const reviewsCount = reviews.count || 0;
+  const reservationsCount = reservations.count || 0;
+
+  return {
+    orderItems: orderItemsCount,
+    reviews: reviewsCount,
+    reservations: reservationsCount,
+    total: orderItemsCount + reviewsCount + reservationsCount
+  };
+};
+
+// Delete a product as an administrator.
+//
+// Safety rules (do not break purchase history):
+//   - If the product is referenced by order_items / reviews / reservations we do
+//     NOT hard-delete it. Instead we "soft delete" by setting is_active = false so
+//     the product disappears from the storefront and admin active lists while the
+//     order history and its foreign keys stay intact.
+//   - Only a product with no references at all is physically removed.
+// The actual delete/update is verified by the number of rows Supabase returns, so
+// a missing id is reported as 404 instead of a false "success".
+export const adminDeleteProduct = async (productId) => {
+  // Throws NotFoundError (404) when the product does not exist.
+  const product = await getProductById(productId, true);
+
+  const references = await countProductReferences(productId);
+
+  if (references.total > 0) {
+    // Soft delete: keep the row for order history, just stop selling it.
+    const { data: updated, error } = await supabaseAdmin
+      .from('products')
+      .update({ is_active: false })
+      .eq('id', productId)
+      .select('id, is_active');
+
+    if (error) {
+      throw new AppError(`Product deactivation failed: ${error.message}`, 500);
+    }
+
+    if (!updated || updated.length === 0) {
+      // The row vanished between the existence check and the update.
+      throw new NotFoundError('Product');
+    }
+
+    return {
+      action: 'deactivated',
+      product: updated[0],
+      references
+    };
+  }
+
+  // Hard delete: no references, safe to remove the row completely.
+  const { data: deleted, error } = await supabaseAdmin
+    .from('products')
+    .delete()
+    .eq('id', productId)
+    .select('id');
+
+  if (error) {
+    throw new AppError(`Product deletion failed: ${error.message}`, 500);
+  }
+
+  if (!deleted || deleted.length === 0) {
+    throw new NotFoundError('Product');
+  }
+
+  return {
+    action: 'deleted',
+    product: deleted[0],
+    references
+  };
+};
+
+// Delete product (seller/owner path).
+// Keeps ownership verification, then applies the same safe strategy as the admin
+// path: soft-delete when the product is referenced by orders/reviews/reservations,
+// hard-delete only when it is completely unreferenced. Returns { action } so the
+// route can report whether the product was removed or deactivated.
 export const deleteProduct = async (productId, storeId, ownerId) => {
   const product = await getProductById(productId, true);
   if (product.store_id !== storeId) {
@@ -269,17 +359,38 @@ export const deleteProduct = async (productId, storeId, ownerId) => {
   if (!store) {
     throw new AppError('Not authorized to delete this product', 403);
   }
-  
-  const { error } = await supabaseAdmin
+
+  const references = await countProductReferences(productId);
+
+  if (references.total > 0) {
+    const { data: updated, error } = await supabaseAdmin
+      .from('products')
+      .update({ is_active: false })
+      .eq('id', productId)
+      .select('id, is_active');
+
+    if (error) {
+      throw new AppError(`Product deactivation failed: ${error.message}`, 500);
+    }
+    if (!updated || updated.length === 0) {
+      throw new NotFoundError('Product');
+    }
+    return { success: true, action: 'deactivated', product: updated[0], references };
+  }
+
+  const { data: deleted, error } = await supabaseAdmin
     .from('products')
     .delete()
-    .eq('id', productId);
-  
+    .eq('id', productId)
+    .select('id');
+
   if (error) {
     throw new AppError(`Product deletion failed: ${error.message}`, 500);
   }
-  
-  return { success: true };
+  if (!deleted || deleted.length === 0) {
+    throw new NotFoundError('Product');
+  }
+  return { success: true, action: 'deleted', product: deleted[0], references };
 };
 
 // Get public products (for customers)

@@ -1,4 +1,4 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 
 const DashboardIcon = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -57,6 +57,13 @@ const MENU_ITEMS = [
 ];
 
 export default function AdminNavbar() {
+  const location = useLocation();
+  const isChatRoom = location.pathname.startsWith("/selladmin/messages/") && location.pathname !== "/selladmin/messages";
+
+  if (isChatRoom) {
+    return null;
+  }
+
   return (
     <nav className="admin-bottom-nav">
       <div className="bottom-nav-menu">

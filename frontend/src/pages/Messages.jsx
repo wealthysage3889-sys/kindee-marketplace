@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { storeAPI } from "../api/product";
 import { chatAPI } from "../api";
@@ -34,20 +34,28 @@ export default function Messages() {
     [stores, currentUserId]
   );
 
-  const openConversation = async (id) => {
+  const openRequestedRef = useRef("");
+
+  const openConversation = async (id, { replaceListRoute = false } = {}) => {
     if (!id || openingId) return;
+    const requestKey = `${id}|${currentUserId || ""}`;
+    if (openRequestedRef.current === requestKey) return;
+    openRequestedRef.current = requestKey;
     setOpeningId(id);
     setError("");
     try {
       const result = await chatAPI.getOrCreateConversation(id);
       const conversation = result?.data || result;
       if (conversation?.id) {
-        navigate(`/messages/${conversation.id}`);
+        openRequestedRef.current = "";
+        navigate(`/messages/${conversation.id}`, { replace: replaceListRoute });
       } else {
         setError("ไม่สามารถเปิดการสนทนาได้");
+        openRequestedRef.current = "";
       }
     } catch (err) {
       setError(err.message || "ไม่สามารถเปิดการสนทนาได้");
+      openRequestedRef.current = "";
     } finally {
       setOpeningId("");
     }
@@ -55,23 +63,49 @@ export default function Messages() {
 
   useEffect(() => {
     if (!openStore) return;
-    if (stores.length === 0) return;
-    const target = stores.find((s) => String(s._id || s.id) === String(openStore));
-    if (!target) return;
-    if (currentUserId && String(target.owner_id || target.ownerId || "") === String(currentUserId)) {
-      setError("ไม่สามารถเริ่มแชทกับร้านของตัวเองได้");
-      return;
-    }
-    openConversation(openStore);
+    let cancelled = false;
+    const initOpen = async () => {
+      setError("");
+      try {
+        const res = await storeAPI.getStoreById(openStore);
+        const storeData = (res && res.data) || res || null;
+        if (
+          storeData &&
+          currentUserId &&
+          String(storeData.owner_id || storeData.ownerId) === String(currentUserId)
+        ) {
+          if (!cancelled) {
+            setError("ไม่สามารถเริ่มแชทกับร้านของตัวเองได้");
+            setOpeningId("");
+            navigate("/messages", { replace: true });
+          }
+          return;
+        }
+      } catch {
+      }
+      if (!cancelled) await openConversation(openStore, { replaceListRoute: true });
+    };
+    initOpen();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openStore, stores, currentUserId]);
+  }, [openStore, currentUserId]);
 
   useEffect(() => {
     let cancelled = false;
     const loadStores = async () => {
       try {
         const data = await storeAPI.getStores({ limit: 50 });
-        if (!cancelled) setStores(Array.isArray(data?.data) ? data.data : []);
+        if (!cancelled) {
+          const storesList =
+            Array.isArray(data?.data?.stores)
+              ? data.data.stores
+              : Array.isArray(data?.stores)
+                ? data.stores
+                : [];
+          setStores(storesList);
+        }
       } catch (err) {
         if (!cancelled) setError(err.message || "ไม่สามารถโหลดรายชื่อร้านค้าได้");
       } finally {

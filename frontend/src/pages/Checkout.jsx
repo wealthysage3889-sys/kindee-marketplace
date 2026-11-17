@@ -4,12 +4,33 @@ import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from "react-leaf
 import "leaflet/dist/leaflet.css";
 import { useAuth } from "../context/AuthContext";
 import { useCart } from "../context/CartContext";
-import { orderAPI, storeAPI, productAPI } from "../api";
-import { formatCurrency, formatThaiPhone, validateThaiPhone } from "../utils/helpers";
+import { addressAPI, orderAPI, storeAPI } from "../api";
+import { extractList, formatCurrency, formatThaiPhone, validateThaiPhone } from "../utils/helpers";
 import "./Checkout.css";
 
 const DEFAULT_CENTER = [13.7563, 100.5018]; // Bangkok
 const DEFAULT_ZOOM = 13;
+
+const coordinatesFromAddress = (address) => {
+  if (
+    address?.lat === undefined ||
+    address?.lat === null ||
+    address?.lng === undefined ||
+    address?.lng === null
+  ) {
+    return null;
+  }
+  const lat = Number(address.lat);
+  const lng = Number(address.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return { lat, lng };
+};
+
+const fullAddressFromAddress = (address) =>
+  [address?.street, address?.district, address?.province, address?.postal_code]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(" ");
 
 function MapClickHandler({ onPick }) {
   useMapEvents({
@@ -20,14 +41,18 @@ function MapClickHandler({ onPick }) {
   return null;
 }
 
-function LocationPicker({ coordinates, onCoordinatesChange, onAddressChange }) {
+function LocationPicker({ coordinates, address, onCoordinatesChange, onAddressChange }) {
   const mapRef = useRef(null);
   const markerRef = useRef(null);
-  const [address, setAddress] = useState("");
+  const [addressText, setAddressText] = useState(address || "");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    setAddressText(address || "");
+  }, [address]);
 
   // Update map center when coordinates change
   useEffect(() => {
@@ -81,7 +106,7 @@ function LocationPicker({ coordinates, onCoordinatesChange, onAddressChange }) {
       );
       const data = await response.json();
       const formattedAddress = data.display_name || "";
-      setAddress(formattedAddress);
+      setAddressText(formattedAddress);
       onAddressChange?.(formattedAddress);
     } catch (error) {
       console.error("Reverse geocode error:", error);
@@ -106,7 +131,7 @@ function LocationPicker({ coordinates, onCoordinatesChange, onAddressChange }) {
     const lat = parseFloat(result.lat);
     const lng = parseFloat(result.lon);
     onCoordinatesChange({ lat, lng });
-    setAddress(result.display_name);
+    setAddressText(result.display_name);
     onAddressChange?.(result.display_name);
     setSearchResults([]);
     setSearchQuery("");
@@ -162,7 +187,7 @@ function LocationPicker({ coordinates, onCoordinatesChange, onAddressChange }) {
               <Popup>
                 <div>
                   <strong>ตำแหน่งจัดส่ง</strong>
-                  <p>{address || `Lat: ${coordinates.lat.toFixed(6)}, Lng: ${coordinates.lng.toFixed(6)}`}</p>
+                  <p>{addressText || `Lat: ${coordinates.lat.toFixed(6)}, Lng: ${coordinates.lng.toFixed(6)}`}</p>
                 </div>
               </Popup>
             </Marker>
@@ -181,9 +206,9 @@ function LocationPicker({ coordinates, onCoordinatesChange, onAddressChange }) {
         <div className="selected-location">
           <label>ที่อยู่จัดส่ง:</label>
           <textarea
-            value={address}
+            value={addressText}
             onChange={(e) => {
-              setAddress(e.target.value);
+              setAddressText(e.target.value);
               onAddressChange?.(e.target.value);
             }}
             rows={3}
@@ -218,7 +243,78 @@ export default function Checkout() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [stores, setStores] = useState([]);
-  const [storeDeliveryInfo, setStoreDeliveryInfo] = useState({});
+  const [savedAddresses, setSavedAddresses] = useState([]);
+  const [savedAddressesLoading, setSavedAddressesLoading] = useState(false);
+  const [savedAddressesError, setSavedAddressesError] = useState("");
+  const [selectedAddressId, setSelectedAddressId] = useState(null);
+  const initialAddressAppliedRef = useRef(false);
+
+  const applySavedAddress = useCallback((address) => {
+    const nextCoordinates = coordinatesFromAddress(address);
+    setCoordinates(nextCoordinates);
+    setDeliveryAddress({
+      name: address?.recipient_name || "",
+      phone: address?.phone || "",
+      address: fullAddressFromAddress(address) || address?.street || "",
+      district: address?.district || "",
+      province: address?.province || "",
+      postalCode: address?.postal_code || "",
+      label: address?.label || "",
+    });
+    setSelectedAddressId(address?.id || null);
+    setError("");
+  }, []);
+
+  const loadSavedAddresses = useCallback(async () => {
+    if (!isAuthenticated) return;
+    setSavedAddressesLoading(true);
+    setSavedAddressesError("");
+    try {
+      const result = await addressAPI.getAddresses();
+      const list = extractList(result, "addresses");
+      setSavedAddresses(list);
+      if (!initialAddressAppliedRef.current && list.length > 0) {
+        const initialAddress = list.find((address) => address.is_default) || list[0];
+        applySavedAddress(initialAddress);
+        initialAddressAppliedRef.current = true;
+      }
+    } catch (error) {
+      setSavedAddressesError(error.message || "ไม่สามารถโหลดที่อยู่ที่บันทึกไว้ได้");
+    } finally {
+      setSavedAddressesLoading(false);
+    }
+  }, [applySavedAddress, isAuthenticated]);
+
+  useEffect(() => {
+    loadSavedAddresses();
+  }, [loadSavedAddresses]);
+
+  const startManualAddress = () => {
+    initialAddressAppliedRef.current = true;
+    setSelectedAddressId(null);
+    setCoordinates(null);
+    setDeliveryAddress({
+      name: user?.name || "",
+      phone: user?.phone || "",
+      address: "",
+      district: "",
+      province: "",
+      postalCode: "",
+      label: "",
+    });
+    setError("");
+  };
+
+  const updateDeliveryAddress = (patch) => {
+    setDeliveryAddress((prev) => ({ ...prev, ...patch, label: "" }));
+    setSelectedAddressId(null);
+  };
+
+  const handleCoordinatesChange = (nextCoordinates) => {
+    setCoordinates(nextCoordinates);
+    setDeliveryAddress((prev) => ({ ...prev, label: "" }));
+    setSelectedAddressId(null);
+  };
 
   // Load store info for delivery fees
   useEffect(() => {
@@ -284,13 +380,21 @@ export default function Checkout() {
       }));
       
       // Format delivery address
+      const selectedAddress = savedAddresses.find((address) => address.id === selectedAddressId) || null;
       const formattedAddress = {
         name: deliveryAddress.name,
         phone: formatThaiPhone(deliveryAddress.phone),
         address: deliveryAddress.address,
         district: deliveryAddress.district,
         province: deliveryAddress.province,
-        postalCode: deliveryAddress.postalCode
+        postalCode: deliveryAddress.postalCode,
+        ...(selectedAddress
+          ? {
+              label: selectedAddress.label || "",
+              place_name: selectedAddress.label || selectedAddress.recipient_name || "",
+              address_book_id: selectedAddress.id,
+            }
+          : {}),
       };
       
       const result = await orderAPI.create({
@@ -356,6 +460,53 @@ export default function Checkout() {
 
       {step === 1 && (
         <form onSubmit={handleAddressSubmit} className="checkout-form">
+          {(savedAddressesLoading || savedAddresses.length > 0 || savedAddressesError) && (
+            <div className="form-section">
+              <h3>ที่อยู่ที่บันทึกไว้</h3>
+              {savedAddressesLoading && <p>กำลังโหลดที่อยู่...</p>}
+              {savedAddressesError && <div className="error-message">{savedAddressesError}</div>}
+              {savedAddresses.length > 0 && (
+                <div className="saved-address-grid">
+                  <button
+                    type="button"
+                    className={`saved-address-card ${selectedAddressId === null ? "selected" : ""}`}
+                    onClick={startManualAddress}
+                  >
+                    <span className="saved-address-card-title">
+                      <strong>ใช้ที่อยู่ใหม่</strong>
+                    </span>
+                    <span>กรอกข้อมูลผู้รับและที่อยู่ด้านล่าง</span>
+                  </button>
+                  {savedAddresses.map((address) => {
+                    const addressCoordinates = coordinatesFromAddress(address);
+                    return (
+                      <button
+                        type="button"
+                        className={`saved-address-card ${selectedAddressId === address.id ? "selected" : ""}`}
+                        key={address.id}
+                        onClick={() => applySavedAddress(address)}
+                      >
+                        <span className="saved-address-card-title">
+                          <strong>{address.label || "ที่อยู่"}</strong>
+                          {address.is_default && <span className="saved-address-default">ที่อยู่หลัก</span>}
+                        </span>
+                        <span>
+                          {address.recipient_name} · {formatThaiPhone(address.phone)}
+                        </span>
+                        {fullAddressFromAddress(address) && <span>{fullAddressFromAddress(address)}</span>}
+                        {addressCoordinates && (
+                          <span className="saved-address-coordinates">
+                            พิกัด: {addressCoordinates.lat.toFixed(6)}, {addressCoordinates.lng.toFixed(6)}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="form-section">
             <h3>ข้อมูลผู้รับ</h3>
             <div className="form-row">
@@ -364,7 +515,7 @@ export default function Checkout() {
                 <input
                   type="text"
                   value={deliveryAddress.name}
-                  onChange={(e) => setDeliveryAddress({...deliveryAddress, name: e.target.value})}
+                  onChange={(e) => updateDeliveryAddress({ name: e.target.value })}
                   required
                 />
               </div>
@@ -373,7 +524,7 @@ export default function Checkout() {
                 <input
                   type="tel"
                   value={deliveryAddress.phone}
-                  onChange={(e) => setDeliveryAddress({...deliveryAddress, phone: e.target.value})}
+                  onChange={(e) => updateDeliveryAddress({ phone: e.target.value })}
                   required
                   placeholder="08X-XXX-XXXX"
                 />
@@ -386,8 +537,9 @@ export default function Checkout() {
             <p className="map-instruction">คลิกที่แผนที่เพื่อเลือกตำแหน่ง หรือค้นหาสถานที่</p>
             <LocationPicker
               coordinates={coordinates}
-              onCoordinatesChange={setCoordinates}
-              onAddressChange={(addr) => setDeliveryAddress({...deliveryAddress, address: addr})}
+              address={deliveryAddress.address}
+              onCoordinatesChange={handleCoordinatesChange}
+              onAddressChange={(addr) => updateDeliveryAddress({ address: addr })}
             />
           </div>
 
@@ -514,6 +666,9 @@ export default function Checkout() {
           <div className="form-section">
             <h3>ที่อยู่จัดส่ง</h3>
             <div className="address-summary">
+              {deliveryAddress.label && (
+                <p><strong>ที่อยู่: {deliveryAddress.label}</strong></p>
+              )}
               <p><strong>{deliveryAddress.name}</strong></p>
               <p>{formatThaiPhone(deliveryAddress.phone)}</p>
               <p>{deliveryAddress.address}</p>

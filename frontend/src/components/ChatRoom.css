@@ -1,7 +1,9 @@
 .chat-room {
   display: flex;
   flex-direction: column;
+  flex: 1 1 0;
   height: 100%;
+  min-height: 0;
   background: #fff;
   border-radius: 12px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
@@ -24,6 +26,8 @@
   padding: 16px 20px;
   border-bottom: 1px solid #eee;
   background: #fafafa;
+  flex: 0 0 auto;
+  z-index: 10;
 }
 
 .chat-header-left {
@@ -83,8 +87,11 @@
 }
 
 .chat-messages {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -343,6 +350,9 @@
   padding: 16px 20px;
   border-top: 1px solid #eee;
   background: #fafafa;
+  flex: 0 0 auto;
+  z-index: 10;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
 }
 
 .selected-files {
@@ -386,7 +396,7 @@
 .attach-btn {
   width: 44px;
   height: 44px;
-  border: none
+  border: none;
   background: #f5f5f5;
   border-radius: 50%;
   color: #666;
@@ -478,5 +488,9 @@
   .send-btn {
     width: 40px;
     height: 40px;
+  }
+  
+  .chat-input-area {
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   }
 }

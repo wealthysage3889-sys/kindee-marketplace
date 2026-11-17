@@ -179,6 +179,27 @@ const getLatestMessagesByConversation = async (conversationIds) => {
 export const getUserConversations = async (userId, filters = {}, pagination = {}) => {
   const { type, store_id, page = 1, limit = 20 } = filters;
 
+  // First, get conversation IDs where the user is an active member
+  const { data: memberConversations, error: memberError } = await supabaseAdmin
+    .from('conversation_members')
+    .select('conversation_id')
+    .eq('profile_id', userId)
+    .is('left_at', null);
+
+  if (memberError) {
+    throw new AppError(`Failed to fetch user conversations: ${memberError.message}`, 500);
+  }
+
+  const conversationIds = (memberConversations || []).map((m) => m.conversation_id);
+
+  if (conversationIds.length === 0) {
+    return {
+      conversations: [],
+      pagination: { page, limit, total: 0, totalPages: 0 }
+    };
+  }
+
+  // Then fetch those conversations with all members and their profiles
   let query = supabaseAdmin
     .from('conversations')
     .select(`
@@ -188,11 +209,11 @@ export const getUserConversations = async (userId, filters = {}, pagination = {}
       members:conversation_members!inner(
         profile_id,
         unread_count,
-        last_read_at
+        last_read_at,
+        profile:profiles(id, name, avatar_url, role)
       )
     `, { count: 'exact' })
-    .eq('conversation_members.profile_id', userId)
-    .is('conversation_members.left_at', null);
+    .in('id', conversationIds);
 
   if (type) query = query.eq('type', type);
   if (store_id) query = query.eq('store_id', store_id);
@@ -343,6 +364,13 @@ export const sendMessage = async (conversationId, senderId, messageData = {}) =>
 
   // Realtime delivery: the conversation room plus every other member's user room
   // (so the store owner also sees it on the conversation list).
+  // Non-sensitive diagnostic: ids/counts only, never message content or tokens.
+  console.log('[chat] message saved', {
+    conversationId,
+    messageId: message?.id ?? null,
+    senderId,
+    otherMembers: otherMembers.length,
+  });
   emitNewMessage(message);
   for (const member of otherMembers) {
     emitToUser(member.profile_id, 'newMessage', message);
@@ -372,9 +400,6 @@ export const markMessagesRead = async (conversationId, userId, lastReadMessageId
   }
 
   const updateData = { last_read_at: new Date().toISOString() };
-  if (lastReadMessageId) {
-    updateData.last_read_message_id = lastReadMessageId;
-  }
 
   const { error } = await supabaseAdmin
     .from('conversation_members')

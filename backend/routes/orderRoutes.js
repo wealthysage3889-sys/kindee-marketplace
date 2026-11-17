@@ -22,7 +22,10 @@ router.post('/', verifyToken, authorize('customer'), [
   body('deliveryAddress.district').optional().trim(),
   body('deliveryAddress.province').optional().trim(),
   body('deliveryAddress.postalCode').optional().trim(),
-  body('customerCoordinates').optional().isObject(),
+  body('customerCoordinates').optional().custom((value) => {
+    if (value === null || value === undefined) return true;
+    return value.lat !== undefined && value.lng !== undefined;
+  }).withMessage('Both latitude and longitude are required'),
   body('customerCoordinates.lat').optional().isFloat({ min: -90, max: 90 }),
   body('customerCoordinates.lng').optional().isFloat({ min: -180, max: 180 })
 ], validate, asyncHandler(async (req, res) => {

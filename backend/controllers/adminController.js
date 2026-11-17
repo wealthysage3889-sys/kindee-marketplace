@@ -9,14 +9,13 @@ import { supabaseAdmin } from "../config/supabase.js";
 const VALID_ROLES = ["customer", "seller", "admin", "owner", "courier"];
 
 const getAllUsers = asyncHandler(async (req, res) => {
-  const { role, is_active, search, page = 1, limit = 20 } = req.query;
-  
+  const { role, is_active, search } = req.query;
+
   const result = await authService.getAllUsers(
-    { role, is_active: is_active === 'true' ? true : is_active === 'false' ? false : undefined, search },
-    { page: parseInt(page), limit: parseInt(limit) }
+    { role, is_active: is_active === 'true' ? true : is_active === 'false' ? false : undefined, search }
   );
-  
-  res.json({ success: true, count: result.users.length, data: result.users });
+
+  res.json({ success: true, count: result.users.length, data: result });
 });
 
 const getUserById = asyncHandler(async (req, res) => {
@@ -75,24 +74,21 @@ const updateUserRole = asyncHandler(async (req, res) => {
 });
 
 const deleteUser = asyncHandler(async (req, res) => {
-  const user = await authService.getProfile(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "ไม่พบผู้ใช้งาน" });
-    return;
+  const result = await authService.adminDeleteUserAccount(req.params.id, req.user.id, req.user.role);
+
+  if (result.action === 'deleted') {
+    return res.json({
+      success: true,
+      message: "ลบบัญชีผู้ใช้งานออกจากระบบเรียบร้อยแล้ว (ลบจาก Supabase Auth และโปรไฟล์ เนื่องจากไม่มีประวัติธุรกรรมที่ต้องรักษา)",
+      data: result
+    });
   }
 
-  if (user.role === "owner" && req.user.role !== "owner") {
-    res.status(403).json({ success: false, message: "ไม่มีสิทธิ์ลบบัญชีเจ้าของระบบ" });
-    return;
-  }
-
-  if (user.id === req.user.id) {
-    res.status(400).json({ success: false, message: "ไม่สามารถลบบัญชีของตนเองได้" });
-    return;
-  }
-
-  await authService.deactivateAccount(req.params.id);
-  res.json({ success: true, message: "ลบผู้ใช้งานเรียบร้อย" });
+  return res.json({
+    success: true,
+    message: result.reason || "ไม่สามารถลบถาวรได้เนื่องจากมีข้อมูลธุรกิจที่ต้องรักษา ระบบจึงปิดใช้งานและจัดการข้อมูลส่วนบุคคลแทน (ไม่ลบคำสั่งซื้อ/ข้อความ/ประวัติธุรกรรม)",
+    data: result
+  });
 });
 
 const getDashboardStats = asyncHandler(async (req, res) => {

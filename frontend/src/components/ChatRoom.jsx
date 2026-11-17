@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useParams, useLocation } from "react-router-dom";
+import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useSocket } from "../context/SocketContext";
-import { chatAPI, uploadAPI, normalizeAttachment } from "../api";
+import { chatAPI, callAPI, uploadAPI, normalizeAttachment } from "../api";
 import { formatDate } from "../utils/helpers";
+import VoiceCallUI from "./VoiceCallUI";
 import "./ChatRoom.css";
 
 const MESSAGE_TYPES = {
@@ -46,10 +47,12 @@ function attachmentSize(att) {
 export default function ChatRoom({ conversationId: conversationIdProp, mode: modeProp, initialMessages }) {
   const routeParams = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const conversationId = conversationIdProp || routeParams.conversationId;
 
   const { customer, admin } = useAuth();
   const mode = resolveChatMode(modeProp, location.pathname);
+  const isAdminMode = mode === "admin";
   // Session that matches the route: seller/owner store owners still hold their
   // token in the customer namespace, admins hold theirs in the admin namespace.
   const session = mode === "admin" ? admin : customer;
@@ -74,6 +77,7 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState("");
+  const [activeCall, setActiveCall] = useState(null);
 
   const messagesEndRef = useRef(null);
   const messageInputRef = useRef(null);
@@ -157,12 +161,26 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
     }
   }, [conversationId, mode]);
 
+  // Determine the other party in the conversation (counterpart)
   const currentMember = conversation?.members?.find(
     (m) => String(m.profile_id ?? m.profileId) === String(currentUserId)
   );
   const serverLastReadId = currentMember?.last_read_message_id
     ?? currentMember?.lastReadMessageId
     ?? null;
+
+  // Determine display info (name, avatar, placeholder)
+  const counterpart = conversation?.members?.find(
+    (m) => String(m.profile_id ?? m.profileId) !== String(currentUserId)
+  );
+  const counterpartProfile = counterpart?.profile || null;
+  const displayName = isAdminMode && conversation?.type === "store_customer"
+    ? (counterpartProfile?.name || "ลูกค้า")
+    : (conversation?.store?.name || conversation?.title || "การสนทนา");
+  const displayAvatar = isAdminMode && conversation?.type === "store_customer"
+    ? counterpartProfile?.avatar_url
+    : conversation?.store?.logo_url;
+  const placeholder = isAdminMode && conversation?.type === "store_customer" ? "ล" : "ร";
 
   // On open (and on every new message) mark the newest inbound message as read.
   // Marking the newest inbound message (not simply the last message) keeps the
@@ -419,34 +437,77 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
     return <div className="chat-empty">เลือกการสนทนาเพื่อเริ่มแชท</div>;
   }
 
+  const handleStartCall = async () => {
+    if (!counterpartProfile?.id) {
+      setError("ไม่สามารถหาข้อมูลผู้รับได้");
+      return;
+    }
+    try {
+      // Only send ids that exist: the API validates storeOrderId as a UUID when
+      // the key is present, and store_customer conversations have no order yet
+      // (conversation.store_order is null), so passing null produced a 400.
+      const storeOrderId = conversation?.store_order?.id ?? conversation?.store_order_id ?? undefined;
+      const result = await callAPI.initiate({
+        calleeId: counterpartProfile.id,
+        conversationId,
+        storeOrderId,
+        callType: "voice"
+      }, mode);
+      setActiveCall({
+        callId: result.data.id,
+        calleeId: counterpartProfile.id,
+        conversationId,
+        storeOrderId: conversation?.store_order?.id,
+        callerName: displayName,
+        callerAvatar: displayAvatar
+      });
+    } catch (err) {
+      setError(err.message || "ไม่สามารถ initiate สายได้");
+    }
+  };
+
+  if (activeCall) {
+    return (
+      <VoiceCallUI
+        initialCallId={activeCall.callId}
+        calleeId={activeCall.calleeId}
+        callMode={mode}
+        conversationId={activeCall.conversationId}
+        storeOrderId={activeCall.storeOrderId}
+        callerName={activeCall.callerName}
+        callerAvatar={activeCall.callerAvatar}
+        onClose={() => setActiveCall(null)}
+        onCallEnded={() => setActiveCall(null)}
+      />
+    );
+  }
+
   return (
     <div className="chat-room">
       <div className="chat-header">
         <div className="chat-header-left">
+          <button type="button" className="chat-back" onClick={() => navigate(isAdminMode ? "/selladmin/messages" : "/messages")} aria-label="ย้อนกลับ">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m15 18-6-6 6-6" />
+            </svg>
+          </button>
           <div className="chat-avatar">
-            {conversation?.store?.logo_url ? (
-              <img src={conversation.store.logo_url} alt={conversation.store.name} />
-            ) : conversation?.store?.name ? (
-              <span>{conversation.store.name.charAt(0)}</span>
+            {displayAvatar ? (
+              <img src={displayAvatar} alt={displayName} />
             ) : (
-              <span>{conversation?.title?.charAt(0) || "💬"}</span>
+              <span>{displayName?.charAt(0) || placeholder}</span>
             )}
           </div>
           <div className="chat-title">
-            <h3>{conversation?.store?.name || conversation?.title || "การสนทนา"}</h3>
+            <h3>{displayName}</h3>
             {conversation?.store_order && (
               <span className="chat-order">ออเดอร์ #{conversation.store_order.store_order_number}</span>
             )}
           </div>
         </div>
         <div className="chat-header-right">
-          {conversation?.type === "store_customer" && (
-            <button className="call-btn" type="button" onClick={() => {
-              emit("callSignal", {
-                callId: `call-${Date.now()}`,
-                signal: { type: "offer" }
-              });
-            }}>
+          {conversation?.type === "store_customer" && counterpartProfile?.id && (
+            <button className="call-btn" type="button" onClick={handleStartCall} title="打电话">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
               </svg>

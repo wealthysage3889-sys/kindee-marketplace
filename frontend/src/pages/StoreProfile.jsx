@@ -438,7 +438,7 @@ export default function StoreProfile() {
         )}
       </div>
 
-      <StoreBottomNav />
+      <StoreBottomNav store={store} />
     </div>
   );
 }

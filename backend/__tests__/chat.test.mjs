@@ -317,10 +317,10 @@ test('opening a room marks messages read and only resets the caller unread count
     const customerMember = memberRow(fake, conversationId, customerId);
 
     assert.equal(ownerMember.unread_count, 0);
-    assert.equal(ownerMember.last_read_message_id, 'msg-1');
+    // last_read_message_id is not a persisted column in the current schema
+
     assert.ok(ownerMember.last_read_at);
     assert.equal(customerMember.unread_count, 0);
-    assert.equal(customerMember.last_read_message_id ?? null, null);
     assert.equal(customerMember.last_read_at ?? null, null);
   }));
 

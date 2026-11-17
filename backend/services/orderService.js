@@ -68,7 +68,7 @@ export const createOrder = async (customerId, orderData) => {
   // Get customer snapshot
   const { data: customer } = await supabaseAdmin
     .from('profiles')
-    .select('name, phone, email, address')
+    .select('name, phone, email')
     .eq('id', customerId)
     .single();
   
@@ -175,14 +175,18 @@ export const createOrder = async (customerId, orderData) => {
   try {
     // Create customer destination if coordinates provided
     if (customer_coordinates) {
-      await supabaseAdmin
+      const { error: destinationError } = await supabaseAdmin
         .from('customer_destinations')
         .insert({
           order_id: order.id,
           coordinates: `POINT(${customer_coordinates.lng} ${customer_coordinates.lat})`,
           address: delivery_address,
-          place_name: delivery_address?.name
+          place_name: delivery_address?.place_name || delivery_address?.name
         });
+
+      if (destinationError) {
+        throw new AppError(`Customer destination creation failed: ${destinationError.message}`, 500);
+      }
     }
 
     // Create store orders and order items

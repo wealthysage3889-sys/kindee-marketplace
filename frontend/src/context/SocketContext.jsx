@@ -27,9 +27,28 @@ export function SocketProvider({ children }) {
   const [typingUsers, setTypingUsers] = useState({});
   const [activeCall, setActiveCall] = useState(null);
 
+  const playedMessageIdsRef = useRef(new Set());
+  const audioRef = useRef(null);
+  const authRef = useRef({ customer, admin });
+  useEffect(() => { authRef.current = { customer, admin }; }, [customer, admin]);
+
+
+  // Track component-registered handlers so they can be applied to sockets created later
+  const handlersRef = useRef(new Map()); // event -> Set of handlers
+
   const anyConnected = () => [...socketsRef.current.values()].some((socket) => socket.connected);
 
+  const applyHandlersToSocket = useCallback((socket) => {
+    handlersRef.current.forEach((handlerSet, event) => {
+      handlerSet.forEach((handler) => {
+        socket.on(event, handler);
+      });
+    });
+  }, []);
+
   const attachHandlers = useCallback((socket) => {
+    // Apply any component-registered handlers to this socket
+    applyHandlersToSocket(socket);
     const onConnect = () => {
       console.log("Socket connected:", socket.id);
       setConnected(anyConnected());
@@ -67,6 +86,23 @@ export function SocketProvider({ children }) {
     const onNewMessage = (message) => {
       if (!message?.id) return;
       socket.emit('messageReceived', message.id);
+
+      const msgId = message.id || message._id;
+      if (playedMessageIdsRef.current.has(msgId)) return;
+      playedMessageIdsRef.current.add(msgId);
+
+      const senderId = message.sender_id || message.sender?.id || message.senderId;
+      const { customer: c, admin: a } = authRef.current || {};
+      const currentIds = [c?.user?.id, c?.user?._id, a?.user?.id, a?.user?._id].filter(Boolean);
+      if (senderId && currentIds.includes(senderId)) return;
+
+      try {
+        if (!audioRef.current) audioRef.current = new Audio('/freepalestine_loverespect-notification-sound-29-585505.mp3');
+        const audio = audioRef.current;
+        audio.currentTime = 0;
+        const p = audio.play();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (e) {}
     };
 
     const onMessagesRead = () => {
@@ -175,6 +211,23 @@ export function SocketProvider({ children }) {
     return disconnectAll;
   }, [connect, disconnectAll]);
 
+  useEffect(() => {
+    const unlock = () => {
+      try {
+        if (!audioRef.current) audioRef.current = new Audio('/freepalestine_loverespect-notification-sound-29-585505.mp3');
+        const a = audioRef.current;
+        a.volume = 0;
+        const p = a.play();
+        if (p && typeof p.then === 'function') {
+          p.then(() => { a.pause(); a.currentTime = 0; a.volume = 1; }).catch(() => {});
+        }
+      } catch (e) {}
+    };
+    const events = ['click', 'keydown', 'touchstart'];
+    events.forEach((e) => window.addEventListener(e, unlock, { passive: true }));
+    return () => events.forEach((e) => window.removeEventListener(e, unlock));
+  }, []);
+
   const eachSocket = (fn) => {
     socketsRef.current.forEach((socket) => fn(socket));
   };
@@ -229,10 +282,25 @@ export function SocketProvider({ children }) {
   }, []);
 
   const on = useCallback((event, handler) => {
+    // Track handler so it can be applied to sockets created later
+    if (!handlersRef.current.has(event)) {
+      handlersRef.current.set(event, new Set());
+    }
+    handlersRef.current.get(event).add(handler);
+
     eachSocket((socket) => socket.on(event, handler));
   }, []);
 
   const off = useCallback((event, handler) => {
+    // Remove from tracked handlers
+    const handlerSet = handlersRef.current.get(event);
+    if (handlerSet) {
+      handlerSet.delete(handler);
+      if (handlerSet.size === 0) {
+        handlersRef.current.delete(event);
+      }
+    }
+
     eachSocket((socket) => socket.off(event, handler));
   }, []);
 

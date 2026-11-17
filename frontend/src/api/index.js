@@ -300,6 +300,34 @@ export const orderAPI = {
     }),
 };
 
+// Address Book API
+export const addressAPI = {
+  getAddresses: () =>
+    request("/addresses"),
+
+  create: (data) =>
+    request("/addresses", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  update: (id, data) =>
+    request(`/addresses/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  remove: (id) =>
+    request(`/addresses/${id}`, {
+      method: "DELETE",
+    }),
+
+  setDefault: (id) =>
+    request(`/addresses/${id}/default`, {
+      method: "POST",
+    }),
+};
+
 // Chat API
 export const chatAPI = {
   getOrCreateConversation: (storeId, storeOrderId, mode = "customer") =>
@@ -390,26 +418,30 @@ export const callAPI = {
   getConfig: () =>
     request("/calls/config"),
 
-  initiate: (data) =>
-    request("/calls", {
+  initiate: (data, mode = "customer") => {
+    // `mode` must match the chat session (customer vs admin), otherwise the
+    // call is authenticated with the wrong namespace's token (401).
+    const { mode: _ignored, ...payload } = data || {};
+    return request("/calls", {
       method: "POST",
-      body: JSON.stringify(data),
-    }),
+      body: JSON.stringify(payload),
+    }, mode);
+  },
 
-  accept: (callId) =>
+  accept: (callId, mode = "customer") =>
     request(`/calls/${callId}/accept`, {
       method: "POST",
-    }),
+    }, mode),
 
-  reject: (callId) =>
+  reject: (callId, mode = "customer") =>
     request(`/calls/${callId}/reject`, {
       method: "POST",
-    }),
+    }, mode),
 
-  end: (callId) =>
+  end: (callId, mode = "customer") =>
     request(`/calls/${callId}/end`, {
       method: "POST",
-    }),
+    }, mode),
 
   getHistory: (params = {}) => {
     const query = new URLSearchParams(params).toString();
@@ -695,6 +727,7 @@ export default {
   store: storeAPI,
   product: productAPI,
   order: orderAPI,
+  address: addressAPI,
   chat: chatAPI,
   call: callAPI,
   delivery: deliveryAPI,

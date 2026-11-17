@@ -27,31 +27,45 @@ const initialize = (server) => {
         return next(new Error('Authentication required'));
       }
       
-      // Verify JWT
+      // Verify token: Supabase first (primary), then legacy custom JWT.
       let decoded;
-      try {
-        decoded = jwt.verify(token, JWT_SECRET);
-      } catch (err) {
-        // Try Supabase token
-        const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
-        if (error || !user) {
+      const { data: { user }, error: sbError } = await supabaseAdmin.auth.getUser(token);
+      if (!sbError && user) {
+        decoded = { id: user.id };
+      } else {
+        try {
+          decoded = jwt.verify(token, JWT_SECRET);
+          if (!decoded || !decoded.id) {
+            throw new Error('missing subject');
+          }
+        } catch (jwtError) {
           return next(new Error('Invalid token'));
         }
-        decoded = { id: user.id };
       }
-      
+
       // Get user profile
-      const { data: profile } = await supabaseAdmin
+      const { data: profile, error: profileError } = await supabaseAdmin
         .from('profiles')
-        .select('id, name, role, avatar_url')
+        .select('*')
         .eq('id', decoded.id)
         .single();
-      
-      if (!profile || !profile.is_active) {
-        return next(new Error('User not found or inactive'));
+
+      if (profileError || !profile) {
+        return next(new Error('User profile not found'));
       }
-      
-      socket.user = profile;
+
+      if (!profile.is_active) {
+        return next(new Error('Account is deactivated'));
+      }
+
+      socket.user = {
+        id: profile.id,
+        email: profile.email,
+        name: profile.name,
+        role: (profile.role || '').toLowerCase(),
+        avatar_url: profile.avatar_url,
+        phone: profile.phone
+      };
       socket.accessToken = token;
       socket.supabase = createUserClient(token);
       
@@ -174,19 +188,38 @@ const initialize = (server) => {
     });
     
     // Call signaling
-    socket.on('callSignal', ({ callId, signal }) => {
-      // Forward to other participant
+    socket.on('callSignal', async ({ callId, signal }) => {
+      if (!callId || !signal) return;
+      // Only a participant of an active call may send signaling.
+      const { data: call } = await supabaseAdmin
+        .from('call_history')
+        .select('caller_id, callee_id, status')
+        .eq('id', callId)
+        .in('status', ['ringing', 'accepted'])
+        .single();
+      if (!call || (call.caller_id !== userId && call.callee_id !== userId)) return;
+      // Forward to the other participant in the call room.
       socket.to(`call_${callId}`).emit('callSignal', { 
         from: userId, 
         signal 
       });
     });
     
-    socket.on('joinCall', (callId) => {
+    socket.on('joinCall', async (callId) => {
+      if (!callId) return;
+      // Only participants may join the call signaling room.
+      const { data: call } = await supabaseAdmin
+        .from('call_history')
+        .select('caller_id, callee_id, status')
+        .eq('id', callId)
+        .in('status', ['ringing', 'accepted'])
+        .single();
+      if (!call || (call.caller_id !== userId && call.callee_id !== userId)) return;
       socket.join(`call_${callId}`);
     });
     
     socket.on('leaveCall', (callId) => {
+      if (!callId) return;
       socket.leave(`call_${callId}`);
     });
     
@@ -259,11 +292,19 @@ const emitToDelivery = (deliveryId, event, data) => {
 // Emit new message
 const emitNewMessage = (message) => {
   if (!io) return;
-  
-  io.to(`conversation_${message.conversation_id}`).emit('newMessage', message);
-  
+
+  const conversationId = message?.conversation_id ?? message?.conversationId ?? null;
+  const messageId = message?.id ?? message?._id ?? null;
+
+  // Non-sensitive diagnostic: ids and room names only, never token or content.
+  console.log('[socket] emit newMessage', { conversationId, messageId });
+
+  if (conversationId) {
+    io.to(`conversation_${conversationId}`).emit('newMessage', message);
+  }
+
   // Also notify individual users
-  if (message.receiver_id) {
+  if (message?.receiver_id) {
     io.to(`user_${message.receiver_id}`).emit('newMessage', message);
   }
 };

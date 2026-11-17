@@ -43,7 +43,7 @@ const attachProfileContext = async (req, res, userId, token) => {
     id: profile.id,
     email: profile.email,
     name: profile.name,
-    role: profile.role,
+    role: (profile.role || '').toLowerCase(),
     avatar_url: profile.avatar_url,
     phone: profile.phone
   };

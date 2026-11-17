@@ -7,6 +7,7 @@ import { supabaseAdmin } from '../config/supabase.js';
 import * as orderService from '../services/orderService.js';
 import * as notificationService from '../services/notificationService.js';
 import * as authService from '../services/authService.js';
+import * as productService from '../services/productService.js';
 import {
   SETTING_COLUMNS,
   normalizeSettingsPayload,
@@ -29,7 +30,7 @@ router.get('/stats', verifyToken, verifyAdmin, asyncHandler(async (req, res) => 
     { count: totalProducts },
     { count: totalOrders },
     { count: pendingOrders },
-    { count: totalRevenue }
+    { data: paidOrders }
   ] = await Promise.all([
     supabaseAdmin.from('profiles').select('id', { count: 'exact', head: true }),
     supabaseAdmin.from('stores').select('id', { count: 'exact', head: true }),
@@ -39,7 +40,10 @@ router.get('/stats', verifyToken, verifyAdmin, asyncHandler(async (req, res) => 
     supabaseAdmin.from('orders').select('total_amount', { count: 'exact' }).eq('payment_status', 'paid')
   ]);
   
-  const revenue = totalRevenue?.reduce((sum, o) => sum + parseFloat(o.total_amount), 0) || 0;
+  const revenue = (paidOrders || []).reduce(
+    (sum, order) => sum + parseFloat(order.total_amount || 0),
+    0
+  );
   
   res.json({
     success: true,
@@ -248,56 +252,88 @@ router.get('/products', verifyToken, verifyAdmin, [
   });
 }));
 
-// Get all users
+// Delete product (admin)
+// Delegates to productService.adminDeleteProduct, which:
+//   - returns 404 when the id does not exist (verified by affected-row count)
+//   - preserves order history by deactivating products referenced by
+//     order_items / reviews / reservations (soft delete)
+//   - hard-deletes only products with no references at all
+router.delete('/products/:id', validateId(), verifyToken, verifyAdmin, asyncHandler(async (req, res) => {
+  const result = await productService.adminDeleteProduct(req.params.id);
+
+  if (result.action === 'deactivated') {
+    return res.json({
+      success: true,
+      message: 'ลบสินค้าไม่สำเร็จแบบถาวร เนื่องจากมีประวัติคำสั่งซื้ออ้างอิงอยู่ ระบบจึงปิดการขายสินค้านี้แทน เพื่อรักษาประวัติการซื้อ',
+      data: { action: result.action, product: result.product }
+    });
+  }
+
+  res.json({
+    success: true,
+    message: 'Product deleted',
+    data: { action: result.action, product: result.product }
+  });
+}));
+
+// Get all users (Admin Users page: no user-facing pagination, return all matching rows)
 router.get('/users', verifyToken, verifyAdmin, [
   query('role').optional().isIn(['customer', 'seller', 'admin', 'owner', 'courier']),
   query('isActive').optional().isBoolean(),
-  query('search').optional().trim(),
-  query('page').optional().isInt({ min: 1 }),
-  query('limit').optional().isInt({ min: 1, max: 100 })
+  query('search').optional().trim()
 ], validate, asyncHandler(async (req, res) => {
   const filters = {
     role: req.query.role,
     is_active: req.query.isActive !== undefined ? req.query.isActive === 'true' : undefined,
     search: req.query.search
   };
-  
-  const pagination = {
-    page: parseInt(req.query.page) || 1,
-    limit: parseInt(req.query.limit) || 20
-  };
-  
-let query = supabaseAdmin
-    .from('profiles')
-    .select('*', { count: 'exact' });
 
-  // Apply filters
-  if (filters.role) query = query.eq('role', filters.role);
-  if (filters.is_active !== undefined) query = query.eq('is_active', filters.is_active);
-  const userSearch = sanitizeSearch(filters.search);
-  if (userSearch) {
-    query = query.or(`name.ilike.%${userSearch}%,email.ilike.%${userSearch}%,phone.ilike.%${userSearch}%`);
+  const BATCH_SIZE = 1000;
+  let from = 0;
+  let total = 0;
+  const users = [];
+
+  while (true) {
+    let query = supabaseAdmin
+      .from('profiles')
+      .select('*', { count: 'exact' });
+
+    // Apply filters
+    if (filters.role) query = query.eq('role', filters.role);
+    if (filters.is_active !== undefined) query = query.eq('is_active', filters.is_active);
+    const userSearch = sanitizeSearch(filters.search);
+    if (userSearch) {
+      query = query.or(`name.ilike.%${userSearch}%,email.ilike.%${userSearch}%,phone.ilike.%${userSearch}%`);
+    }
+
+    query = query
+      .order('created_at', { ascending: false })
+      .range(from, from + BATCH_SIZE - 1);
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      throw new AppError(`Failed to fetch users: ${error.message}`, 500);
+    }
+
+    if (typeof count === 'number') total = count;
+    const batch = data || [];
+    users.push(...batch);
+
+    if (batch.length < BATCH_SIZE) break;
+    if (total && users.length >= total) break;
+    from += BATCH_SIZE;
   }
 
-  query = query
-    .order('created_at', { ascending: false })
-    .range((pagination.page - 1) * pagination.limit, pagination.page * pagination.limit - 1);
-
-  const { data, error, count } = await query;
-  
-  if (error) {
-    throw new AppError(`Failed to fetch users: ${error.message}`, 500);
-  }
-  
   res.json({
     success: true,
     data: {
-      users: data,
+      users,
       pagination: {
-        page: pagination.page,
-        limit: pagination.limit,
-        total: count,
-        totalPages: Math.ceil(count / pagination.limit)
+        total: typeof total === 'number' ? total : users.length,
+        totalPages: 1,
+        page: 1,
+        limit: users.length
       }
     }
   });
@@ -329,26 +365,80 @@ router.patch('/users/:id/role', validateId(), verifyToken, verifyAdmin, [
   });
 }));
 
-// Deactivate/delete user
-router.delete('/users/:id', validateId(), verifyToken, verifyAdmin, asyncHandler(async (req, res) => {
+// Activate / deactivate a user account (soft toggle of profiles.is_active).
+// Body: { isActive: boolean }
+router.patch('/users/:id/status', validateId(), verifyToken, verifyAdmin, [
+  body('isActive').isBoolean().withMessage('isActive must be boolean')
+], validate, asyncHandler(async (req, res) => {
   const targetUser = await authService.getProfile(req.params.id);
   if (!targetUser) {
     throw new AppError('ไม่พบผู้ใช้งาน', 404);
   }
 
-  if (targetUser.role === 'owner' && req.user.role !== 'owner') {
-    throw new AppError('ไม่มีสิทธิ์ลบบัญชีเจ้าของระบบ', 403);
-  }
-
+  // Cannot deactivate your own account.
   if (targetUser.id === req.user.id) {
-    throw new AppError('ไม่สามารถลบบัญชีของตนเองได้', 400);
+    throw new AppError('ไม่สามารถเปลี่ยนสถานะบัญชีของตัวเองได้', 400);
   }
 
-  await authService.deactivateAccount(req.params.id);
+  // Only owners may manage owner accounts.
+  if (targetUser.role === 'owner' && req.user.role !== 'owner') {
+    throw new AppError('ไม่มีสิทธิ์จัดการบัญชีเจ้าของระบบ', 403);
+  }
+
+  if (!req.body.isActive && targetUser.role === 'owner') {
+    const { count: ownerCount, error: ownerCountError } = await supabaseAdmin
+      .from('profiles')
+      .select('id', { count: 'exact', head: true })
+      .eq('role', 'owner')
+      .eq('is_active', true);
+
+    if (ownerCountError) {
+      throw new AppError(`ตรวจสอบจำนวนเจ้าของระบบไม่สำเร็จ: ${ownerCountError.message}`, 500);
+    }
+    if ((ownerCount || 0) <= 1) {
+      throw new AppError('ไม่สามารถปิดใช้งานเจ้าของระบบรายสุดท้ายได้ ระบบต้องมีเจ้าของระบบอย่างน้อย 1 บัญชี', 400);
+    }
+  }
+
+  const profile = await authService.setUserActive(req.params.id, req.body.isActive, req.user.id, req.user.role);
 
   res.json({
     success: true,
-    message: 'ลบผู้ใช้งานเรียบร้อย'
+    message: req.body.isActive ? 'เปิดใช้งานผู้ใช้เรียบร้อยแล้ว' : 'ปิดใช้งานผู้ใช้เรียบร้อยแล้ว',
+    data: profile
+  });
+}));
+
+// Delete a user account (admin).
+//
+// Attempts a real/permanent account deletion for test accounts with NO protected
+// business/transaction history (orders, store orders, messages, conversations,
+// reviews, call history, refunds/approvals, courier records, or stores with
+// order history). In that safe case it removes owned stores (and cascaded catalog
+// data), deletes the Supabase Auth user via Admin API, and removes the profile.
+//
+// If protected history/references exist, it NEVER deletes orders/messages/
+// transactions. Instead it deactivates the account, revokes sessions, anonymizes
+// PII on the profile, and returns action=deactivated with the blocking references
+// and reason so the admin sees why permanent deletion was not possible.
+//
+// Guards: cannot delete self, non-owners cannot manage owner accounts, and the
+// last owner cannot be deleted. Pagination/list refresh is handled client-side.
+router.delete('/users/:id', validateId(), verifyToken, verifyAdmin, asyncHandler(async (req, res) => {
+  const result = await authService.adminDeleteUserAccount(req.params.id, req.user.id, req.user.role);
+
+  if (result.action === 'deleted') {
+    return res.json({
+      success: true,
+      message: 'ลบบัญชีผู้ใช้งานออกจากระบบเรียบร้อยแล้ว (ลบจาก Supabase Auth และโปรไฟล์ เนื่องจากไม่มีประวัติธุรกรรมที่ต้องรักษา)',
+      data: result
+    });
+  }
+
+  res.json({
+    success: true,
+    message: result.reason || 'ไม่สามารถลบถาวรได้เนื่องจากมีข้อมูลธุรกิจที่ต้องรักษา ระบบจึงปิดใช้งานและจัดการข้อมูลส่วนบุคคลแทน (ไม่ลบคำสั่งซื้อ/ข้อความ/ประวัติธุรกรรม)',
+    data: result
   });
 }));
 

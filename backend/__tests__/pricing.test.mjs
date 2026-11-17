@@ -120,6 +120,7 @@ function buildOrderHandlers({ products, stores, options = {} }) {
     payments: [],
     stock_releases: [],
     stock_reservations: [],
+    customer_destinations: [],
   };
   let storeOrderSeq = 0;
   let paymentSeq = 0;
@@ -172,7 +173,13 @@ function buildOrderHandlers({ products, stores, options = {} }) {
       };
     },
 
-    customer_destinations: () => ({ data: null, error: null }),
+    customer_destinations: ({ payload }) => {
+      if (options.failDestination) {
+        return { data: null, error: { message: 'destination insert failed' } };
+      }
+      created.customer_destinations.push(payload);
+      return { data: null, error: null };
+    },
 
     store_orders: ({ op, payload }) => {
       if (op === 'insert') {
@@ -517,4 +524,60 @@ test('14. createPaymentRecord refuses amounts <= 0 instead of hitting a DB const
   assert.rejects(() => createPaymentRecord('order-1', null, 0, 'card'), /greater than 0/);
   assert.rejects(() => createPaymentRecord('order-1', null, -10, 'card'), /greater than 0/);
   assert.rejects(() => createPaymentRecord('order-1', null, Number.NaN, 'card'), /greater than 0/);
+});
+
+test('15. customer destination stores the order id, coordinates, address and place name', async () => {
+  const { handlers, created } = buildOrderHandlers({
+    products: { 'prod-1': product({ price: 100 }) },
+    stores: { 'store-1': store },
+  });
+  const { restore } = installFakeSupabase(handlers);
+
+  try {
+    const input = orderInput([{ product_id: 'prod-1', quantity: 1 }]);
+    input.customer_coordinates = { lat: 13.7563, lng: 100.5018 };
+    input.delivery_address = {
+      ...input.delivery_address,
+      label: 'บ้าน',
+      place_name: 'บ้านหลัก',
+      address_book_id: 'address-1',
+    };
+
+    const order = await createOrder('cust-1', input);
+
+    assert.equal(created.customer_destinations.length, 1);
+    assert.deepEqual(created.customer_destinations[0], {
+      order_id: order.id,
+      coordinates: 'POINT(100.5018 13.7563)',
+      address: input.delivery_address,
+      place_name: 'บ้านหลัก',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('16. destination insert failure cancels the order without reserving stock', async () => {
+  const { handlers, created } = buildOrderHandlers({
+    products: { 'prod-1': product({ price: 100 }) },
+    stores: { 'store-1': store },
+    options: { failDestination: true },
+  });
+  const { restore } = installFakeSupabase(handlers);
+
+  try {
+    const input = orderInput([{ product_id: 'prod-1', quantity: 1 }]);
+    input.customer_coordinates = { lat: 13.7563, lng: 100.5018 };
+
+    await assert.rejects(
+      () => createOrder('cust-1', input),
+      /Customer destination creation failed/
+    );
+
+    assert.deepEqual(created.stock_reservations, []);
+    assert.deepEqual(created.stock_releases, []);
+    assert.equal(created.orders[0].status, 'cancelled');
+  } finally {
+    restore();
+  }
 });

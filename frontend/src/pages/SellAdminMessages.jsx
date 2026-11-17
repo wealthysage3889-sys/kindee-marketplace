@@ -1,7 +1,14 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { useSocket } from "../context/SocketContext";
 import { chatAPI } from "../api";
+import {
+  applyIncomingMessage,
+  applyReadReceipt,
+  getMessageConversationId,
+  getMessageId,
+} from "../utils/chatList";
 
 const formatTime = (iso) => {
   try {
@@ -19,6 +26,9 @@ const formatDate = (iso) => {
   }
 };
 
+// Cap the de-dupe set so a long-lived tab does not grow it without bound.
+const SEEN_LIMIT = 1000;
+
 export default function SellAdminMessages() {
   const { admin } = useAuth();
   const user = admin?.user;
@@ -27,35 +37,206 @@ export default function SellAdminMessages() {
   const [error, setError] = useState("");
   const navigate = useNavigate();
 
-  const currentUserId = user?.id;
+  const { connected, on, off } = useSocket();
+
+  const currentUserId = user?.id || user?._id || null;
+
+  // Log authenticated user ID when it changes
+  useEffect(() => {
+    if (currentUserId) {
+      console.log("[ChatList] authenticated user ID", { currentUserId });
+    }
+  }, [currentUserId]);
+
+  // Log socket connection status
+  useEffect(() => {
+    console.log("[ChatList] socket connected", { connected });
+  }, [connected]);
+
+  // Mirror of `chats` so socket handlers can compute the next state and log
+  // before/after values synchronously, without side effects inside a state
+  // updater (which React may invoke twice in StrictMode).
+  const chatsRef = useRef([]);
+  const mountedRef = useRef(true);
+  // Message ids already reflected in the list (or already counted). A message
+  // delivered twice (socket + a later refetch, or a reconnect replay) must never
+  // bump the unread badge twice or duplicate a preview.
+  const seenMessageIdsRef = useRef(new Set());
+
+  const rememberSeen = useCallback((id) => {
+    if (id == null) return;
+    const seen = seenMessageIdsRef.current;
+    const key = String(id);
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (seen.size > SEEN_LIMIT) {
+      // Drop the oldest inserted id (Set preserves insertion order).
+      const oldest = seen.values().next().value;
+      if (oldest !== undefined) seen.delete(oldest);
+    }
+  }, []);
+
+  const mapConversation = useCallback(
+    (c) => {
+      const members = Array.isArray(c.members) ? c.members : [];
+      // คู่สนทนาของ Admin/Owner คือสมาชิกที่ไม่ใช่ตัวเอง (ลูกค้า)
+      // ไม่ให้นำ Profile ของ Admin/Owner ที่ล็อกอินอยู่มาแสดงเป็นคู่สนทนา
+      const currentMember = members.find((m) => String(m.profile_id) === String(currentUserId));
+      const counterpart = members.find((m) => String(m.profile_id) !== String(currentUserId));
+      const customerProfile = counterpart?.profile || null;
+      const customerName =
+        customerProfile?.name ||
+        customerProfile?.display_name ||
+        customerProfile?.full_name ||
+        "ลูกค้า";
+      const customerAvatar =
+        customerProfile?.avatar_url ||
+        customerProfile?.avatarUrl ||
+        customerProfile?.profile_image_url ||
+        null;
+
+      return {
+        id: c.id,
+        storeId: c.store_id,
+        store: c.store || null,
+        customerId: counterpart?.profile_id || null,
+        customer: {
+          id: customerProfile?.id || null,
+          name: customerName,
+          avatar_url: customerAvatar,
+          role: customerProfile?.role || null,
+        },
+        lastMessage: c.last_message || null,
+        unreadCount: currentMember?.unread_count || 0,
+      };
+    },
+    [currentUserId]
+  );
+
+  const seedSeenFromList = useCallback(
+    (list) => {
+      list.forEach((c) => rememberSeen(getMessageId(c.lastMessage)));
+    },
+    [rememberSeen]
+  );
+
+  const loadChats = useCallback(async () => {
+    try {
+      setError("");
+      // GET /api/chat/conversations  (with admin token) -> all conversations
+      // the admin/seller is a member of.
+      const data = await chatAPI.getConversations({}, "admin");
+      const list = Array.isArray(data?.data?.conversations)
+        ? data.data.conversations
+        : Array.isArray(data?.data)
+          ? data.data
+          : [];
+      if (!mountedRef.current) return;
+      const mapped = list.map(mapConversation);
+      seedSeenFromList(mapped);
+      chatsRef.current = mapped;
+      setChats(mapped);
+      console.log("[ChatList] loaded", {
+        conversations: mapped.length,
+        totalUnread: mapped.reduce((sum, c) => sum + (c.unreadCount || 0), 0),
+      });
+    } catch (err) {
+      if (mountedRef.current) setError(err.message || "ไม่สามารถโหลดรายการแชทได้");
+    } finally {
+      if (mountedRef.current) setLoading(false);
+    }
+  }, [mapConversation, seedSeenFromList]);
 
   useEffect(() => {
-    let cancelled = false;
-    const loadChats = async () => {
-      try {
-        setError("");
-        // GET /api/chat/conversations  (with admin token) -> all conversations
-        // the admin/seller is a member of.
-        const data = await chatAPI.getConversations({}, "admin");
-        const list = Array.isArray(data?.data) ? data.data : [];
-        if (!cancelled) {
-          setChats(list.map((c) => ({
-            id: c.id,
-            storeId: c.store_id,
-            store: c.store || null,
-            lastMessage: c.last_message || null,
-            unreadCount: c.members?.find((m) => String(m.profile_id) === String(currentUserId))?.unread_count || 0,
-          })));
-        }
-      } catch (err) {
-        if (!cancelled) setError(err.message || "ไม่สามารถโหลดรายการแชทได้");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
+    mountedRef.current = true;
+    setLoading(true);
     loadChats();
-    return () => { cancelled = true; };
-  }, []);
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [loadChats]);
+
+  // Keep the ref in sync if state is ever changed outside the socket handlers.
+  useEffect(() => {
+    chatsRef.current = chats;
+  }, [chats]);
+
+  // Realtime: update the chat list the moment the backend emits a new message,
+  // so the unread badge, preview, timestamp and ordering change without a
+  // manual refresh. Events arrive on the socket's user_<id> room (joined on
+  // connect) and/or the conversation_<id> room (joined while reading).
+  useEffect(() => {
+    if (!connected) return;
+
+    const handleNewMessage = (message) => {
+      console.log("[ChatList] received newMessage", {
+        messageId: getMessageId(message),
+        conversationId: getMessageConversationId(message),
+        senderId: message?.sender_id ?? message?.senderId,
+      });
+      const conversationId = getMessageConversationId(message);
+      const messageId = getMessageId(message);
+      if (!conversationId || messageId == null) return;
+
+      const key = String(messageId);
+      if (seenMessageIdsRef.current.has(key)) return; // already reflected
+
+      const prev = chatsRef.current;
+      const target = prev.find((c) => String(c.id) === String(conversationId));
+      const unreadBefore = Number(target?.unreadCount) || 0;
+      const result = applyIncomingMessage(prev, message, currentUserId);
+
+      if (!result.found) {
+        // A brand-new customer thread (or a room not in the first page): refetch
+        // so the conversation shows up instead of silently dropping the event.
+        console.log("[ChatList] newMessage for unknown conversation; refetching", { conversationId });
+        loadChats();
+        return;
+      }
+
+      rememberSeen(messageId);
+      chatsRef.current = result.chats;
+      setChats(result.chats);
+
+      const unreadAfter =
+        Number(result.chats.find((c) => String(c.id) === String(conversationId))?.unreadCount) || 0;
+      console.log("[ChatList] newMessage processed", {
+        conversationId,
+        messageId: key,
+        fromSelf: !result.incremented,
+        unreadBefore,
+        unreadAfter,
+        stateUpdated: true,
+      });
+    };
+
+    const handleMessagesRead = (payload) => {
+      const conversationId = payload?.conversationId ?? payload?.conversation_id ?? null;
+      const readBy = payload?.userId ?? payload?.user_id ?? null;
+      const count = payload?.count ?? 0;
+
+      const prev = chatsRef.current;
+      const next = applyReadReceipt(prev, conversationId, readBy, currentUserId, count);
+      if (next === prev) return;
+      chatsRef.current = next;
+      setChats(next);
+      console.log("[ChatList] messagesRead", {
+        conversationId,
+        readBySelf: Boolean(currentUserId && String(readBy) === String(currentUserId)),
+        count,
+      });
+    };
+
+    console.log("[ChatList] registered newMessage listener");
+    on("newMessage", handleNewMessage);
+    on("messagesRead", handleMessagesRead);
+
+    return () => {
+      console.log("[ChatList] cleanup: removing newMessage listener");
+      off("newMessage", handleNewMessage);
+      off("messagesRead", handleMessagesRead);
+    };
+  }, [connected, currentUserId, on, off, loadChats, rememberSeen]);
 
   const handleChatClick = (conversationId) => {
     navigate(`/selladmin/messages/${conversationId}`);
@@ -93,11 +274,11 @@ export default function SellAdminMessages() {
             </div>
           ) : (
             chats.map((chat) => {
-              const store = chat.store;
+              const customer = chat.customer;
               const lastMsg = chat.lastMessage;
               const unreadCount = chat.unreadCount || 0;
-              const storeName = store?.name || "ร้านค้า";
-              const storeLogo = store?.logo_url;
+              const customerName = customer?.name || customer?.display_name || customer?.full_name || "ลูกค้า";
+              const customerAvatar = customer?.avatar_url;
 
               return (
                 <div
@@ -107,15 +288,15 @@ export default function SellAdminMessages() {
                   style={{ cursor: "pointer" }}
                 >
                   <span className="chat-avatar">
-                    {storeLogo ? (
-                      <img src={storeLogo} alt={storeName} />
+                    {customerAvatar ? (
+                      <img src={customerAvatar} alt={customerName} />
                     ) : (
-                      storeName.charAt(0)
+                      customerName.charAt(0)
                     )}
                   </span>
                   <div className="chat-info">
                     <div className="chat-info-top">
-                      <strong className="chat-name">{storeName}</strong>
+                      <strong className="chat-name">{customerName}</strong>
                       {lastMsg?.created_at && (
                         <span className="chat-time">
                           {formatDate(lastMsg.created_at)} {formatTime(lastMsg.created_at)}

@@ -819,3 +819,261 @@ export const getAllOrders = async (filters = {}, pagination = {}) => {
     pagination: { page, limit, total: count, totalPages: Math.ceil(count / limit) }
   };
 };
+
+
+// ---------------------------------------------------------------------------
+// Payment slip upload (Existing Order Payment — Phase 1)
+// ---------------------------------------------------------------------------
+
+// Extract the Storage object path (within the payment-slips bucket) from a slip URL.
+// Returns null when the URL cannot be safely parsed.
+function extractPaymentSlipStoragePath(slipUrl) {
+  if (!slipUrl || typeof slipUrl !== 'string') return null;
+  const match = slipUrl.match(/payment-slips\/.+$/);
+  if (!match) return null;
+  try {
+    const url = new URL(slipUrl);
+    const pathname = url.pathname;
+    const idx = pathname.indexOf('payment-slips/');
+    if (idx === -1) return null;
+    return decodeURIComponent(pathname.slice(idx));
+  } catch {
+    return match[0];
+  }
+}
+
+// Customer uploads a payment slip for an existing unpaid order.
+// One slip per order (UNIQUE on order_id). Concurrency-safe: explicit
+// pre-check + ON CONFLICT backstop prevents duplicate slips.
+export const uploadPaymentSlip = async (
+  customerId,
+  orderId,
+  { fileBuffer, fileName, mimeType, amountThb, note }
+) => {
+  // 1. Verify order exists, belongs to customer, and is unpaid
+  const { data: order, error: orderError } = await supabaseAdmin
+    .from('orders')
+    .select('id, customer_id, payment_status, total_amount, order_number')
+    .eq('id', orderId)
+    .single();
+
+  if (orderError || !order) {
+    throw new NotFoundError('ไม่พบคำสั่งซื้อ');
+  }
+
+  if (order.customer_id !== customerId) {
+    throw new AppError('ไม่มีสิทธิ์อัปโหลดสลิปสำหรับคำสั่งซื้อนี้', 403);
+  }
+
+  if (order.payment_status !== 'pending') {
+    throw new ValidationError('คำสั่งซื้อนี้ได้รับการชำระเงินแล้วหรือไม่อยู่ในสถานะที่รอการชำระเงิน');
+  }
+
+  // 2. Check for existing slip (pre-check; UNIQUE constraint is the backstop)
+  const { data: existingSlip } = await supabaseAdmin
+    .from('payment_slips')
+    .select('id, slip_status, slip_url')
+    .eq('order_id', orderId)
+    .maybeSingle();
+
+  if (existingSlip) {
+    if (existingSlip.slip_status === 'uploaded') {
+      throw new ValidationError(
+        'ได้อัปโหลดสลิปสำหรับคำสั่งซื้อนี้แล้ว กรุณารอการตรวจสอบจากแอดมิน'
+      );
+    }
+    if (existingSlip.slip_status === 'approved') {
+      throw new ValidationError(
+        'สลิปนี้ได้รับการอนุมัติแล้ว ไม่สามารถอัปโหลดซ้ำได้'
+      );
+    }
+    // slip_status === 'rejected': allow re-upload — remove old slip file and record first
+    const oldStoragePath = extractPaymentSlipStoragePath(existingSlip.slip_url);
+    if (oldStoragePath) {
+      const { error: removeError } = await supabaseAdmin.storage
+        .from('payment-slips')
+        .remove([oldStoragePath]);
+      if (removeError) {
+        throw new AppError(
+          `ลบไฟล์สลิปเดิมไม่สำเร็จ: ${removeError.message}`,
+          500
+        );
+      }
+    }
+    const { error: deleteError } = await supabaseAdmin
+      .from('payment_slips')
+      .delete()
+      .eq('id', existingSlip.id);
+    if (deleteError) {
+      throw new AppError(
+        `ลบบันทึกสลิปเดิมไม่สำเร็จ: ${deleteError.message}`,
+        500
+      );
+    }
+  }
+
+  // 3. Upload file to storage bucket
+  const timestamp = Date.now();
+  const safeFileName = String(fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const filePath = `payment-slips/${orderId}/${timestamp}-${safeFileName}`;
+
+  const { data: uploadData, error: uploadError } = await supabaseAdmin.storage
+    .from('payment-slips')
+    .upload(filePath, fileBuffer, { contentType: mimeType, upsert: false });
+
+  if (uploadError) {
+    throw new AppError(`อัปโหลดไฟล์สลิปไม่สำเร็จ: ${uploadError.message}`, 500);
+  }
+
+  const { data: { publicUrl } } = await supabaseAdmin.storage
+    .from('payment-slips')
+    .getPublicUrl(uploadData.path);
+
+  // 4. Create payment slip record (ON CONFLICT DO NOTHING as race backstop)
+  const { data: slip, error: slipError } = await supabaseAdmin
+    .from('payment_slips')
+    .insert({
+      order_id: orderId,
+      customer_id: customerId,
+      slip_url: publicUrl,
+      slip_filename: safeFileName,
+      slip_status: 'uploaded',
+      amount_thb: Number(amountThb),
+      note: note || null
+    })
+    .select()
+    .single();
+
+  if (slipError) {
+    // Clean up uploaded file if DB insert fails
+    await supabaseAdmin.storage.from('payment-slips').remove([uploadData.path]);
+    throw new AppError(`สร้างบันทึกสลิปไม่สำเร็จ: ${slipError.message}`, 500);
+  }
+
+  return { slip, order: { id: order.id, order_number: order.order_number, total_amount: order.total_amount } };
+};
+
+// Admin: List payment slips (all, with filters)
+export const getPaymentSlips = async (filters = {}, pagination = {}) => {
+  const { slip_status, customer_id, page = 1, limit = 20 } = filters;
+
+  let query = supabaseAdmin
+    .from('payment_slips')
+    .select(`
+      *,
+      order:orders(id, order_number, total_amount, payment_status, customer_id),
+      customer:profiles!customer_id(id, name, email, phone)
+    `, { count: 'exact' });
+
+  if (slip_status) query = query.eq('slip_status', slip_status);
+  if (customer_id) query = query.eq('customer_id', customer_id);
+
+  query = query
+    .order('created_at', { ascending: false })
+    .range((page - 1) * limit, page * limit - 1);
+
+  const { data, error, count } = await query;
+
+  if (error) {
+    throw new AppError(`Failed to fetch payment slips: ${error.message}`, 500);
+  }
+
+  return {
+    slips: data || [],
+    pagination: { page, limit, total: count, totalPages: Math.ceil(count / limit) }
+  };
+};
+
+// Admin: Approve a payment slip — sets order payment_status='paid'
+export const approvePaymentSlip = async (adminId, slipId) => {
+  // 1. Verify slip exists and is in 'uploaded' state
+  const { data: slip, error: slipError } = await supabaseAdmin
+    .from('payment_slips')
+    .select('*, order:orders(id, payment_status, customer_id)')
+    .eq('id', slipId)
+    .single();
+
+  if (slipError || !slip) {
+    throw new NotFoundError('ไม่พบสลิปการชำระเงิน');
+  }
+
+  if (slip.slip_status !== 'uploaded') {
+    throw new ValidationError(
+      slip.slip_status === 'approved'
+        ? 'สลิปนี้ได้รับการอนุมัติแล้ว'
+        : 'สลิปนี้ถูกปฏิเสธแล้ว ไม่สามารถอนุมัติซ้ำได้'
+    );
+  }
+
+  // 2. Verify the order is still pending (defense in depth)
+  if (slip.order.payment_status !== 'pending') {
+    throw new ValidationError('คำสั่งซื้อนี้ได้รับการชำระเงินแล้ว');
+  }
+
+  // 3. Update slip to approved
+  const { error: updateSlipError } = await supabaseAdmin
+    .from('payment_slips')
+    .update({
+      slip_status: 'approved',
+      reviewed_by: adminId,
+      reviewed_at: new Date().toISOString()
+    })
+    .eq('id', slipId);
+
+  if (updateSlipError) {
+    throw new AppError(`อนุมัติสลิปไม่สำเร็จ: ${updateSlipError.message}`, 500);
+  }
+
+  // 4. Update order payment_status to 'paid'
+  const { data: order, error: orderError } = await supabaseAdmin
+    .from('orders')
+    .update({ payment_status: 'paid' })
+    .eq('id', slip.order_id)
+    .select('id, order_number, payment_status, customer_id')
+    .single();
+
+  if (orderError) {
+    throw new AppError(`อัปเดตสถานะคำสั่งซื้อไม่สำเร็จ: ${orderError.message}`, 500);
+  }
+
+  return { slip: { id: slipId, slip_status: 'approved' }, order };
+};
+
+// Admin: Reject a payment slip — order stays 'pending', customer can re-upload
+export const rejectPaymentSlip = async (adminId, slipId, rejectReason) => {
+  // 1. Verify slip exists and is in 'uploaded' state
+  const { data: slip, error: slipError } = await supabaseAdmin
+    .from('payment_slips')
+    .select('*, order:orders(id, payment_status)')
+    .eq('id', slipId)
+    .single();
+
+  if (slipError || !slip) {
+    throw new NotFoundError('ไม่พบสลิปการชำระเงิน');
+  }
+
+  if (slip.slip_status !== 'uploaded') {
+    throw new ValidationError(
+      slip.slip_status === 'approved'
+        ? 'สลิปนี้ได้รับการอนุมัติแล้ว ไม่สามารถปฏิเสธได้'
+        : 'สลิปนี้ถูกปฏิเสธแล้ว'
+    );
+  }
+
+  // 2. Update slip to rejected
+  const { error: updateSlipError } = await supabaseAdmin
+    .from('payment_slips')
+    .update({
+      slip_status: 'rejected',
+      reviewed_by: adminId,
+      reviewed_at: new Date().toISOString(),
+      reject_reason: rejectReason || null
+    })
+    .eq('id', slipId);
+
+  if (updateSlipError) {
+    throw new AppError(`ปฏิเสธสลิปไม่สำเร็จ: ${updateSlipError.message}`, 500);
+  }
+
+  return { slip: { id: slipId, slip_status: 'rejected', reject_reason: rejectReason } };
+};

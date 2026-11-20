@@ -5,8 +5,25 @@ import { verifyToken, authorize, verifyAdmin } from '../middleware/auth.js';
 import * as orderService from '../services/orderService.js';
 import { asyncHandler, AppError, NotFoundError } from '../middleware/errorHandler.js';
 import { validateThaiPhone } from '../utils/phone.js';
+import { uploadSingle } from '../middleware/upload.js';
 
 const router = express.Router();
+
+// Upload payment slip for existing order (customer)
+router.post('/:id/payment-slip', validateId(), verifyToken, uploadSingle('slip', 'payment-slips'), [
+  body('amountThb').optional().isFloat({ min: 0.01 }).withMessage('Invalid amount'),
+  body('note').optional().trim()
+], validate, asyncHandler(async (req, res) => {
+  if (!req.file) { throw new AppError('No file uploaded', 400); }
+  const result = await orderService.uploadPaymentSlip(req.user.id, req.params.id, {
+    fileBuffer: req.file.buffer,
+    fileName: req.file.originalname,
+    mimeType: req.file.mimetype,
+    amountThb: req.body.amountThb || null,
+    note: req.body.note
+  });
+  res.status(201).json({ success: true, message: 'Payment slip uploaded', data: result });
+}));
 
 // Create order
 router.post('/', verifyToken, authorize('customer'), [
@@ -201,3 +218,4 @@ router.get('/admin/all', verifyToken, verifyAdmin, [
 }));
 
 export default router;
+

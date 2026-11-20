@@ -264,7 +264,7 @@ router.delete('/products/:id', validateId(), verifyToken, verifyAdmin, asyncHand
   if (result.action === 'deactivated') {
     return res.json({
       success: true,
-      message: 'ลบสินค้าไม่สำเร็จแบบถาวร เนื่องจากมีประวัติคำสั่งซื้ออ้างอิงอยู่ ระบบจึงปิดการขายสินค้านี้แทน เพื่อรักษาประวัติการซื้อ',
+      message: 'ź�Թ�����������Ẻ���� ���ͧ�ҡ�ջ���ѵԤ���觫�����ҧ�ԧ���� �к��֧�Դ��â���Թ��ҹ��᷹ �����ѡ�һ���ѵԡ�ë���',
       data: { action: result.action, product: result.product }
     });
   }
@@ -345,15 +345,15 @@ router.patch('/users/:id/role', validateId(), verifyToken, verifyAdmin, [
 ], validate, asyncHandler(async (req, res) => {
   const targetUser = await authService.getProfile(req.params.id);
   if (!targetUser) {
-    throw new AppError('ไม่พบผู้ใช้งาน', 404);
+    throw new AppError('��辺�����ҹ', 404);
   }
 
   if (req.body.role === 'owner' && req.user.role !== 'owner') {
-    throw new AppError('เฉพาะเจ้าของระบบเท่านั้นที่สามารถมอบสิทธิ์ owner ได้', 403);
+    throw new AppError('੾����Ңͧ�к���ҹ�鹷������ö�ͺ�Է��� owner ��', 403);
   }
 
   if (targetUser.role === 'owner' && req.user.role !== 'owner') {
-    throw new AppError('ไม่มีสิทธิ์จัดการบัญชีเจ้าของระบบ', 403);
+    throw new AppError('������Է���Ѵ��úѭ����Ңͧ�к�', 403);
   }
 
   const profile = await authService.updateUserRole(req.params.id, req.body.role, req.user.id);
@@ -372,17 +372,17 @@ router.patch('/users/:id/status', validateId(), verifyToken, verifyAdmin, [
 ], validate, asyncHandler(async (req, res) => {
   const targetUser = await authService.getProfile(req.params.id);
   if (!targetUser) {
-    throw new AppError('ไม่พบผู้ใช้งาน', 404);
+    throw new AppError('��辺�����ҹ', 404);
   }
 
   // Cannot deactivate your own account.
   if (targetUser.id === req.user.id) {
-    throw new AppError('ไม่สามารถเปลี่ยนสถานะบัญชีของตัวเองได้', 400);
+    throw new AppError('�������ö����¹ʶҹкѭ�բͧ����ͧ��', 400);
   }
 
   // Only owners may manage owner accounts.
   if (targetUser.role === 'owner' && req.user.role !== 'owner') {
-    throw new AppError('ไม่มีสิทธิ์จัดการบัญชีเจ้าของระบบ', 403);
+    throw new AppError('������Է���Ѵ��úѭ����Ңͧ�к�', 403);
   }
 
   if (!req.body.isActive && targetUser.role === 'owner') {
@@ -393,10 +393,10 @@ router.patch('/users/:id/status', validateId(), verifyToken, verifyAdmin, [
       .eq('is_active', true);
 
     if (ownerCountError) {
-      throw new AppError(`ตรวจสอบจำนวนเจ้าของระบบไม่สำเร็จ: ${ownerCountError.message}`, 500);
+      throw new AppError(`��Ǩ�ͺ�ӹǹ��Ңͧ�к���������: ${ownerCountError.message}`, 500);
     }
     if ((ownerCount || 0) <= 1) {
-      throw new AppError('ไม่สามารถปิดใช้งานเจ้าของระบบรายสุดท้ายได้ ระบบต้องมีเจ้าของระบบอย่างน้อย 1 บัญชี', 400);
+      throw new AppError('�������ö�Դ��ҹ��Ңͧ�к�����ش������ �к���ͧ����Ңͧ�к����ҧ���� 1 �ѭ��', 400);
     }
   }
 
@@ -404,7 +404,7 @@ router.patch('/users/:id/status', validateId(), verifyToken, verifyAdmin, [
 
   res.json({
     success: true,
-    message: req.body.isActive ? 'เปิดใช้งานผู้ใช้เรียบร้อยแล้ว' : 'ปิดใช้งานผู้ใช้เรียบร้อยแล้ว',
+    message: req.body.isActive ? '�Դ��ҹ��������º��������' : '�Դ��ҹ��������º��������',
     data: profile
   });
 }));
@@ -430,14 +430,14 @@ router.delete('/users/:id', validateId(), verifyToken, verifyAdmin, asyncHandler
   if (result.action === 'deleted') {
     return res.json({
       success: true,
-      message: 'ลบบัญชีผู้ใช้งานออกจากระบบเรียบร้อยแล้ว (ลบจาก Supabase Auth และโปรไฟล์ เนื่องจากไม่มีประวัติธุรกรรมที่ต้องรักษา)',
+      message: 'ź�ѭ�ռ����ҹ�͡�ҡ�к����º�������� (ź�ҡ Supabase Auth �������� ���ͧ�ҡ����ջ���ѵԸ�á�������ͧ�ѡ��)',
       data: result
     });
   }
 
   res.json({
     success: true,
-    message: result.reason || 'ไม่สามารถลบถาวรได้เนื่องจากมีข้อมูลธุรกิจที่ต้องรักษา ระบบจึงปิดใช้งานและจัดการข้อมูลส่วนบุคคลแทน (ไม่ลบคำสั่งซื้อ/ข้อความ/ประวัติธุรกรรม)',
+    message: result.reason || '�������öź���������ͧ�ҡ�բ����Ÿ�áԨ����ͧ�ѡ�� �к��֧�Դ��ҹ��ШѴ��â�������ǹ�ؤ��᷹ (���ź����觫���/��ͤ���/����ѵԸ�á���)',
     data: result
   });
 }));
@@ -516,4 +516,32 @@ router.patch('/settings/:key', verifyToken, verifyAdmin, (req, res) => {
   });
 });
 
+// List payment slips (admin)
+router.get('/payment-slips', verifyToken, verifyAdmin, [
+  query('slipStatus').optional().isIn(['uploaded', 'approved', 'rejected']).withMessage('Invalid slip status'),
+  query('customerId').optional().isUUID(),
+  query('page').optional().isInt({ min: 1 }),
+  query('limit').optional().isInt({ min: 1, max: 100 })
+], validate, asyncHandler(async (req, res) => {
+  const result = await orderService.getPaymentSlips(
+    { slip_status: req.query.slipStatus, customer_id: req.query.customerId },
+    { page: parseInt(req.query.page) || 1, limit: parseInt(req.query.limit) || 20 }
+  );
+  res.json({ success: true, data: result });
+}));
+
+// Approve payment slip (admin)
+router.patch('/payment-slips/:slipId/approve', validateId('slipId'), verifyToken, verifyAdmin, asyncHandler(async (req, res) => {
+  const result = await orderService.approvePaymentSlip(req.user.id, req.params.slipId);
+  res.json({ success: true, message: 'Payment slip approved', data: result });
+}));
+
+// Reject payment slip (admin)
+router.patch('/payment-slips/:slipId/reject', validateId('slipId'), verifyToken, verifyAdmin, [
+  body('reason').optional().trim()
+], validate, asyncHandler(async (req, res) => {
+  const result = await orderService.rejectPaymentSlip(req.user.id, req.params.slipId, req.body.reason);
+  res.json({ success: true, message: 'Payment slip rejected', data: result });
+}));
 export default router;
+

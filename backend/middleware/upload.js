@@ -17,7 +17,8 @@ const fileFilter = (req, file, cb) => {
     'store-covers': ['image/jpeg', 'image/png', 'image/webp'],
     'product-images': ['image/jpeg', 'image/png', 'image/webp'],
     'chat-attachments': ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-    'voice-recordings': ['audio/webm', 'audio/ogg', 'audio/mpeg']
+    'voice-recordings': ['audio/webm', 'audio/ogg', 'audio/mpeg'],
+    'payment-slips': ['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
   };
   
   // Get bucket from request or default

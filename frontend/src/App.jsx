@@ -14,6 +14,7 @@ import LineCallback from "./pages/LineCallback";
 import AdminLogin from "./pages/AdminLogin";
 import SellerDashboard from "./pages/SellerDashboard";
 import AdminDashboard from "./pages/AdminDashboard";
+import AdminPaymentSlips from "./pages/AdminPaymentSlips";
 import Users from "./pages/Users";
 import Account from "./pages/Account";
 import AdminAccount from "./pages/AdminAccount";
@@ -89,6 +90,7 @@ const router = createBrowserRouter([
       { path: "users", element: <ProtectedRoute mode="admin"><Users /></ProtectedRoute> },
       { path: "products", element: <ProtectedRoute mode="admin"><AdminProducts /></ProtectedRoute> },
       { path: "reports", element: <ProtectedRoute mode="admin"><div className="page">reports</div></ProtectedRoute> },
+      { path: "payment-slips", element: <ProtectedRoute mode="admin"><AdminPaymentSlips /></ProtectedRoute> },
       { path: "messages", element: <ProtectedRoute mode="admin"><SellAdminMessages /></ProtectedRoute> },
       { path: "messages/:conversationId", element: <ProtectedRoute mode="admin"><ChatRoom mode="admin" /></ProtectedRoute> },
       { path: "account", element: <ProtectedRoute mode="admin"><AdminAccount /></ProtectedRoute> },

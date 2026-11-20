@@ -1,0 +1,325 @@
+/* Existing-order payment popup. Layout/overlay mirrors CheckoutModal so the
+   payment step keeps the same look and feel, without reusing the checkout
+   flow itself. */
+
+.order-pay-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: orderPayFadeIn 0.2s ease;
+}
+
+@keyframes orderPayFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.order-pay-panel {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+  max-height: 90vh;
+  max-height: 90dvh;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+  animation: orderPaySlideUp 0.25s ease;
+}
+
+@keyframes orderPaySlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.order-pay-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: #f1f5f9;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  line-height: 1;
+  color: #64748b;
+  transition: all 0.2s ease;
+  z-index: 2;
+}
+
+.order-pay-close:hover {
+  background: #e2e8f0;
+  color: #1f2937;
+  transform: scale(1.08);
+}
+
+.order-pay-close:active {
+  transform: scale(0.95);
+}
+
+.order-pay-head {
+  flex: 0 0 auto;
+  padding: 24px 56px 8px 24px;
+}
+
+.order-pay-head h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--primary, #111);
+  letter-spacing: -0.3px;
+}
+
+.order-pay-head p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted, #64748b);
+}
+
+.order-pay-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 8px 24px 8px;
+}
+
+.order-pay-state {
+  margin: 12px 0;
+  padding: 16px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--text-muted, #64748b);
+  background: #f8fafc;
+  border-radius: 12px;
+}
+
+.order-pay-error {
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.order-pay-error p {
+  margin: 0 0 8px;
+}
+
+.order-pay-retry {
+  border: 1px solid #fecaca;
+  background: #fff;
+  color: #b91c1c;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.order-pay-group {
+  background: var(--acct-orange-soft, #fff1ec);
+  border-radius: 12px;
+  padding: 16px;
+  margin: 8px 0 12px;
+}
+
+.order-pay-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border, #eee);
+}
+
+.order-pay-group-currency {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text, #111);
+}
+
+.order-pay-group-count {
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+  background: #fff;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.order-pay-orders {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.order-pay-order {
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border, #eee);
+}
+
+.order-pay-order:last-child {
+  border-bottom: none;
+}
+
+.order-pay-order-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.order-pay-order-number {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text, #111);
+  word-break: break-all;
+}
+
+.order-pay-order-amount {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--acct-orange, #dc2fec);
+  white-space: nowrap;
+}
+
+.order-pay-order-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+}
+
+.order-pay-method {
+  font-weight: 600;
+  color: var(--text, #111);
+}
+
+.order-pay-group-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 2px solid var(--acct-orange-2, #ff7a45);
+  font-size: 15px;
+}
+
+.order-pay-group-total span {
+  font-weight: 600;
+  color: var(--text, #111);
+}
+
+.order-pay-group-total strong {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--acct-orange, #dc2fec);
+}
+
+.order-pay-notes {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.order-pay-notes li {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #7c2d12;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.order-pay-foot {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 24px calc(16px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--border, #eee);
+  background: #fff;
+}
+
+.order-pay-notice strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text, #111);
+}
+
+.order-pay-notice p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted, #64748b);
+}
+
+.order-pay-done {
+  width: 100%;
+  font-weight: 700;
+  font-size: 14px;
+  padding: 12px 16px;
+}
+
+@media (max-width: 480px) {
+  .order-pay-overlay {
+    padding: 0;
+    align-items: flex-end;
+  }
+
+  .order-pay-panel {
+    max-width: none;
+    max-height: 92vh;
+    max-height: 92dvh;
+    border-radius: 16px 16px 0 0;
+  }
+
+  .order-pay-head {
+    padding: 20px 52px 8px 16px;
+  }
+
+  .order-pay-body {
+    padding: 8px 16px;
+  }
+
+  .order-pay-foot {
+    padding: 12px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .order-pay-group {
+    padding: 14px;
+  }
+}

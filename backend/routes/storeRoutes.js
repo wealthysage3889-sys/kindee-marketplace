@@ -112,14 +112,13 @@ router.get('/slug/:slug', optionalAuth, asyncHandler(async (req, res) => {
   });
 }));
 
-// Get current owner's store (seller/admin/owner)
+// Get current owner's stores (seller/admin/owner) - returns all stores for multi-store support
 router.get('/owner/me', verifyToken, authorize('seller', 'admin', 'owner'), asyncHandler(async (req, res) => {
   const stores = await storeService.getStoresByOwner(req.user.id);
-  const store = Array.isArray(stores) ? stores[0] || null : stores || null;
 
   res.json({
     success: true,
-    data: store
+    data: stores
   });
 }));
 
@@ -219,7 +218,77 @@ router.delete('/:id', validateId(), verifyToken, authorize('seller'), asyncHandl
   
   res.json({
     success: true,
-    message: 'Store deleted'
+    message: 'ลบร้านค้าเรียบร้อย'
+  });
+}));
+
+// Get KBZPay payment settings for the current owner's store (seller)
+router.get('/me/kbzpay-settings', verifyToken, authorize('seller'), asyncHandler(async (req, res) => {
+  const stores = await storeService.getStoresByOwner(req.user.id);
+  const store = stores[0] || null;
+  if (!store) {
+    throw new NotFoundError('ไม่พบร้านค้าของคุณ');
+  }
+  const settings = await storeService.getKbzpaySettings(store.id);
+  res.json({
+    success: true,
+    data: settings
+  });
+}));
+
+// Get public KBZPay payment settings of a store (for customers paying an order).
+// Returns only payment-display fields; no secrets.
+router.get('/:id/kbzpay-settings', optionalAuth, validateId(), asyncHandler(async (req, res) => {
+  const settings = await storeService.getKbzpaySettings(req.params.id);
+  if (!settings) {
+    throw new NotFoundError('ไม่พบร้านค้า');
+  }
+  res.json({
+    success: true,
+    data: settings
+  });
+}));
+
+// Update KBZPay payment settings (owner only; service enforces ownership)
+router.put('/:id/kbzpay-settings', validateId(), verifyToken, authorize('seller', 'admin', 'owner'), [
+  body('accountName').optional().trim().notEmpty().withMessage('ชื่อบัญชี KBZPay ต้องไม่ว่าง'),
+  body('phoneNumber').optional().trim().notEmpty().withMessage('เบอร์โทรศัพท์ต้องไม่ว่าง'),
+  body('receiverName').optional().trim().notEmpty().withMessage('ชื่อผู้รับเงินต้องไม่ว่าง'),
+  body('enabled').optional().isBoolean()
+], validate, asyncHandler(async (req, res) => {
+  const settings = await storeService.updateKbzpaySettings(req.params.id, req.user.id, {
+    accountName: req.body.accountName,
+    phoneNumber: req.body.phoneNumber,
+    receiverName: req.body.receiverName,
+    enabled: req.body.enabled
+  });
+  res.json({
+    success: true,
+    message: 'อัปเดตการตั้งค่า KBZPay เรียบร้อยแล้ว',
+    data: settings
+  });
+}));
+
+// Upload KBZPay QR code (owner only; service enforces ownership)
+router.post('/:id/kbzpay-qr', validateId(), verifyToken, authorize('seller', 'admin', 'owner'), uploadSingle('qr', 'store-kbzpay-qr'), asyncHandler(async (req, res) => {
+  if (!req.file) {
+    throw new AppError('ไม่พบไฟล์รูปภาพ QR Code', 400);
+  }
+  if (req.file.size > 5 * 1024 * 1024) {
+    throw new AppError('ขนาดไฟล์ QR Code ต้องไม่เกิน 5MB', 400);
+  }
+
+  const fileName = generateFileName(req.file.originalname, 'kbzpay-qr-');
+  const filePath = generateStoragePath('store-kbzpay-qr', req.params.id, fileName);
+
+  const result = await uploadToSupabase(supabaseAdmin, 'store-kbzpay-qr', filePath, req.file.buffer, req.file.mimetype);
+
+  const settings = await storeService.updateKbzpayQrUrl(req.params.id, req.user.id, result.publicUrl);
+
+  res.json({
+    success: true,
+    message: 'อัปโหลด QR Code เรียบร้อยแล้ว',
+    data: { url: result.publicUrl, path: result.path, settings }
   });
 }));
 

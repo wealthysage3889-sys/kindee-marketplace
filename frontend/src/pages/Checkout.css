@@ -138,20 +138,19 @@
   gap: 12px;
 }
 
-.location-search {
+.locating-status {
+  font-size: 13px;
+  color: #666;
+}
+
+.location-error-state {
   display: flex;
+  flex-direction: column;
   gap: 8px;
+  align-items: center;
 }
 
-.location-search input {
-  flex: 1;
-  padding: 10px 12px;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  font-size: 14px;
-}
-
-.location-search button {
+.btn-retry {
   padding: 10px 20px;
   background: #2196f3;
   color: #fff;
@@ -161,44 +160,8 @@
   cursor: pointer;
 }
 
-.search-results {
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  max-height: 200px;
-  overflow-y: auto;
-  background: #fff;
-}
-
-.search-result-item {
-  padding: 12px;
-  border-bottom: 1px solid #f0f0f0;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.search-result-item:last-child {
-  border-bottom: none;
-}
-
-.search-result-item:hover {
-  background: #f5f5f5;
-}
-
-.search-result-item strong {
-  display: block;
-  margin-bottom: 4px;
-}
-
-.search-result-item span {
-  font-size: 12px;
-  color: #666;
-}
-
-.map-container {
-  height: 400px;
-  border-radius: 8px;
-  overflow: hidden;
-  border: 1px solid #ddd;
+.btn-retry:hover {
+  background: #1976d2;
 }
 
 .selected-location {
@@ -285,45 +248,80 @@
   padding: 16px;
 }
 
-.order-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.order-items-table {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px 120px;
+  gap: 16px;
+}
+
+.order-items-header {
+  display: contents;
+}
+
+.order-items-header > span {
+  padding: 8px 0;
+  font-weight: 600;
+  font-size: 13px;
+  color: #666;
+  border-bottom: 1px solid #ddd;
+}
+
+.order-items-header > span:nth-child(1) {
+  text-align: left;
+}
+
+.order-items-header > span:nth-child(2) {
+  text-align: center;
+}
+
+.order-items-header > span:nth-child(3) {
+  text-align: right;
+}
+
+.order-item-row {
+  display: contents;
+}
+
+.order-item-row > span {
   padding: 12px 0;
   border-bottom: 1px solid #eee;
 }
 
-.order-item:last-child {
+.order-item-row:last-child > span {
   border-bottom: none;
 }
 
-.order-item img {
-  width: 60px;
-  height: 60px;
-  object-fit: cover;
-  border-radius: 8px;
-}
-
-.item-details {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.item-name {
+.item-name-cell {
   font-size: 14px;
   color: #333;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  text-align: left;
 }
 
-.item-qty {
-  font-size: 12px;
-  color: #888;
+.item-qty-cell {
+  font-size: 13px;
+  color: #666;
+  white-space: nowrap;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
-.item-price {
+.item-price-cell {
+  font-size: 14px;
   font-weight: 600;
   color: #333;
+  white-space: nowrap;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.empty-order {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: #999;
+  padding: 24px;
+  font-size: 14px;
 }
 
 .summary-row {
@@ -512,4 +510,60 @@
   .step-label {
     font-size: 10px;
   }
+}
+
+/* KBZPay Exchange Rate Display */
+.kbzpay-exchange-rate {
+  margin-top: 12px;
+  padding: 16px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.kbzpay-exchange-rate .rate-loading {
+  margin: 0;
+  color: #666;
+  font-size: 14px;
+}
+
+.kbzpay-exchange-rate .rate-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #c62828;
+  font-size: 14px;
+}
+
+.kbzpay-exchange-rate .btn-retry {
+  padding: 8px 16px;
+  background: #2196f3;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.kbzpay-exchange-rate .btn-retry:hover {
+  background: #1976d2;
+}
+
+.kbzpay-exchange-rate .rate-success {
+  color: #333;
+}
+
+.kbzpay-exchange-rate .rate-success p {
+  margin: 6px 0;
+  font-size: 14px;
+}
+
+.kbzpay-exchange-rate .rate-success .rate-preview {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #ddd;
+  color: #2196f3;
+  font-size: 15px;
+  font-weight: 600;
 }

@@ -132,7 +132,9 @@ export default function StoreProfile() {
         if (!storeData && id === 'me') {
           try {
             const response = await storeAPI.getStoreByOwner(id);
-            storeData = response?.data || response || null;
+            // getStoreByOwner returns an array of stores; pick the first valid one.
+            const stores = Array.isArray(response?.data) ? response.data : Array.isArray(response) ? response : [];
+            storeData = stores.find((s) => s && (s._id || s.id)) || null;
           } catch (err) {
             if (err.response?.status !== 404 && err.status !== 404) throw err;
           }

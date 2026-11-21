@@ -34,6 +34,8 @@ export const productAPI = {
 export const storeAPI = {
   getStoreById: (id, mode = "customer") => request(`/stores/${id}`, {}, mode),
 
+  getStoresByOwner: (_ownerId, mode = "customer") => request(`/stores/owner/me`, {}, mode),
+
   getStoreByOwner: (_ownerId, mode = "customer") => request(`/stores/owner/me`, {}, mode),
 
   createStore: (data, mode = "customer") =>
@@ -74,5 +76,24 @@ export const storeAPI = {
     const formData = new FormData();
     formData.append("cover", file);
     return request(`/stores/${id}/cover`, { method: "POST", body: formData }, mode);
+  },
+
+  // KBZPay payment settings (per store)
+  getKbzpaySettings: (storeId, mode = "customer") =>
+    request(`/stores/${storeId}/kbzpay-settings`, undefined, mode),
+
+  updateKbzpaySettings: (storeId, data, mode = "customer") =>
+    request(`/stores/${storeId}/kbzpay-settings`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }, mode),
+
+  uploadKbzpayQr: (storeId, file, mode = "customer") => {
+    const formData = new FormData();
+    formData.append("qr", file);
+    return request(`/stores/${storeId}/kbzpay-qr`, {
+      method: "POST",
+      body: formData,
+    }, mode);
   },
 };

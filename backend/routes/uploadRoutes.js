@@ -58,9 +58,13 @@ router.post('/chat/:conversationId', validateId('conversationId'), verifyToken, 
     const filePath = generateStoragePath('chat-attachments', req.params.conversationId, fileName);
     
     const result = await uploadToSupabase(supabaseAdmin, 'chat-attachments', filePath, file.buffer, file.mimetype);
+    
+    // chat-attachments bucket เป็นไพรเวต (public = false) ต้องใช้ signed URL เพื่อให้ frontend เปิดรูปได้
+    const signedUrl = await getSignedUrl(supabaseAdmin, 'chat-attachments', result.path, 3600);
+    
     uploadedFiles.push({
-      url: result.publicUrl,
-      file_url: result.publicUrl,
+      url: signedUrl,
+      file_url: signedUrl,
       path: result.path,
       fileName: file.originalname,
       file_name: file.originalname,

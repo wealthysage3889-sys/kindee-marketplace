@@ -232,6 +232,29 @@ export function createFakeSupabase(seed = {}) {
     if (op === 'insert') {
       const payload = state.write.payload;
       const list = Array.isArray(payload) ? payload : [payload];
+
+      // Unique constraints the services depend on. Returns a PostgREST-shaped
+      // 23505 error with `.constraint` set, so code paths can match on the
+      // constraint name rather than parsing error.message.
+      const uniqueViolations = [];
+      for (const item of list) {
+        if (table === 'conversations' && item.type === 'store_customer' && item.customer_id !== null && item.customer_id !== undefined) {
+          const clash = [...tables.conversations.values()].some((c) =>
+            c.type === 'store_customer' && c.customer_id === item.customer_id && c.store_id === item.store_id);
+          if (clash) {
+            uniqueViolations.push({
+              code: '23505',
+              constraint: 'ux_conversations_store_customer',
+              message: 'duplicate key value violates unique constraint "ux_conversations_store_customer"',
+            });
+            break;
+          }
+        }
+      }
+      if (uniqueViolations.length) {
+        return { data: null, error: uniqueViolations[0], count: 0 };
+      }
+
       const inserted = list.map((item) => {
         const row = {
           id: nextId(table),
@@ -263,8 +286,11 @@ export function createFakeSupabase(seed = {}) {
         return clone(row);
       });
 
-      if (state.single) {
+      if (state.single === 'single') {
         return { data: inserted[0] ?? null, error: inserted.length ? null : MISSING_ROW, count: inserted.length };
+      }
+      if (state.single === 'maybe') {
+        return { data: inserted[0] ?? null, error: null, count: inserted.length };
       }
       return { data: inserted, error: null, count: inserted.length };
     }
@@ -281,8 +307,11 @@ export function createFakeSupabase(seed = {}) {
         }
       });
 
-      if (state.single) {
+      if (state.single === 'single') {
         return { data: rows[0] ? clone(rows[0]) : null, error: rows.length ? null : MISSING_ROW, count: rows.length };
+      }
+      if (state.single === 'maybe') {
+        return { data: rows[0] ? clone(rows[0]) : null, error: null, count: rows.length };
       }
       return { data: rows.map(clone), error: null, count: rows.length };
     }
@@ -330,8 +359,11 @@ export function createFakeSupabase(seed = {}) {
       rows = rows.slice(0, state.limit);
     }
 
-    if (state.single) {
+    if (state.single === 'single') {
       return { data: rows[0] ?? null, error: rows.length ? null : MISSING_ROW, count: rows.length };
+    }
+    if (state.single === 'maybe') {
+      return { data: rows[0] ?? null, error: null, count: rows.length };
     }
 
     return { data: rows, error: null, count: rows.length };
@@ -386,11 +418,11 @@ export function createFakeSupabase(seed = {}) {
       limit: (value) => { state.limit = value; return builder; },
       range: (from, to) => { state.range = { from, to }; return builder; },
       single: async () => {
-        state.single = true;
+        state.single = 'single';
         return settle(table, state);
       },
       maybeSingle: async () => {
-        state.single = true;
+        state.single = 'maybe';
         return settle(table, state);
       },
       then: (resolve, reject) =>
@@ -417,6 +449,15 @@ export function createFakeSupabase(seed = {}) {
     },
     // Test helpers
     dump: (table) => [...tables[table].values()].map(clone),
+    insert: (table, row) => {
+      const withId = { id: nextId(table), ...withDefaults(table, row), created_at: row.created_at || new Date().toISOString() };
+      tables[table].set(withId.id, withId);
+      return clone(withId);
+    },
+    seed: (table, id, row) => {
+      tables[table].set(id, clone(row));
+      return clone(row);
+    },
   };
 }
 

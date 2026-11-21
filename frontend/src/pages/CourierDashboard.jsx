@@ -6,7 +6,7 @@ import "leaflet/dist/leaflet.css";
 import { useAuth } from "../context/AuthContext";
 import { useSocket } from "../context/SocketContext";
 import { deliveryAPI, callAPI } from "../api";
-import { formatCurrency, formatDate, formatRelativeTime, formatDuration } from "../utils/helpers";
+import { formatCurrency, formatDate, formatRelativeTime, formatDuration, formatAddress } from "../utils/helpers";
 import "./CourierDashboard.css";
 
 const STATUS_LABELS = {
@@ -241,18 +241,6 @@ export default function CourierDashboard() {
       ]);
       setMapZoom(15);
     }
-  };
-
-  // Format address
-  const formatAddress = (address) => {
-    if (!address) return "";
-    const parts = [
-      address.street,
-      address.district,
-      address.province,
-      address.postalCode
-    ].filter(Boolean);
-    return parts.join(", ");
   };
 
   // Get assignments for pending deliveries

@@ -13,7 +13,9 @@ import Register from "./pages/Register";
 import LineCallback from "./pages/LineCallback";
 import AdminLogin from "./pages/AdminLogin";
 import SellerDashboard from "./pages/SellerDashboard";
+import SellerOrders from "./pages/SellerOrders";
 import AdminDashboard from "./pages/AdminDashboard";
+import AdminOrders from "./pages/AdminOrders";
 import AdminPaymentSlips from "./pages/AdminPaymentSlips";
 import Users from "./pages/Users";
 import Account from "./pages/Account";
@@ -67,7 +69,7 @@ const router = createBrowserRouter([
       { path: "call-history", element: <ProtectedRoute><CallHistory /></ProtectedRoute> },
       { path: "account", element: <ProtectedRoute><Account /></ProtectedRoute> },
       { path: "seller", element: <ProtectedRoute allowedRoles={["seller", "admin", "owner"]}><SellerDashboard /></ProtectedRoute> },
-      { path: "seller/products", element: <ProtectedRoute allowedRoles={["seller", "admin", "owner"]}><Products /></ProtectedRoute> },
+      { path: "seller/orders", element: <ProtectedRoute allowedRoles={["seller", "admin", "owner"]}><SellerOrders /></ProtectedRoute> },
       { path: "seller/add-product", element: <ProtectedRoute allowedRoles={["seller", "admin", "owner"]}><Products /></ProtectedRoute> },
       { path: "courier", element: <ProtectedRoute allowedRoles={["courier"]}><CourierDashboard /></ProtectedRoute> },
     ],
@@ -94,6 +96,8 @@ const router = createBrowserRouter([
       { path: "messages", element: <ProtectedRoute mode="admin"><SellAdminMessages /></ProtectedRoute> },
       { path: "messages/:conversationId", element: <ProtectedRoute mode="admin"><ChatRoom mode="admin" /></ProtectedRoute> },
       { path: "account", element: <ProtectedRoute mode="admin"><AdminAccount /></ProtectedRoute> },
+      { path: "orders", element: <ProtectedRoute mode="admin"><AdminOrders /></ProtectedRoute> },
+      { path: "payment-slips", element: <ProtectedRoute mode="admin"><AdminPaymentSlips /></ProtectedRoute> },
     ],
   },
   // Legacy alias

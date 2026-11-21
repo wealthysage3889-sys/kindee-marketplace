@@ -1,15 +1,140 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from "react-leaflet";
-import "leaflet/dist/leaflet.css";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useCart } from "../context/CartContext";
-import { addressAPI, orderAPI, storeAPI } from "../api";
-import { extractList, formatCurrency, formatThaiPhone, validateThaiPhone } from "../utils/helpers";
+import html2canvas from "html2canvas";
+import { addressAPI, orderAPI, storeAPI, settingsAPI } from "../api";
+import { extractList, formatCurrency, formatPhone, validatePhone } from "../utils/helpers";
+import PhoneInput from "../components/PhoneInput";
 import "./Checkout.css";
 
-const DEFAULT_CENTER = [13.7563, 100.5018]; // Bangkok
-const DEFAULT_ZOOM = 13;
+const NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse";
+const GEOLOCATION_OPTIONS = { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 };
+const DELIVERY_STATUS = {
+  IDLE: "idle",
+  LOCATING: "locating",
+  READY: "ready",
+  ERROR: "error",
+};
+
+const round6 = (value) => Math.round(Number(value) * 1e6) / 1e6;
+
+// Mirrors backend utils/productPricing.js#roundMoney and
+// backend services/orderService.js#buildOrderPlan so the frontend's MMK
+// amount is calculated from the exact same THB total the backend charges.
+const roundMoney = (value) => {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return 0;
+  return Math.round((amount + Number.EPSILON) * 100) / 100;
+};
+
+const getStoreField = (store, camelKey, snakeKey) =>
+  store[camelKey] !== undefined ? store[camelKey] : store[snakeKey];
+
+// Computes order totals identically to the backend:
+// per-store subtotal, VAT (roundMoney each), shipping fee per store
+// (always charged, matching store_orders.shipping_fee), then rounded grand total.
+// Accepts items/stores/vatRate/discountAmount so it never relies on out-of-scope state.
+// discountAmount is subtracted to match backend buildOrderPlan#totalAmount exactly.
+const computeOrderTotals = (items, stores, vatRate, discountAmount = 0) => {
+  let totalSubtotal = 0;
+  let totalShippingFee = 0;
+  let totalTax = 0;
+
+  (stores || []).forEach((store) => {
+    const storeItems = items.filter((item) => item.storeId === store.id);
+    const storeSubtotal = roundMoney(
+      storeItems.reduce((sum, item) => sum + item.price * item.quantity, 0)
+    );
+    const shippingFee = roundMoney(getStoreField(store, 'deliveryFee', 'delivery_fee') || 0);
+    const taxAmount = roundMoney(storeSubtotal * (vatRate / 100));
+
+    totalSubtotal = roundMoney(totalSubtotal + storeSubtotal);
+    totalShippingFee = roundMoney(totalShippingFee + shippingFee);
+    totalTax = roundMoney(totalTax + taxAmount);
+  });
+
+  return {
+    totalSubtotal,
+    totalShippingFee,
+    totalTax,
+    totalAmount: roundMoney(totalSubtotal + totalShippingFee + totalTax - discountAmount),
+  };
+};
+
+const isValidCoordinate = (lat, lng) =>
+  Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+
+const firstText = (source, keys) => {
+  for (const key of keys) {
+    const value = source?.[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+};
+
+const uniqueValues = (values) => {
+  const seen = new Set();
+  return values.filter((value) => {
+    if (!value || seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
+};
+
+const describeReverseGeocode = (data) => {
+  const details = data?.address || {};
+  const houseNumber = [firstText(details, ["house_number"]), firstText(details, ["house_name"])]
+    .filter(Boolean)
+    .join(" ");
+  const road = firstText(details, ["road", "pedestrian", "footway", "path", "residential", "street"]);
+  const subdistrict = firstText(details, ["suburb", "village", "quarter", "neighbourhood", "hamlet"]);
+  const district = firstText(details, ["city_district", "district", "county", "municipality"]);
+  const province = firstText(details, ["state", "province", "region"]);
+  const postalCode = firstText(details, ["postcode"]);
+  const country = firstText(details, ["country"]);
+
+  const formatted = uniqueValues([
+    houseNumber,
+    road,
+    subdistrict,
+    district,
+    province,
+    postalCode,
+    country,
+  ]).join(" ");
+
+  return {
+    formatted: formatted || String(data?.display_name || "").trim(),
+    houseNumber,
+    road,
+    subdistrict,
+    district,
+    province,
+    postalCode,
+    country,
+  };
+};
+
+const geolocationErrorMessage = (error) => {
+  if (error?.code === 1) {
+    return "ไม่สามารถระบุตำแหน่งได้ กรุณาอนุญาตการเข้าถึงตำแหน่ง";
+  }
+  if (error?.code === 3) {
+    return "ใช้เวลาค้นหาตำแหน่งนานเกินไป กรุณาลองดึงตำแหน่งอีกครั้ง";
+  }
+  return "ไม่สามารถระบุตำแหน่งได้ กรุณาลองดึงตำแหน่งอีกครั้ง";
+};
+
+const fetchReverseGeocode = async (lat, lng, signal) => {
+  const url = `${NOMINATIM_REVERSE_URL}?format=jsonv2&lat=${lat}&lon=${lng}&addressdetails=1&accept-language=th`;
+  const response = await fetch(url, { signal, headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error("reverse geocoding failed");
+  const data = await response.json();
+  const description = describeReverseGeocode(data);
+  if (!description.formatted) throw new Error("empty reverse geocoding result");
+  return description;
+};
 
 const coordinatesFromAddress = (address) => {
   if (
@@ -32,198 +157,112 @@ const fullAddressFromAddress = (address) =>
     .filter(Boolean)
     .join(" ");
 
-function MapClickHandler({ onPick }) {
-  useMapEvents({
-    click(event) {
-      onPick(event.latlng);
-    }
-  });
-  return null;
-}
-
 function LocationPicker({ coordinates, address, onCoordinatesChange, onAddressChange }) {
-  const mapRef = useRef(null);
-  const markerRef = useRef(null);
-  const [addressText, setAddressText] = useState(address || "");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState([]);
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState("");
+  const [addressText, setAddressText] = useState(address || "");
 
   useEffect(() => {
     setAddressText(address || "");
   }, [address]);
 
-  // Update map center when coordinates change
-  useEffect(() => {
-    if (mapRef.current && coordinates) {
-      mapRef.current.setView([coordinates.lat, coordinates.lng], 16);
-      if (markerRef.current) {
-        markerRef.current.setLatLng([coordinates.lat, coordinates.lng]);
-      }
-    }
-  }, [coordinates]);
+  const onCoordinatesChangeRef = useRef(onCoordinatesChange);
+  onCoordinatesChangeRef.current = onCoordinatesChange;
 
-  const handleMapPick = (latlng) => {
-    const lat = Number(latlng.lat);
-    const lng = Number(latlng.lng);
-    onCoordinatesChange({ lat, lng });
-    reverseGeocode(lat, lng);
-  };
+  const onAddressChangeRef = useRef(onAddressChange);
+  onAddressChangeRef.current = onAddressChange;
 
-  const handleMarkerDragEnd = (e) => {
-    const { lat, lng } = e.target.getLatLng();
-    onCoordinatesChange({ lat, lng });
-    reverseGeocode(lat, lng);
-  };
-
-  const useMyLocation = () => {
+  const requestLocation = useCallback(() => {
     if (!navigator.geolocation) {
       setError("เบราว์เซอร์ไม่รองรับการระบุตำแหน่ง");
       return;
     }
     setLocating(true);
+    setError("");
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;
-        onCoordinatesChange({ lat, lng });
+        const next = { lat, lng };
+        onCoordinatesChangeRef.current(next);
         reverseGeocode(lat, lng);
         setLocating(false);
       },
-      () => {
-        setError("ไม่สามารถระบุตำแหน่งได้ กรุณาอนุญาตให้ใช้งาน GPS หรือเลือกบนแผนที่");
+      (err) => {
+        setError(geolocationErrorMessage(err));
         setLocating(false);
       },
-      { enableHighAccuracy: true, timeout: 10000 }
+      GEOLOCATION_OPTIONS
     );
-  };
+  }, []);
+
+  // ขอ GPS อัตโนมัติเมื่อป๊อปอัปที่อยู่จัดส่งเปิดขึ้น
+  useEffect(() => {
+    requestLocation();
+  }, [requestLocation]);
 
   const reverseGeocode = async (lat, lng) => {
     try {
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&accept-language=th`
-      );
-      const data = await response.json();
-      const formattedAddress = data.display_name || "";
-      setAddressText(formattedAddress);
-      onAddressChange?.(formattedAddress);
-    } catch (error) {
-      console.error("Reverse geocode error:", error);
+      const description = await fetchReverseGeocode(lat, lng, new AbortController().signal);
+      setAddressText(description.formatted);
+      onAddressChangeRef.current?.(description.formatted);
+    } catch (err) {
+      console.error("Reverse geocode error:", err);
     }
   };
 
-  const searchLocation = async () => {
-    if (!searchQuery.trim()) return;
-    
-    try {
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=5&accept-language=th`
-      );
-      const data = await response.json();
-      setSearchResults(data);
-    } catch (error) {
-      console.error("Search error:", error);
-    }
-  };
-
-  const selectSearchResult = (result) => {
-    const lat = parseFloat(result.lat);
-    const lng = parseFloat(result.lon);
-    onCoordinatesChange({ lat, lng });
-    setAddressText(result.display_name);
-    onAddressChange?.(result.display_name);
-    setSearchResults([]);
-    setSearchQuery("");
-    
-    if (mapRef.current) {
-      mapRef.current.leafletElement.setView([lat, lng], 16);
-    }
+  const handleAddressChange = (e) => {
+    const value = e.target.value;
+    setAddressText(value);
+    onAddressChangeRef.current?.(value);
   };
 
   return (
     <div className="location-picker">
-      <div className="location-search">
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          onKeyPress={(e) => e.key === "Enter" && searchLocation()}
-          placeholder="ค้นหาสถานที่..."
-        />
-        <button onClick={searchQuery.trim() && searchLocation}>ค้นหา</button>
-      </div>
-
-      {searchResults.length > 0 && (
-        <div className="search-results">
-          {searchResults.map((result, index) => (
-            <div key={index} className="search-result-item" onClick={() => selectSearchResult(result)}>
-              <strong>{result.display_name.split(",")[0]}</strong>
-              <span>{result.display_name}</span>
-            </div>
-          ))}
+      {locating && (
+        <div className="locating-status">
+          <p>กำลังดึงตำแหน่งจาก GPS...</p>
         </div>
       )}
 
-      <div className="map-container">
-        <MapContainer
-          center={coordinates ? [coordinates.lat, coordinates.lng] : DEFAULT_CENTER}
-          zoom={coordinates ? 16 : DEFAULT_ZOOM}
-          scrollWheelZoom={true}
-          ref={mapRef}
-        >
-          <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
-          <MapClickHandler onPick={handleMapPick} />
-          {coordinates && (
-            <Marker
-              position={[coordinates.lat, coordinates.lng]}
-              draggable={true}
-              ref={markerRef}
-              onDragEnd={handleMarkerDragEnd}
-            >
-              <Popup>
-                <div>
-                  <strong>ตำแหน่งจัดส่ง</strong>
-                  <p>{addressText || `Lat: ${coordinates.lat.toFixed(6)}, Lng: ${coordinates.lng.toFixed(6)}`}</p>
-                </div>
-              </Popup>
-            </Marker>
-          )}
-        </MapContainer>
-      </div>
-
-      <div className="location-actions">
-        <button type="button" onClick={useMyLocation} disabled={locating}>
-          {locating ? "กำลังระบุตำแหน่ง..." : "ใช้ตำแหน่งของฉัน (GPS)"}
-        </button>
-        {error && <span className="location-error">{error}</span>}
-      </div>
+      {error && (
+        <div className="location-error-state">
+          <p className="location-error">{error}</p>
+          <button type="button" onClick={requestLocation} className="btn-retry">
+            ลองใหม่
+          </button>
+        </div>
+      )}
 
       {coordinates && (
         <div className="selected-location">
           <label>ที่อยู่จัดส่ง:</label>
           <textarea
             value={addressText}
-            onChange={(e) => {
-              setAddressText(e.target.value);
-              onAddressChange?.(e.target.value);
-            }}
+            onChange={handleAddressChange}
             rows={3}
             placeholder="รายละเอียดที่อยู่ (บ้านเลขที่ ซอย ถนน แขวง/ตำบล เขต/อำเภอ จังหวัด รหัสไปรษณีย์)"
           />
           <p className="coordinates">
             พิกัด: {coordinates.lat.toFixed(6)}, {coordinates.lng.toFixed(6)}
           </p>
+          <button type="button" onClick={requestLocation} className="btn-retry">
+            ใช้ตำแหน่งปัจจุบันอีกครั้ง
+          </button>
         </div>
+      )}
+
+      {!coordinates && !locating && !error && (
+        <button type="button" onClick={requestLocation} className="btn-retry">
+          ใช้ตำแหน่งปัจจุบันอีกครั้ง
+        </button>
       )}
     </div>
   );
 }
 
-export default function Checkout() {
+export { LocationPicker };
+export default function Checkout({ orderSummary } = {}) {
   const { user, isAuthenticated } = useAuth();
   const { items, totalPrice, totalCount, clear } = useCart();
   const navigate = useNavigate();
@@ -239,6 +278,13 @@ export default function Checkout() {
     postalCode: ""
   });
   const [paymentMethod, setPaymentMethod] = useState("cod");
+  const [exchangeRate, setExchangeRate] = useState(null);
+  const [rateUpdatedAt, setRateUpdatedAt] = useState(null);
+  const [rateSource, setRateSource] = useState(null); // 'admin' or 'api'
+  const [rateLoading, setRateLoading] = useState(false);
+  const [rateError, setRateError] = useState("");
+  const [vatRate, setVatRate] = useState(7);
+  const [vatLoading, setVatLoading] = useState(true);
   const [customerNotes, setCustomerNotes] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -248,6 +294,8 @@ export default function Checkout() {
   const [savedAddressesError, setSavedAddressesError] = useState("");
   const [selectedAddressId, setSelectedAddressId] = useState(null);
   const initialAddressAppliedRef = useRef(false);
+  const submitLockRef = useRef(false);
+  const summaryRef = useRef(null);
 
   const applySavedAddress = useCallback((address) => {
     const nextCoordinates = coordinatesFromAddress(address);
@@ -332,30 +380,16 @@ export default function Checkout() {
     loadStoreInfo();
   }, [items]);
 
-  const calculateShipping = () => {
-    let total = 0;
-    stores.forEach(store => {
-      const storeItems = items.filter(item => item.storeId === store.id);
-      const subtotal = storeItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
-      
-      if (store.minimumOrder && subtotal < store.minimumOrder) {
-        return;
-      }
-      total += store.deliveryFee || 0;
-    });
-    return total;
-  };
-
   const handleAddressSubmit = (e) => {
     e.preventDefault();
     
     if (!coordinates) {
-      setError("กรุณาเลือกตำแหน่งจัดส่งบนแผนที่");
+      setError("กรุณาดึงตำแหน่งจาก GPS ก่อนดำเนินการต่อ");
       return;
     }
     
-    if (!validateThaiPhone(deliveryAddress.phone)) {
-      setError("กรุณากรอกเบอร์โทรศัพท์ให้ถูกต้อง");
+    if (!validatePhone(deliveryAddress.phone)) {
+      setError("กรุณากรอกเบอร์โทรศัพท์ให้ถูกต้อง (รองรับไทย +66 และเมียนมา +95)");
       return;
     }
     
@@ -363,16 +397,116 @@ export default function Checkout() {
     setError("");
   };
 
+  useEffect(() => {
+    if (paymentMethod !== "kbzpay") return;
+    let cancelled = false;
+    const fetchRate = async () => {
+      setRateLoading(true);
+      setRateError("");
+      try {
+        // First, try to get admin-defined exchange rate from settings
+        let adminRate = null;
+        try {
+          const settingsRes = await settingsAPI.getByKey("exchange_rate_thb_mmk");
+          if (settingsRes?.data?.value) {
+            adminRate = Number(settingsRes.data.value);
+          }
+        } catch {
+          // Settings not found or not accessible, will fall back to API
+        }
+
+        if (adminRate && Number.isFinite(adminRate) && adminRate > 0) {
+          if (cancelled) return;
+          setExchangeRate(adminRate);
+          setRateSource("admin");
+          setRateUpdatedAt(new Date().toISOString());
+        } else {
+          // Fall back to external API
+          const res = await fetch("https://open.er-api.com/v6/latest/THB");
+          if (!res.ok) throw new Error("rate fetch failed");
+          const data = await res.json();
+          if (!data || data.result !== "success" || !data.rates || !data.rates.MMK) {
+            throw new Error("invalid rate response");
+          }
+          if (cancelled) return;
+          setExchangeRate(Number(data.rates.MMK));
+          setRateSource("api");
+          setRateUpdatedAt(data.time_last_update_utc || new Date().toISOString());
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setExchangeRate(null);
+        setRateUpdatedAt(null);
+        setRateSource(null);
+        setRateError("Unable to fetch THB to MMK exchange rate. Please retry or choose another method.");
+      } finally {
+        if (!cancelled) setRateLoading(false);
+      }
+    };
+    fetchRate();
+    return () => { cancelled = true; };
+  }, [paymentMethod]);
+
+  useEffect(() => {
+    const loadVatRate = async () => {
+      try {
+        const res = await settingsAPI.getByKey("vat_rate");
+        const rate = res?.data?.value != null ? Number(res.data.value) : 7;
+        setVatRate(Number.isFinite(rate) && rate >= 0 && rate <= 100 ? rate : 7);
+      } catch {
+        setVatRate(7);
+      } finally {
+        setVatLoading(false);
+      }
+    };
+    loadVatRate();
+  }, []);
+
   const handlePaymentSubmit = (e) => {
     e.preventDefault();
+    
+    // Validate KBZPay exchange rate is ready before proceeding to confirmation
+    if (paymentMethod === "kbzpay") {
+      if (rateLoading) {
+        setError("กำลังดึงอัตราแลกเปลี่ยน กรุณารอสักครู่");
+        return;
+      }
+      if (rateError || !exchangeRate) {
+        setError("ไม่สามารถดึงอัตราแลกเปลี่ยนได้ กรุณาลองใหม่หรือเลือกวิธีชำระเงินอื่น");
+        return;
+      }
+    }
+    
     setStep(3);
+    setError("");
   };
 
   const handleConfirmOrder = async () => {
+    if (submitLockRef.current) return;
+    
+    // Validate KBZPay exchange rate before submission
+    if (paymentMethod === "kbzpay") {
+      if (rateLoading) {
+        setError("กำลังดึงอัตราแลกเปลี่ยน กรุณารอสักครู่");
+        return;
+      }
+      if (rateError || !exchangeRate) {
+        setError("ไม่สามารถดึงอัตราแลกเปลี่ยนได้ กรุณากลับไปขั้นตอนชำระเงินและลองใหม่");
+        return;
+      }
+    }
+    
+    submitLockRef.current = true;
     setLoading(true);
     setError("");
-    
     try {
+      // Validate that the logged-in profile has name and phone before submitting the order
+      if (!user?.name || !user?.phone) {
+        setError("ยังไม่พบชื่อและเบอร์โทรศัพท์ในโปรไฟล์ของคุณ กรุณาแก้ไขโปรไฟล์ให้ครบถ้วนก่อนสั่งซื้อ");
+        setLoading(false);
+        return;
+      }
+
       // Prepare order items with store info
       const orderItems = items.map(item => ({
         productId: item.id,
@@ -383,7 +517,7 @@ export default function Checkout() {
       const selectedAddress = savedAddresses.find((address) => address.id === selectedAddressId) || null;
       const formattedAddress = {
         name: deliveryAddress.name,
-        phone: formatThaiPhone(deliveryAddress.phone),
+        phone: deliveryAddress.phone,
         address: deliveryAddress.address,
         district: deliveryAddress.district,
         province: deliveryAddress.province,
@@ -400,23 +534,47 @@ export default function Checkout() {
       const result = await orderAPI.create({
         items: orderItems,
         paymentMethod,
+        exchangeRate: paymentMethod === "kbzpay" ? exchangeRate : null,
+        exchangeRateSource: paymentMethod === "kbzpay" ? (rateSource === "admin" ? "admin_settings" : "open.er-api.com") : null,
+        exchangeRateUpdatedAt: paymentMethod === "kbzpay" ? rateUpdatedAt : null,
+        amountMMK: paymentMethod === "kbzpay" ? roundMoney(totalAmount * exchangeRate) : null,
         customerNotes,
         deliveryAddress: formattedAddress,
         customerCoordinates: coordinates
       });
-      
+
+      // Capture summary image after successful order creation
+      try {
+        if (summaryRef.current) {
+          const canvas = await html2canvas(summaryRef.current, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
+          const link = document.createElement("a");
+          const now = new Date();
+          const pad = (n) => String(n).padStart(2, "0");
+          const name = `kindee-order-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.png`;
+          link.download = name;
+          link.href = canvas.toDataURL("image/png");
+          link.click();
+        }
+      } catch (imgErr) {
+        alert("สั่งซื้อสำเร็จแล้ว แต่ไม่สามารถสร้างภาพสรุปรายการได้");
+      }
+
       clear();
-      navigate(`/order-success/${result.data.id}`);
+      navigate(`/orders/${result.data.id}`);
     } catch (err) {
       setError(err.message || "เกิดข้อผิดพลาดในการสั่งซื้อ");
     } finally {
       setLoading(false);
+      submitLockRef.current = false;
     }
   };
 
-  const shippingFee = calculateShipping();
-  const taxAmount = totalPrice * 0.07;
-  const totalAmount = totalPrice + shippingFee + taxAmount;
+  const computedTotals = computeOrderTotals(items, stores, vatRate);
+  const totals = orderSummary || computedTotals;
+  const shippingFee = totals.totalShippingFee;
+  const taxAmount = totals.totalTax;
+  const totalAmount = totals.totalAmount;
+  const displayVatRate = orderSummary?.vatRate ?? vatRate;
 
   if (!isAuthenticated) {
     return (
@@ -491,7 +649,7 @@ export default function Checkout() {
                           {address.is_default && <span className="saved-address-default">ที่อยู่หลัก</span>}
                         </span>
                         <span>
-                          {address.recipient_name} · {formatThaiPhone(address.phone)}
+                          {address.recipient_name} · {formatPhone(address.phone)}
                         </span>
                         {fullAddressFromAddress(address) && <span>{fullAddressFromAddress(address)}</span>}
                         {addressCoordinates && (
@@ -520,13 +678,12 @@ export default function Checkout() {
                 />
               </div>
               <div className="form-group">
-                <label>เบอร์โทรศัพท์ *</label>
-                <input
-                  type="tel"
+                <PhoneInput
                   value={deliveryAddress.phone}
-                  onChange={(e) => updateDeliveryAddress({ phone: e.target.value })}
+                  onChange={(e164) => updateDeliveryAddress({ phone: e164 })}
                   required
                   placeholder="08X-XXX-XXXX"
+                  label="เบอร์โทรศัพท์ *"
                 />
               </div>
             </div>
@@ -534,7 +691,7 @@ export default function Checkout() {
 
           <div className="form-section">
             <h3>ตำแหน่งจัดส่ง</h3>
-            <p className="map-instruction">คลิกที่แผนที่เพื่อเลือกตำแหน่ง หรือค้นหาสถานที่</p>
+            <p className="map-instruction">ระบบจะขอตำแหน่งจาก GPS อัตโนมัติ กรุณาอนุญาตการเข้าถึงตำแหน่ง</p>
             <LocationPicker
               coordinates={coordinates}
               address={deliveryAddress.address}
@@ -546,7 +703,9 @@ export default function Checkout() {
           {error && <div className="error-message">{error}</div>}
 
           <div className="form-actions">
-            <button type="submit" className="btn-primary">ถัดไป: ชำระเงิน</button>
+            <button type="submit" className="btn-primary" disabled={!coordinates}>
+              ถัดไป: ชำระเงิน
+            </button>
           </div>
         </form>
       )}
@@ -572,8 +731,49 @@ export default function Checkout() {
                   </div>
                 </div>
               </label>
-              
-              <label className={`payment-option ${paymentMethod === "promptpay" ? "selected" : ""}`}>
+
+              <label className={`payment-option ${paymentMethod === "kbzpay" ? "selected" : ""}`}>
+                <input
+                  type="radio"
+                  name="paymentMethod"
+                  value="kbzpay"
+                  checked={paymentMethod === "kbzpay"}
+                  onChange={(e) => setPaymentMethod(e.target.value)}
+                />
+                <div className="payment-option-content">
+                  <span className="payment-icon">KBZ</span>
+                  <div>
+                    <strong>KBZPay Wallet (Myanmar)</strong>
+                    <p>Pay in MMK using live THB to MMK rate</p>
+                  </div>
+                </div>
+              </label>
+
+              {paymentMethod === "kbzpay" && (
+                <div className="kbzpay-exchange-rate">
+                  {rateLoading && <p className="rate-loading">กำลังดึงอัตราแลกเปลี่ยน...</p>}
+                  {rateError && (
+                    <div className="rate-error">
+                      <span>{rateError}</span>
+                      <button type="button" className="btn-retry" onClick={() => {
+                        // Trigger re-fetch by temporarily switching payment method
+                        setPaymentMethod("cod");
+                        setTimeout(() => setPaymentMethod("kbzpay"), 0);
+                      }}>
+                        ลองใหม่
+                      </button>
+                    </div>
+                  )}
+                  {exchangeRate && !rateLoading && !rateError && (
+                    <div className="rate-success">
+                      <p><strong>อัตราแลกเปลี่ยน:</strong> 1 THB = {exchangeRate.toFixed(2)} MMK</p>
+                      <p><strong>อัปเดตเมื่อ:</strong> {new Date(rateUpdatedAt).toLocaleString('th-TH')}</p>
+                      <p><strong>แหล่งข้อมูล:</strong> {rateSource === "admin" ? "การตั้งค่าของแอดมิน (Admin Settings)" : "open.er-api.com (API อัตโนมัติ)"}</p>
+                      <p className="rate-preview"><strong>ยอดโดยประมาณ:</strong> ~{roundMoney(totalAmount * exchangeRate)} MMK</p>
+                    </div>
+                  )}
+                </div>
+              )}
                 <input
                   type="radio"
                   name="paymentMethod"
@@ -588,7 +788,7 @@ export default function Checkout() {
                     <p>สแกน QR Code เพื่อชำระเงิน</p>
                   </div>
                 </div>
-              </label>
+                </div>
               
               <label className={`payment-option ${paymentMethod === "transfer" ? "selected" : ""}`}>
                 <input
@@ -606,7 +806,7 @@ export default function Checkout() {
                   </div>
                 </div>
               </label>
-            </div>
+
           </div>
 
           <div className="form-section">
@@ -623,27 +823,48 @@ export default function Checkout() {
 
           <div className="form-actions">
             <button type="button" className="btn-secondary" onClick={() => setStep(1)}>กลับ</button>
-            <button type="submit" className="btn-primary">ถัดไป: ยืนยัน</button>
+            <button 
+              type="submit" 
+              className="btn-primary" 
+              disabled={paymentMethod === "kbzpay" && (rateLoading || rateError || !exchangeRate)}
+            >
+              ถัดไป: ยืนยัน
+            </button>
           </div>
         </form>
       )}
 
       {step === 3 && (
         <div className="checkout-form">
+          <div ref={summaryRef}>
           <div className="form-section">
             <h3>สรุปรายการสั่งซื้อ</h3>
             <div className="order-summary">
-              {items.map(item => (
-                <div key={item.id} className="order-item">
-                  <img src={item.image} alt={item.name} />
-                  <div className="item-details">
-                    <span className="item-name">{item.name}</span>
-                    <span className="item-qty">x {item.quantity}</span>
+              {items.length > 0 ? (
+                <>
+                  <div className="order-items-table">
+                    <div className="order-items-header">
+                      <span>ชื่อสินค้า</span>
+                      <span>จำนวน</span>
+                      <span>ยอดเงิน</span>
+                    </div>
+                    {items.map(item => (
+                      <div key={item.id} className="order-item-row">
+                        <span className="item-name-cell">{item.name}</span>
+                        <span className="item-qty-cell">{item.quantity} ชิ้น</span>
+                        <span className="item-price-cell">{formatCurrency(item.price * item.quantity)}</span>
+                      </div>
+                    ))}
                   </div>
-                  <span className="item-price">{formatCurrency(item.price * item.quantity)}</span>
-                </div>
-              ))}
+                </>
+              ) : (
+                <p className="empty-order">ไม่มีรายการสินค้า</p>
+              )}
               
+              <div className="summary-row">
+                <span>สินค้าทั้งหมด</span>
+                <span>{totalCount} ชิ้น</span>
+              </div>
               <div className="summary-row">
                 <span>ราคาสินค้า</span>
                 <span>{formatCurrency(totalPrice)}</span>
@@ -653,7 +874,7 @@ export default function Checkout() {
                 <span>{formatCurrency(shippingFee)}</span>
               </div>
               <div className="summary-row">
-                <span>ภาษีมูลค่าเพิ่ม (7%)</span>
+                <span>ภาษีมูลค่าเพิ่ม ({displayVatRate}%)</span>
                 <span>{formatCurrency(taxAmount)}</span>
               </div>
               <div className="summary-row total">
@@ -664,21 +885,9 @@ export default function Checkout() {
           </div>
 
           <div className="form-section">
-            <h3>ที่อยู่จัดส่ง</h3>
-            <div className="address-summary">
-              {deliveryAddress.label && (
-                <p><strong>ที่อยู่: {deliveryAddress.label}</strong></p>
-              )}
-              <p><strong>{deliveryAddress.name}</strong></p>
-              <p>{formatThaiPhone(deliveryAddress.phone)}</p>
-              <p>{deliveryAddress.address}</p>
-              {coordinates && <p className="coordinates">พิกัด: {coordinates.lat.toFixed(6)}, {coordinates.lng.toFixed(6)}</p>}
-            </div>
-          </div>
-
-          <div className="form-section">
             <h3>วิธีชำระเงิน</h3>
             <p>{paymentMethod === "cod" ? "ชำระเงินปลายทาง" : paymentMethod === "promptpay" ? "PromptPay" : "โอนเงินผ่านธนาคาร"}</p>
+          </div>
           </div>
 
           {customerNotes && (
@@ -696,7 +905,7 @@ export default function Checkout() {
               type="button" 
               className="btn-primary btn-large" 
               onClick={handleConfirmOrder}
-              disabled={loading}
+              disabled={loading || (paymentMethod === "kbzpay" && (rateLoading || rateError || !exchangeRate))}
             >
               {loading ? "กำลังดำเนินการ..." : "ยืนยันสั่งซื้อ"}
             </button>
@@ -706,3 +915,4 @@ export default function Checkout() {
     </div>
   );
 }
+

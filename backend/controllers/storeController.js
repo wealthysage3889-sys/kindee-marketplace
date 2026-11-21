@@ -3,6 +3,7 @@ import * as storeService from "../services/storeService.js";
 import * as productService from "../services/productService.js";
 import { AppError, NotFoundError, ValidationError } from "../middleware/errorHandler.js";
 import { supabaseAdmin } from "../config/supabase.js";
+import { generateFileName, generateStoragePath, uploadToSupabase } from "../middleware/upload.js";
 
 const parseJsonField = (value) => {
   if (value === undefined || value === null || value === "") return undefined;
@@ -248,6 +249,59 @@ const getStoreByOwner = asyncHandler(async (req, res) => {
   res.json({ success: true, data: { ...store, images } });
 });
 
+// Get KBZPay settings for the current owner's store
+const getMyKbzpaySettings = asyncHandler(async (req, res) => {
+  const stores = await storeService.getStoresByOwner(req.user.id);
+  const store = stores[0] || null;
+  if (!store) {
+    res.status(404).json({ success: false, message: "ไม่พบร้านค้าของคุณ" });
+    return;
+  }
+  const settings = await storeService.getKbzpaySettings(store.id);
+  res.json({ success: true, data: settings });
+});
+
+// Get public KBZPay settings of a store (payment-display fields only)
+const getPublicKbzpaySettings = asyncHandler(async (req, res) => {
+  const settings = await storeService.getKbzpaySettings(req.params.id);
+  if (!settings) {
+    res.status(404).json({ success: false, message: "ไม่พบร้านค้า" });
+    return;
+  }
+  res.json({ success: true, data: settings });
+});
+
+// Update KBZPay settings (ownership enforced by service)
+const updateKbzpaySettings = asyncHandler(async (req, res) => {
+  const settings = await storeService.updateKbzpaySettings(req.params.id, req.user.id, req.body);
+  res.json({ success: true, message: "อัปเดตการตั้งค่า KBZPay เรียบร้อยแล้ว", data: settings });
+});
+
+// Upload KBZPay QR code (ownership enforced by service)
+const uploadKbzpayQr = asyncHandler(async (req, res) => {
+  if (!req.file) {
+    res.status(400).json({ success: false, message: "ไม่พบไฟล์รูปภาพ QR Code" });
+    return;
+  }
+  if (req.file.size > 5 * 1024 * 1024) {
+    res.status(400).json({ success: false, message: "ขนาดไฟล์ QR Code ต้องไม่เกิน 5MB" });
+    return;
+  }
+
+  const fileName = generateFileName(req.file.originalname, 'kbzpay-qr-');
+  const filePath = generateStoragePath('store-kbzpay-qr', req.params.id, fileName);
+
+  const result = await uploadToSupabase(supabaseAdmin, 'store-kbzpay-qr', filePath, req.file.buffer, req.file.mimetype);
+
+  const settings = await storeService.updateKbzpayQrUrl(req.params.id, req.user.id, result.publicUrl);
+
+  res.json({
+    success: true,
+    message: "อัปโหลด QR Code เรียบร้อยแล้ว",
+    data: { url: result.publicUrl, path: result.path, settings }
+  });
+});
+
 export {
   getStores,
   getFeaturedStores,
@@ -260,4 +314,8 @@ export {
   updateStoreStatus,
   getMyStores,
   getStoreByOwner,
+  getMyKbzpaySettings,
+  getPublicKbzpaySettings,
+  updateKbzpaySettings,
+  uploadKbzpayQr,
 };

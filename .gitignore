@@ -23,3 +23,10 @@ Thumbs.db
 .idea/
 .vercel
 .env*
+
+# Local credential check scripts (never commit)
+backend/__check_*.cjs
+**/__check_*.cjs
+
+# Supabase local CLI link/temp metadata (project-specific)
+supabase/.temp/

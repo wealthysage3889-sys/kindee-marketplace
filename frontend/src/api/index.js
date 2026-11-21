@@ -335,9 +335,17 @@ export const orderAPI = {
   getHistory: (id) =>
     request(`/orders/${id}/history`),
 
+  getStoreOrderHistory: (storeOrderId) =>
+    request(`/orders/store-orders/${storeOrderId}/history`),
+
   getStoreOrders: (storeId, params = {}) => {
     const query = new URLSearchParams(params).toString();
     return request(`/orders/store/${storeId}?${query}`);
+  },
+
+  getAllOrders: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/orders/admin/all?${query}`);
   },
 
   updateStoreOrderStatus: (storeOrderId, status, notes) =>
@@ -351,6 +359,17 @@ export const orderAPI = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+
+  uploadPaymentSlip: (orderId, file, amountThb, note) => {
+    const formData = new FormData();
+    formData.append("slip", file);
+    if (amountThb != null) formData.append("amountThb", String(amountThb));
+    if (note != null) formData.append("note", note);
+    return request(`/orders/${orderId}/payment-slip`, {
+      method: "POST",
+      body: formData,
+    });
+  },
 };
 
 // Address Book API
@@ -451,13 +470,57 @@ export const chatAPI = {
       body: JSON.stringify({ muted }),
     }, mode),
 
+  // Update conversation alias (rename chat)
+  updateAlias: (conversationId, alias, mode = "customer") =>
+    request(`/chat/conversations/${conversationId}/alias`, {
+      method: "PATCH",
+      body: JSON.stringify({ alias }),
+    }, mode),
+
+  // Update conversation hidden state (hide/show chat)
+  updateHidden: (conversationId, isHidden, mode = "customer") =>
+    request(`/chat/conversations/${conversationId}/hidden`, {
+      method: "PATCH",
+      body: JSON.stringify({ isHidden }),
+    }, mode),
+
+  // Mark conversation as spam (store owner)
+  markSpam: (conversationId, mode = "customer") =>
+    request(`/chat/conversations/${conversationId}/spam`, {
+      method: "POST",
+    }, mode),
+
+  // Restore conversation from spam (store owner)
+  restoreFromSpam: (conversationId, mode = "customer") =>
+    request(`/chat/conversations/${conversationId}/restore`, {
+      method: "POST",
+    }, mode),
+
+  // Get spam conversations (store owner)
+  getSpamConversations: (storeId, params = {}, mode = "customer") => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/chat/store/${storeId}/spam?${query}`, {}, mode);
+  },
+
+  // Get conversation route (map/navigation)
+  getRoute: (conversationId, mode = "customer") =>
+    request(`/chat/conversations/${conversationId}/route`, {}, mode),
+
+  // Get the customer's approximate IP-based location (never used as a
+  // delivery destination; separate from shared GPS locations)
+  getIpLocation: (conversationId, mode = "customer") =>
+    request(`/chat/conversations/${conversationId}/ip-location`, {}, mode),
+
   uploadAttachment: (messageId, files, mode = "customer") => {
     const formData = new FormData();
     files.forEach(file => formData.append("attachments", file));
     return request(`/chat/messages/${messageId}/attachments`, {
       method: "POST",
       body: formData,
-    }, mode);
+    }, mode).then((res) => {
+      const list = Array.isArray(res?.data) ? res.data : [];
+      return { ...res, data: list.map(normalizeAttachment) };
+    });
   },
 
   getStoreConversations: (storeId, params = {}, mode = "customer") => {
@@ -777,6 +840,23 @@ export const adminAPI = {
     request(`/admin/settings/${key}`, {
       method: "PATCH",
       body: JSON.stringify(data),
+    }),
+
+  // Payment slips (admin)
+  getPaymentSlips: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/admin/payment-slips?${query}`);
+  },
+
+  approvePaymentSlip: (slipId) =>
+    request(`/admin/payment-slips/${slipId}/approve`, {
+      method: "PATCH",
+    }),
+
+  rejectPaymentSlip: (slipId, reason) =>
+    request(`/admin/payment-slips/${slipId}/reject`, {
+      method: "PATCH",
+      body: JSON.stringify({ reason }),
     }),
 };
 

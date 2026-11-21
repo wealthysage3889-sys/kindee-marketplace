@@ -19,7 +19,15 @@ export const OAUTH_SETTING_KEYS = [
   'line_enabled'
 ];
 
-export const ALLOWED_SETTING_KEYS = new Set(OAUTH_SETTING_KEYS);
+export const EXCHANGE_RATE_SETTING_KEYS = [
+  'exchange_rate_thb_mmk'
+];
+
+export const VAT_RATE_SETTING_KEYS = [
+  'vat_rate'
+];
+
+export const ALLOWED_SETTING_KEYS = new Set([...OAUTH_SETTING_KEYS, ...EXCHANGE_RATE_SETTING_KEYS, ...VAT_RATE_SETTING_KEYS]);
 
 export const SECRET_SETTING_KEYS = new Set([
   'google_client_secret',
@@ -32,7 +40,9 @@ export const SETTING_COLUMNS = 'key, value, description, is_public';
 
 // Category filtering is emulated because the table has no category column.
 const CATEGORY_KEY_FILTERS = {
-  oauth: OAUTH_SETTING_KEYS
+  oauth: OAUTH_SETTING_KEYS,
+  exchange_rate: EXCHANGE_RATE_SETTING_KEYS,
+  vat: VAT_RATE_SETTING_KEYS
 };
 
 export const toSnakeKey = (key) => String(key || '')

@@ -1,0 +1,343 @@
+.kbzpay-popup-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.kbzpay-popup-panel {
+  width: min(94vw, 720px);
+  max-height: 90vh;
+  overflow: auto;
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 20px 22px 24px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  position: relative;
+}
+
+.kbzpay-popup-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+}
+
+.kbzpay-popup-close svg {
+  width: 22px;
+  height: 22px;
+}
+
+.kbzpay-popup-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.kbzpay-popup-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: #f3f4f6;
+  display: grid;
+  place-items: center;
+}
+
+.kbzpay-popup-icon svg {
+  width: 18px;
+  height: 18px;
+  color: #374151;
+}
+
+.kbzpay-popup-head h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #111827;
+}
+
+.kbzpay-popup-head p {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.kbzpay-popup-state {
+  margin: 14px 0;
+  font-size: 14px;
+  color: #6b7280;
+  text-align: center;
+}
+
+.kbzpay-popup-error {
+  border: 1px solid #fca5a5;
+  background: #fef2f2;
+  color: #991b1b;
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin: 10px 0;
+  text-align: center;
+}
+
+.kbzpay-popup-retry {
+  margin-top: 8px;
+  background: #ef4444;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.kbzpay-store-group {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  margin: 10px 0;
+  overflow: hidden;
+}
+
+.kbzpay-store-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #f9fafb;
+  padding: 10px 14px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.kbzpay-store-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kbzpay-store-name {
+  font-weight: 700;
+  color: #111827;
+}
+
+.kbzpay-store-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.kbzpay-badge-enabled {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.kbzpay-badge-disabled {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.kbzpay-store-body {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.kbzpay-payment-detail {
+  display: grid;
+  gap: 10px;
+}
+
+.kbzpay-detail-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.kbzpay-detail-label {
+  width: 150px;
+  flex-shrink: 0;
+  color: #6b7280;
+  line-height: 1.5;
+}
+
+.kbzpay-detail-value {
+  color: #111827;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.kbzpay-qr-image {
+  width: 120px;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+
+.kbzpay-qr-empty {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.kbzpay-currency-group {
+  padding: 10px 0;
+  border-top: 1px solid #f3f4f6;
+}
+
+.kbzpay-currency-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.kbzpay-currency-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #374151;
+}
+
+.kbzpay-currency-count {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.kbzpay-order-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.kbzpay-order-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 12px;
+  background: #fff;
+}
+
+.kbzpay-order-number {
+  font-weight: 700;
+  color: #111827;
+}
+
+.kbzpay-order-date {
+  color: #6b7280;
+}
+
+.kbzpay-order-amount {
+  margin-left: auto;
+  font-weight: 700;
+  color: #111827;
+}
+
+.kbzpay-currency-total {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 13px;
+  color: #374151;
+}
+
+.kbzpay-currency-total strong {
+  color: #111827;
+}
+
+.kbzpay-store-total {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #f3f4f6;
+  font-size: 14px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.kbzpay-store-notice {
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.kbzpay-notice-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.kbzpay-order-numbers {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #f3f4f6;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.kbzpay-order-numbers strong {
+  color: #374151;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.kbzpay-order-number-list {
+  word-break: break-all;
+  line-height: 1.6;
+}
+
+.kbzpay-popup-foot {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #f3f4f6;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kbzpay-popup-summary {
+  display: flex;
+  gap: 14px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.kbzpay-popup-summary strong {
+  color: #111827;
+}
+
+.kbzpay-popup-notice {
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.kbzpay-popup-done {
+  width: 100%;
+  background: #111827;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}

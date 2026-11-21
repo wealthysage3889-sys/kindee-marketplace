@@ -5,15 +5,15 @@
 }
 
 :root {
-  --primary: #ee4d2d;
-  --primary-hover: #1597ee;
+  --primary: #b613e7;
+  --primary-hover: #d8ee15;
   --primary-light: #fff1ec;
   --text: #1f2937;
   --text-muted: #6b7280;
   --bg: #F8FAFC;
   --card: #ffffff;
   --border: #e5e7eb;
-  --error: #dc2626;
+  --error: #e45512;
   --error-bg: #fef2f2;
   --success: #16a34a;
   --success-bg: #f0fdf4;
@@ -2139,6 +2139,329 @@ textarea.form-input {
   }
 }
 
+/* Modal Order List */
+.modal-order-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 55vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.modal-order-list-empty {
+  text-align: center;
+  padding: 32px 16px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.modal-order-card {
+  background: var(--card, #fff);
+  border: 1px solid var(--border, #eee);
+  border-radius: 12px;
+  padding: 14px 16px;
+  text-align: left;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+
+.modal-order-card:hover {
+  border-color: var(--acct-orange-2, #ff7a45);
+  box-shadow: 0 4px 16px rgba(220, 47, 236, 0.1);
+  transform: translateY(-1px);
+}
+
+.modal-order-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.modal-order-number {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text, #111);
+}
+
+.modal-order-date {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.modal-order-status {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.modal-order-status.status-pending { background: #fff3e0; color: #e65100; }
+.modal-order-status.status-confirmed { background: #e3f2fd; color: #1565c0; }
+.modal-order-status.status-preparing { background: #e8eaf6; color: #3949ab; }
+.modal-order-status.status-ready_for_pickup { background: #f3e5f5; color: #7b1fa2; }
+.modal-order-status.status-picked_up { background: #e0f2f1; color: #00695c; }
+.modal-order-status.status-in_transit { background: #e1f5fe; color: #0277bd; }
+.modal-order-status.status-delivered { background: #e8f5e9; color: #2e7d32; }
+.modal-order-status.status-cancelled { background: #fce4ec; color: #c62828; }
+.modal-order-status.status-refunded { background: #fce4ec; color: #c62828; }
+
+.modal-order-stores {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  background: var(--acct-orange-soft, #fff1ec);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.modal-order-store {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.modal-order-store-name {
+  font-weight: 500;
+  color: var(--text, #111);
+  flex: 1;
+  min-width: 120px;
+}
+
+.modal-order-store-total {
+  font-weight: 600;
+  color: var(--acct-orange, #11c1e0);
+  white-space: nowrap;
+}
+
+.modal-store-status {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.modal-store-status.status-pending { background: #fff3e0; color: #e65100; }
+.modal-store-status.status-confirmed { background: #e3f2fd; color: #1565c0; }
+.modal-store-status.status-preparing { background: #e8eaf6; color: #3949ab; }
+.modal-store-status.status-ready_for_pickup { background: #f3e5f5; color: #7b1fa2; }
+.modal-store-status.status-picked_up { background: #e0f2f1; color: #00695c; }
+.modal-store-status.status-in_transit { background: #e1f5fe; color: #0277bd; }
+.modal-store-status.status-delivered { background: #e8f5e9; color: #2e7d32; }
+.modal-store-status.status-cancelled { background: #fce4ec; color: #c62828; }
+.modal-store-status.status-refunded { background: #fce4ec; color: #c62828; }
+
+.modal-order-card-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border, #eee);
+  flex-wrap: wrap;
+}
+
+.modal-order-payment {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 140px;
+}
+
+.modal-payment-method {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.modal-payment-status {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+  display: inline-block;
+  width: fit-content;
+}
+
+.modal-payment-status.status-pending { background: #fff3e0; color: #e65100; }
+.modal-payment-status.status-paid { background: #e8f5e9; color: #2e7d32; }
+.modal-payment-status.status-failed { background: #fce4ec; color: #c62828; }
+.modal-payment-status.status-refunded { background: #fce4ec; color: #c62828; }
+.modal-payment-status.status-partially_refunded { background: #fff3e0; color: #e65100; }
+
+.modal-order-total {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.modal-order-total strong {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--text, #111);
+}
+
+/* Responsive for modal order list */
+@media (max-width: 480px) {
+  .modal-order-card-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  
+  .modal-order-status {
+    align-self: flex-start;
+  }
+  
+  .modal-order-card-foot {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  
+  .modal-order-total {
+    align-items: flex-start;
+    width: 100%;
+  }
+}
+
+/* Modal Order Summary - combined payment summary */
+.modal-order-summary {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 2px solid var(--border, #eee);
+}
+
+.modal-summary-currency-group {
+  background: var(--acct-orange-soft, #fff1ec);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.modal-summary-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border, #eee);
+}
+
+.modal-summary-label {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text, #111);
+}
+
+.modal-summary-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg, #fff);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.modal-summary-total {
+  margin-bottom: 12px;
+}
+
+.modal-summary-order-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  font-size: 13px;
+  color: var(--text, #111);
+  border-bottom: 1px dashed var(--border, #eee);
+}
+
+.modal-summary-order-line:last-child {
+  border-bottom: none;
+}
+
+.modal-summary-order-line span:first-child {
+  font-weight: 500;
+}
+
+.modal-summary-order-line span:last-child {
+  font-weight: 600;
+  color: var(--acct-orange, #dc2fec);
+}
+
+.modal-summary-grand-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 8px;
+  margin-top: 8px;
+  border-top: 2px solid var(--acct-orange-2, #ff7a45);
+  font-size: 15px;
+}
+
+.modal-summary-grand-total span {
+  font-weight: 600;
+  color: var(--text, #111);
+}
+
+.modal-summary-grand-total strong {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--acct-orange, #dc2fec);
+}
+
+.modal-summary-action {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border, #eee);
+}
+
+.modal-summary-action .btn-pay-summary {
+  font-weight: 700;
+  font-size: 14px;
+  padding: 12px 16px;
+}
+
+.modal-summary-disabled-hint {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Responsive for modal order summary */
+@media (max-width: 480px) {
+  .modal-summary-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  
+  .modal-summary-grand-total {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+}
+
 /* Users page layout - fixed header/meta with scrollable list area only.
    The whole page is locked to the viewport height so the document itself never
    scrolls; only .users-table-view (desktop) / .users-card-view (mobile) scrolls. */
@@ -3444,7 +3767,7 @@ textarea.form-input {
   padding: 10px 12px;
   font-size: 12.5px;
   line-height: 1.5;
-  color: #92400e;
+  color: #e0380e;
   background: #fffbeb;
   border: 1px solid #fde68a;
   border-radius: 10px;
@@ -3875,7 +4198,7 @@ textarea.form-input {
 }
 
 .btn-delete-confirm:hover:not(:disabled) {
-  background: #b91c1c;
+  background: #ec4908;
 }
 
 .btn-delete-confirm:disabled {
@@ -5352,6 +5675,40 @@ textarea.form-input {
   margin-bottom: 24px;
 }
 
+.seller-store-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.seller-store-selector label {
+  font-weight: 600;
+  color: #333;
+  white-space: nowrap;
+}
+
+.seller-store-selector select {
+  flex: 1;
+  max-width: 400px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  background: white;
+  cursor: pointer;
+}
+
+.seller-store-selector select:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.15);
+}
+
 .seller-dashboard-header h1 {
   font-size: 24px;
   color: var(--primary);
@@ -5827,6 +6184,17 @@ textarea.form-input {
 @media (max-width: 768px) {
   .seller-dashboard-header {
     padding: 0 12px;
+  }
+
+  .seller-store-selector {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .seller-store-selector select {
+    max-width: none;
+    width: 100%;
   }
 
   .seller-store-cover {
@@ -6361,6 +6729,287 @@ textarea.form-input {
   opacity: 0.5;
 }
 
+/* Chat tabs (inbox / spam) */
+.chat-tabs {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto 14px;
+}
+
+.chat-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.chat-tab:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.chat-tab-active,
+.chat-tab-active:hover {
+  color: #fff;
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.chat-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: inherit;
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+}
+
+.chat-tab-active .chat-tab-count {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* Chat row: three-dot menu */
+.chat-card {
+  position: relative;
+  overflow: visible;
+}
+
+.chat-card-spam {
+  background: #fff7ed;
+}
+
+.chat-info-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.chat-spam-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #b45309;
+  background: #ffedd5;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.chat-menu-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.chat-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.chat-menu-btn:hover,
+.chat-menu-btn[aria-expanded="true"] {
+  color: var(--primary);
+  background: var(--primary-light);
+}
+
+.chat-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 60;
+  min-width: 180px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+}
+
+.chat-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  text-align: left;
+  white-space: nowrap;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.chat-menu-item:hover {
+  background: var(--primary-light);
+}
+
+.chat-menu-item-danger {
+  color: var(--error);
+}
+
+.chat-menu-item-danger:hover {
+  background: #fee2e2;
+}
+
+/* Chat action notice */
+.chat-notice {
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto 12px;
+  padding: 10px 14px;
+  font-size: 14px;
+  color: #166534;
+  background: var(--success-bg);
+  border: 1px solid #bbf7d0;
+  border-radius: 10px;
+}
+
+.messages-page .home-error {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  max-width: 960px;
+  margin: 0 auto 12px;
+  padding: 12px 16px;
+  background: #fff;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+}
+
+.home-error-dismiss {
+  padding: 0 4px;
+  font-size: 18px;
+  line-height: 1;
+  color: inherit;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+/* Chat confirmation / rename modal */
+.chat-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.chat-modal {
+  width: 100%;
+  max-width: 420px;
+  padding: 22px;
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28);
+}
+
+.chat-modal-title {
+  margin: 0 0 8px;
+  font-size: 18px;
+  color: var(--text);
+}
+
+.chat-modal-text {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.chat-modal-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chat-modal-input {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 15px;
+  color: var(--text);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 18px;
+}
+
+.chat-modal-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-light);
+}
+
+.chat-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.chat-modal-actions .btn {
+  width: auto;
+  min-width: 96px;
+  padding: 9px 16px;
+  font-size: 14px;
+}
+
+.btn-secondary {
+  color: var(--text);
+  background: #f1f5f9;
+}
+
+.btn-secondary:hover {
+  background: #e2e8f0;
+}
+
+.btn-danger {
+  color: #fff;
+  background: var(--error);
+}
+
+.btn-danger:hover {
+  background: #b91c1c;
+}
+
 /* Chat room */
 .chat-room-page {
   max-width: 960px;
@@ -6619,11 +7268,11 @@ textarea.form-input {
    Shopee-style customer account + auth (Login / Register)
    ============================================================ */
 :root {
-  --acct-orange: #ee4d2d;
+  --acct-orange: #11c1e0;
   --acct-orange-2: #ff7a45;
   --acct-orange-dark: #d0021b;
   --acct-orange-soft: #fff1ec;
-  --acct-gradient: linear-gradient(120deg, #ff7a45 0%, #ee4d2d 55%, #d0021b 100%);
+  --acct-gradient: linear-gradient(120deg, #dc2fec 0%, #2deea4 55%, #0210d0 100%);
 }
 
 /* ---------- Customer account page ---------- */
@@ -7498,7 +8147,7 @@ textarea.form-input {
   border-radius: 20px;
   background: var(--acct-gradient);
   color: #fff;
-  box-shadow: 0 14px 30px -18px rgba(238, 77, 45, 0.9);
+  box-shadow: 0 14px 30px -18px rgba(199, 233, 5, 0.9);
 }
 
 .admin-account-hero::after {
@@ -7680,14 +8329,14 @@ textarea.form-input {
   background: linear-gradient(120deg, var(--acct-orange-2), var(--acct-orange));
   border: none;
   border-radius: 12px;
-  box-shadow: 0 10px 20px -14px rgba(238, 77, 45, 0.95);
+  box-shadow: 0 10px 20px -14px rgba(149, 214, 149, 0.95);
   cursor: pointer;
   transition: transform 0.15s ease, background 0.2s ease, box-shadow 0.2s ease;
 }
 
 .admin-add-admin-btn:hover {
-  background: linear-gradient(120deg, #ff8a56, var(--acct-orange-dark));
-  box-shadow: 0 12px 24px -14px rgba(238, 77, 45, 1);
+  background: linear-gradient(120deg, #9b5a06, var(--acct-orange-dark));
+  box-shadow: 0 12px 24px -14px rgb(196, 183, 11);
 }
 
 .admin-add-admin-btn:active {
@@ -7843,7 +8492,7 @@ textarea.form-input {
   border-radius: 22px;
   background: var(--acct-gradient);
   color: #fff;
-  box-shadow: 0 14px 30px -18px rgba(238, 77, 45, 0.9);
+  box-shadow: 0 14px 30px -18px rgba(8, 148, 230, 0.9);
 }
 
 .admin-dashboard-hero::after {
@@ -8138,9 +8787,9 @@ textarea.form-input {
 }
 
 .customer-home-page .category-chip.active {
-  background: linear-gradient(135deg, #ff8a3d, #ff4d4d);
+  background: linear-gradient(135deg, #13e9c5, #cf0ae9);
   color: #fff;
-  box-shadow: 0 14px 24px -16px rgba(255, 77, 77, 0.7);
+  box-shadow: 0 14px 24px -16px rgba(172, 230, 13, 0.7);
 }
 
 .customer-home-page .category-chip-icon {
@@ -8189,7 +8838,7 @@ textarea.form-input {
 .customer-home-page .home-search:focus,
 .customer-home-page .home-select:focus {
   outline: none;
-  border-color: #ff7a45;
+  border-color: #13ccec;
   box-shadow: 0 0 0 3px rgba(255, 122, 69, 0.15);
 }
 
@@ -8250,7 +8899,7 @@ textarea.form-input {
 }
 
 .customer-home-page .badge-hot {
-  background: linear-gradient(135deg, #ff512f, #dd2476);
+  background: linear-gradient(135deg, #07dfee, #ec0404);
 }
 
 .customer-home-page .badge-recommend {
@@ -8273,7 +8922,7 @@ textarea.form-input {
   padding: 3px 10px;
   border-radius: 999px;
   background: #fff3ed;
-  color: #ff5a36;
+  color: #d67d18;
   font-size: 12px;
   font-weight: 700;
 }
@@ -8291,20 +8940,20 @@ textarea.form-input {
 }
 
 .customer-home-page .price-current {
-  color: #ff3b30;
+  color: #eb530d;
   font-size: 20px;
   font-weight: 900;
   letter-spacing: -0.2px;
 }
 
 .customer-home-page .price-original {
-  color: #94a3b8;
+  color: #0de761;
   font-size: 13px;
 }
 
 .customer-home-page .product-stock {
   margin-top: 2px;
-  color: #64748b;
+  color: #1463d1;
   font-size: 12px;
   font-weight: 600;
 }

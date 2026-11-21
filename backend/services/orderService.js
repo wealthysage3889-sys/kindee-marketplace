@@ -1,6 +1,8 @@
 import { supabaseAdmin } from '../config/supabase.js';
 import { AppError, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
 import { resolveEffectivePrice, roundMoney } from '../utils/productPricing.js';
+import { emitNewOrder, emitOrderUpdate } from './socketService.js';
+import { normalizePhoneE164 } from '../utils/phone.js';
 import { v4 as uuidv4 } from 'uuid';
 
 // Price charged for one unit. Rules live in utils/productPricing.js so the
@@ -12,20 +14,42 @@ export const calculateEffectivePrice = (price, discountPrice) =>
 
 const MAX_QUANTITY = 9999;
 
-// Create order from cart (Parent Order + Store Orders)
-export const createOrder = async (customerId, orderData) => {
-  const { items, payment_method, customer_notes, delivery_address, customer_coordinates } = orderData;
-  
+// VAT default (7%) used only when the `vat_rate` setting has not been configured yet.
+const VAT_DEFAULT_RATE = 7;
+
+// Read the configured VAT rate (percent) from the settings table.
+// Falls back to the default when unset or invalid. This is the single source of
+// truth for VAT — frontend must never dictate the rate.
+const getVatRate = async () => {
+  const { data: setting } = await supabaseAdmin
+    .from('settings')
+    .select('value')
+    .eq('key', 'vat_rate')
+    .maybeSingle();
+
+  if (!setting || setting.value === null || setting.value === undefined) {
+    return VAT_DEFAULT_RATE;
+  }
+
+  const rate = Number(setting.value);
+  if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+    return VAT_DEFAULT_RATE;
+  }
+
+  return rate;
+};
+
+// Resolve every line from the database. Only product_id and quantity are ever
+// read from the client, so a tampered price in the request body can never lower
+// the amount charged. Used by both the checkout preview and order creation so
+// the confirmed total and the stored total always agree.
+const buildOrderPlan = async (items) => {
   if (!items || items.length === 0) {
     throw new ValidationError('Order must have at least one item');
   }
-  
-  // Group items by store
+
   const itemsByStore = {};
   for (const item of items) {
-    // Only product_id and quantity are ever read from the client. Prices always
-    // come from the products row below, so a tampered price in the request body
-    // can never lower the amount charged.
     const quantity = Number(item.quantity);
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QUANTITY) {
       throw new ValidationError(`Invalid quantity for product ${item.product_id}`);
@@ -36,15 +60,15 @@ export const createOrder = async (customerId, orderData) => {
       .select('id, store_id, name, price, discount_price, stock, images, is_active')
       .eq('id', item.product_id)
       .single();
-    
+
     if (!product) {
       throw new NotFoundError(`Product ${item.product_id}`);
     }
-    
+
     if (!product.is_active) {
       throw new ValidationError(`Product ${product.name} is not available`);
     }
-    
+
     if (product.stock < quantity) {
       throw new ValidationError(`Insufficient stock for ${product.name}`);
     }
@@ -57,62 +81,51 @@ export const createOrder = async (customerId, orderData) => {
         `Product ${product.name} has an invalid price (${product.price}) and cannot be ordered`
       );
     }
-    
+
     const storeId = product.store_id;
     if (!itemsByStore[storeId]) {
       itemsByStore[storeId] = [];
     }
     itemsByStore[storeId].push({ ...item, quantity, unitPrice, product });
   }
-  
-  // Get customer snapshot
-  const { data: customer } = await supabaseAdmin
-    .from('profiles')
-    .select('name, phone, email')
-    .eq('id', customerId)
-    .single();
-  
-  const customerSnapshot = {
-    name: customer?.name,
-    phone: customer?.phone,
-    email: customer?.email,
-    address: delivery_address
-  };
-  
-  // Calculate totals and create store orders
+
   const storeOrdersData = [];
   let totalSubtotal = 0;
   let totalShippingFee = 0;
   let totalTax = 0;
-  
+
+  // Fetch the VAT rate once so every store order in the same parent order uses
+  // an identical rate (frontend must not supply its own rate).
+  const vatRate = await getVatRate();
+
   for (const [storeId, storeItems] of Object.entries(itemsByStore)) {
     const { data: store } = await supabaseAdmin
       .from('stores')
       .select('id, name, address, phone, delivery_fee, minimum_order, estimated_delivery_time, delivery_type')
       .eq('id', storeId)
       .single();
-    
+
     if (!store) {
       throw new NotFoundError(`Store ${storeId}`);
     }
-    
+
     // Check minimum order
     const storeSubtotal = roundMoney(storeItems.reduce(
       (sum, item) => sum + item.unitPrice * item.quantity,
       0
     ));
-    
+
     if (store.minimum_order && storeSubtotal < store.minimum_order) {
       throw new ValidationError(`Minimum order for ${store.name} is ${store.minimum_order}`);
     }
-    
+
     const shippingFee = roundMoney(store.delivery_fee || 0);
-    const taxAmount = roundMoney(storeSubtotal * 0.07); // 7% VAT
-    
+    const taxAmount = roundMoney(storeSubtotal * (vatRate / 100)); // VAT per admin-configured rate
+
     totalSubtotal = roundMoney(totalSubtotal + storeSubtotal);
     totalShippingFee = roundMoney(totalShippingFee + shippingFee);
     totalTax = roundMoney(totalTax + taxAmount);
-    
+
     storeOrdersData.push({
       store_id: storeId,
       store,
@@ -120,12 +133,13 @@ export const createOrder = async (customerId, orderData) => {
       subtotal: storeSubtotal,
       shipping_fee: shippingFee,
       tax_amount: taxAmount,
+      vat_rate: vatRate,
       total_amount: roundMoney(storeSubtotal + shippingFee + taxAmount),
       delivery_type: store.delivery_type,
       estimated_delivery_time: store.estimated_delivery_time
     });
   }
-  
+
   const discountAmount = 0; // TODO: Apply coupons
   const totalAmount = roundMoney(totalSubtotal + totalShippingFee + totalTax - discountAmount);
 
@@ -137,6 +151,155 @@ export const createOrder = async (customerId, orderData) => {
       'Order total must be greater than 0. This usually means a product is priced at 0.'
     );
   }
+
+  return {
+    storeOrdersData,
+    subtotal: totalSubtotal,
+    shippingFee: totalShippingFee,
+    taxAmount: totalTax,
+    discountAmount,
+    totalAmount,
+    vatRate
+  };
+};
+
+// Server-verified checkout preview. The frontend must show these values, not
+// its own localStorage cart totals, so a stale price or stock change is caught
+// before the customer confirms.
+export const quoteOrder = async (items) => {
+  const plan = await buildOrderPlan(items);
+
+  return {
+    stores: plan.storeOrdersData.map((storeOrder) => ({
+      storeId: storeOrder.store_id,
+      storeName: storeOrder.store.name,
+      storeLogo: storeOrder.store.logo_url || null,
+      subtotal: storeOrder.subtotal,
+      shippingFee: storeOrder.shipping_fee,
+      taxAmount: storeOrder.tax_amount,
+      totalAmount: storeOrder.total_amount,
+      deliveryType: storeOrder.delivery_type,
+      estimatedDeliveryTime: storeOrder.estimated_delivery_time,
+      items: storeOrder.items.map((item) => ({
+        productId: item.product.id,
+        name: item.product.name,
+        image: item.product.images?.[0] || null,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        totalPrice: roundMoney(item.unitPrice * item.quantity),
+        stock: item.product.stock
+      }))
+    })),
+    subtotal: plan.subtotal,
+    shippingFee: plan.shippingFee,
+    taxAmount: plan.taxAmount,
+    discountAmount: plan.discountAmount,
+    totalAmount: plan.totalAmount
+  };
+};
+
+// Double-submit protection. A client retry with the same idempotency key within
+// the TTL returns the order that was already created instead of creating a
+// second one. This is process-local, so it complements (not replaces) the
+// frontend submit lock.
+const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
+const idempotencyCache = new Map();
+
+const pruneIdempotencyCache = () => {
+  const now = Date.now();
+  for (const [key, entry] of idempotencyCache.entries()) {
+    if (entry.expiresAt <= now) idempotencyCache.delete(key);
+  }
+};
+
+// Create order from cart (Parent Order + Store Orders)
+export const createOrder = async (customerId, orderData) => {
+  const { idempotency_key } = orderData;
+  const cacheKey = idempotency_key ? `${customerId}:${idempotency_key}` : null;
+
+  if (cacheKey) {
+    pruneIdempotencyCache();
+    const cached = idempotencyCache.get(cacheKey);
+    if (cached) {
+      return cached.orderId
+        ? getOrderById(cached.orderId)
+        : cached.promise;
+    }
+  }
+
+  const promise = createOrderInternal(customerId, orderData);
+
+  if (cacheKey) {
+    idempotencyCache.set(cacheKey, { promise, expiresAt: Date.now() + IDEMPOTENCY_TTL_MS });
+  }
+
+  try {
+    const order = await promise;
+    if (cacheKey) {
+      idempotencyCache.set(cacheKey, { orderId: order.id, expiresAt: Date.now() + IDEMPOTENCY_TTL_MS });
+    }
+    return order;
+  } catch (error) {
+    if (cacheKey) idempotencyCache.delete(cacheKey);
+    throw error;
+  }
+};
+
+const createOrderInternal = async (customerId, orderData) => {
+  const { items, payment_method, customer_notes, delivery_address, customer_coordinates,
+    exchange_rate, exchange_rate_source, exchange_rate_updated_at, amount_mmk } = orderData;
+
+  // Normalize delivery phone to E.164 so frontend (E.164 from PhoneInput) and
+  // backend store a canonical value without duplicating the country code.
+  if (delivery_address && delivery_address.phone) {
+    const normalizedPhone = normalizePhoneE164(delivery_address.phone);
+    if (normalizedPhone) delivery_address.phone = normalizedPhone;
+  }
+
+  const plan = await buildOrderPlan(items);
+  const { storeOrdersData, subtotal: totalSubtotal, shippingFee: totalShippingFee, taxAmount: totalTax, discountAmount, totalAmount, vatRate } = plan;
+
+  // Verify amount_thb matches backend-calculated total (server is source of truth)
+  const backendTotalThb = roundMoney(totalAmount);
+  
+  // Verify amount_mmk if provided (KBZPay)
+  let verifiedAmountMmk = null;
+  if (payment_method === 'kbzpay') {
+    if (!exchange_rate || !Number.isFinite(exchange_rate) || exchange_rate <= 0) {
+      throw new ValidationError('Valid exchange rate is required for KBZPay');
+    }
+    if (!exchange_rate_source || !exchange_rate_source.trim()) {
+      throw new ValidationError('Exchange rate source is required for KBZPay');
+    }
+    if (!exchange_rate_updated_at) {
+      throw new ValidationError('Exchange rate timestamp is required for KBZPay');
+    }
+    // Calculate expected MMK amount from backend THB total
+    const expectedAmountMmk = roundMoney(backendTotalThb * exchange_rate);
+    if (amount_mmk !== null && amount_mmk !== undefined) {
+      const frontendAmountMmk = roundMoney(amount_mmk);
+      // Allow small rounding difference (0.5 MMK tolerance)
+      if (Math.abs(frontendAmountMmk - expectedAmountMmk) > 0.5) {
+        throw new ValidationError(`Amount MMK mismatch: expected ~${expectedAmountMmk}, got ${frontendAmountMmk}`);
+      }
+    }
+    verifiedAmountMmk = expectedAmountMmk;
+  }
+
+  // Get customer snapshot
+  const { data: customer } = await supabaseAdmin
+    .from('profiles')
+    .select('name, phone, email, avatar_url')
+    .eq('id', customerId)
+    .single();
+  
+  const customerSnapshot = {
+    name: customer?.name,
+    phone: customer?.phone,
+    email: customer?.email,
+    avatar_url: customer?.avatar_url,
+    address: delivery_address
+  };
   
   // Generate order number
   const orderNumber = await generateOrderNumber('ORD');
@@ -148,13 +311,18 @@ export const createOrder = async (customerId, orderData) => {
       customer_id: customerId,
       order_number: orderNumber,
       status: 'pending',
-      payment_status: payment_method === 'cod' ? 'pending' : 'pending',
+      payment_status: 'pending', // Always pending initially - COD and KBZPay both need confirmation
       payment_method,
       subtotal: totalSubtotal,
       shipping_fee: totalShippingFee,
       tax_amount: totalTax,
+      vat_rate: vatRate,
       discount_amount: discountAmount,
-      total_amount: totalAmount,
+      total_amount: backendTotalThb, // amount_thb (server-verified)
+      exchange_rate: payment_method === 'kbzpay' ? exchange_rate : null,
+      exchange_rate_source: payment_method === 'kbzpay' ? exchange_rate_source : null,
+      exchange_rate_updated_at: payment_method === 'kbzpay' ? exchange_rate_updated_at : null,
+      amount_mmk: verifiedAmountMmk,
       customer_snapshot: customerSnapshot,
       delivery_type: storeOrdersData.some(so => so.delivery_type === 'platform_courier') ? 'platform_courier' : 'store_delivery',
       customer_notes
@@ -203,6 +371,7 @@ export const createOrder = async (customerId, orderData) => {
           subtotal: storeOrderData.subtotal,
           shipping_fee: storeOrderData.shipping_fee,
           tax_amount: storeOrderData.tax_amount,
+          vat_rate: storeOrderData.vat_rate,
           discount_amount: 0,
           total_amount: storeOrderData.total_amount,
           delivery_type: storeOrderData.delivery_type,
@@ -259,9 +428,9 @@ export const createOrder = async (customerId, orderData) => {
     await reserveStock(storeOrder.id, reservationItems);
   }
 
-    // Create payment record (COD is paid on delivery, so no payment row yet)
-    if (payment_method !== 'cod') {
-      await createPaymentRecord(order.id, null, totalAmount, payment_method);
+    // Create payment record (COD and KBZPay are paid on delivery/confirmation, so no payment row yet)
+    if (!['cod', 'kbzpay'].includes(payment_method)) {
+      await createPaymentRecord(order.id, null, backendTotalThb, payment_method);
     }
   } catch (error) {
     for (const storeOrderId of createdStoreOrderIds) {
@@ -418,7 +587,8 @@ export const getOrderById = async (orderId, userId = null, userRole = null) => {
           courier:couriers(profile_id, vehicle_type)
         )
       ),
-      payments(*)
+      payments(*),
+      payment_slips(*)
     `)
     .eq('id', orderId);
   
@@ -490,7 +660,7 @@ export const getStoreOrders = async (storeId, ownerId, filters = {}, pagination 
     .select(`
       *,
       order:orders!parent_order_id(
-        id, order_number, customer_id, customer_snapshot, payment_method, payment_status
+        id, order_number, customer_id, customer_snapshot, payment_method, payment_status, customer_notes
       ),
       order_items:order_items(
         *,
@@ -600,21 +770,6 @@ export const updateStoreOrderStatus = async (storeOrderId, ownerId, newStatus, n
     throw new ValidationError(`Invalid status transition from ${storeOrder.status} to ${newStatus}`);
   }
   
-  const updateData = { status: newStatus };
-  
-  // Set timestamps based on status
-  const timestamps = {
-    confirmed: 'confirmed_at',
-    ready_for_pickup: 'ready_for_pickup_at',
-    picked_up: 'picked_up_at',
-    delivered: 'delivered_at',
-    cancelled: 'cancelled_at'
-  };
-  
-  if (timestamps[newStatus]) {
-    updateData[timestamps[newStatus]] = new Date().toISOString();
-  }
-  
   // Fulfill stock when confirmed
   if (newStatus === 'confirmed') {
     await fulfillStockReservation(storeOrderId);
@@ -625,12 +780,14 @@ export const updateStoreOrderStatus = async (storeOrderId, ownerId, newStatus, n
     await releaseStockReservation(storeOrderId);
   }
   
-  const { data: updatedOrder, error } = await supabaseAdmin
-    .from('store_orders')
-    .update(updateData)
-    .eq('id', storeOrderId)
-    .select()
-    .single();
+  // Set session variable for trigger to capture rejection/cancellation reason
+  const reasonForHistory = notes && (newStatus === 'cancelled' || newStatus === 'failed') ? notes : null;
+  
+  const { data: updatedOrder, error } = await supabaseAdmin.rpc('update_store_order_status_with_reason', {
+    p_store_order_id: storeOrderId,
+    p_new_status: newStatus,
+    p_reason: reasonForHistory
+  });
   
   if (error) {
     throw new AppError(`Status update failed: ${error.message}`, 500);
@@ -671,7 +828,10 @@ export const syncParentOrderStatus = async (parentOrderId) => {
   const updateData = { status: parentStatus };
   if (parentStatus === 'delivered') {
     updateData.delivered_at = new Date().toISOString();
-    updateData.payment_status = 'paid';
+    // payment_status is NOT automatically set to 'paid' here.
+    // COD: requires manual confirmation of cash collection.
+    // KBZPay: requires payment gateway confirmation.
+    // Other methods: require webhook/callback confirmation.
   } else if (parentStatus === 'cancelled') {
     updateData.cancelled_at = new Date().toISOString();
   }
@@ -695,6 +855,43 @@ export const getOrderStatusHistory = async (orderId) => {
   
   if (error) {
     throw new AppError(`Failed to fetch status history: ${error.message}`, 500);
+  }
+  
+  return data;
+};
+
+// Get store order status history (for sellers)
+export const getStoreOrderStatusHistory = async (storeOrderId, ownerId) => {
+  // Verify ownership
+  const { data: storeOrder } = await supabaseAdmin
+    .from('store_orders')
+    .select(`
+      id,
+      parent_order_id,
+      store:stores!store_id(owner_id)
+    `)
+    .eq('id', storeOrderId)
+    .single();
+  
+  if (!storeOrder) {
+    throw new NotFoundError('Store order');
+  }
+  
+  if (storeOrder.store.owner_id !== ownerId) {
+    throw new AppError('Not authorized to view this store order history', 403);
+  }
+  
+  const { data, error } = await supabaseAdmin
+    .from('order_status_history')
+    .select(`
+      *,
+      changed_by_user:profiles!changed_by(id, name, role)
+    `)
+    .eq('store_order_id', storeOrderId)
+    .order('created_at', { ascending: false });
+  
+  if (error) {
+    throw new AppError(`Failed to fetch store order status history: ${error.message}`, 500);
   }
   
   return data;
@@ -819,7 +1016,6 @@ export const getAllOrders = async (filters = {}, pagination = {}) => {
     pagination: { page, limit, total: count, totalPages: Math.ceil(count / limit) }
   };
 };
-
 
 // ---------------------------------------------------------------------------
 // Payment slip upload (Existing Order Payment — Phase 1)

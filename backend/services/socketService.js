@@ -94,29 +94,50 @@ const initialize = (server) => {
     // Handle joining store room
     socket.on('joinStore', async (storeId) => {
       if (!storeId) return;
-      
-      // Verify user has access to store
+
+      // Verify user has access to store: owner, active manager/staff, or platform admin.
       const { data: store } = await supabaseAdmin
         .from('stores')
         .select('id, owner_id')
         .eq('id', storeId)
-        .single();
-      
-      if (store && (store.owner_id === userId || ['admin', 'owner'].includes(socket.user.role))) {
+        .maybeSingle();
+
+      if (!store) return;
+
+      let hasAccess = store.owner_id === userId;
+
+      if (!hasAccess) {
+        const { data: member } = await supabaseAdmin
+          .from('store_memberships')
+          .select('id')
+          .eq('store_id', storeId)
+          .eq('profile_id', userId)
+          .is('left_at', null)
+          .is('suspended_at', null)
+          .in('role', ['manager', 'staff'])
+          .maybeSingle();
+        hasAccess = Boolean(member);
+      }
+
+      if (!hasAccess && ['admin', 'owner'].includes(socket.user.role)) {
+        hasAccess = true;
+      }
+
+      if (hasAccess) {
         socket.join(`store_${storeId}`);
         console.log(`User ${userId} joined store room: store_${storeId}`);
       }
     });
-    
+
     socket.on('leaveStore', (storeId) => {
       if (!storeId) return;
       socket.leave(`store_${storeId}`);
     });
-    
+
     // Handle joining conversation
     socket.on('joinConversation', async (conversationId) => {
       if (!conversationId) return;
-      
+
       // Verify membership
       const { data: member } = await supabaseAdmin
         .from('conversation_members')
@@ -124,8 +145,8 @@ const initialize = (server) => {
         .eq('conversation_id', conversationId)
         .eq('profile_id', userId)
         .is('left_at', null)
-        .single();
-      
+        .maybeSingle();
+
       if (member) {
         socket.join(`conversation_${conversationId}`);
         console.log(`User ${userId} joined conversation: ${conversationId}`);
@@ -140,7 +161,7 @@ const initialize = (server) => {
     // Handle joining delivery tracking
     socket.on('joinDelivery', async (deliveryId) => {
       if (!deliveryId) return;
-      
+
       // Verify access
       const { data: delivery } = await supabaseAdmin
         .from('deliveries')
@@ -153,18 +174,18 @@ const initialize = (server) => {
           courier_id
         `)
         .eq('id', deliveryId)
-        .single();
-      
-      if (delivery) {
-        const hasAccess = delivery.store_order.order.customer_id === userId ||
-          delivery.store_order.store.owner_id === userId ||
-          delivery.courier_id === userId ||
-          ['admin', 'owner'].includes(socket.user.role);
-        
-        if (hasAccess) {
-          socket.join(`delivery_${deliveryId}`);
-          console.log(`User ${userId} joined delivery tracking: ${deliveryId}`);
-        }
+        .maybeSingle();
+
+      if (!delivery) return;
+
+      const hasAccess = delivery.store_order?.order?.customer_id === userId ||
+        delivery.store_order?.store?.owner_id === userId ||
+        delivery.courier_id === userId ||
+        ['admin', 'owner'].includes(socket.user.role);
+
+      if (hasAccess) {
+        socket.join(`delivery_${deliveryId}`);
+        console.log(`User ${userId} joined delivery tracking: ${deliveryId}`);
       }
     });
     
@@ -173,50 +194,83 @@ const initialize = (server) => {
       socket.leave(`delivery_${deliveryId}`);
     });
     
-    // Typing indicators (user id comes from the socket's verified token)
-    socket.on('typing', ({ conversationId, name }) => {
+    socket.on('typing', async ({ conversationId, name }) => {
       if (!conversationId) return;
+      const { data: member } = await supabaseAdmin
+        .from('conversation_members')
+        .select('id')
+        .eq('conversation_id', conversationId)
+        .eq('profile_id', userId)
+        .is('left_at', null)
+        .maybeSingle();
+      if (!member) return;
       socket.to(`conversation_${conversationId}`).emit('typing', {
         userId,
         name
       });
     });
-    
-    socket.on('stopTyping', ({ conversationId }) => {
+
+    socket.on('stopTyping', async ({ conversationId }) => {
       if (!conversationId) return;
+      const { data: member } = await supabaseAdmin
+        .from('conversation_members')
+        .select('id')
+        .eq('conversation_id', conversationId)
+        .eq('profile_id', userId)
+        .is('left_at', null)
+        .maybeSingle();
+      if (!member) return;
       socket.to(`conversation_${conversationId}`).emit('stopTyping', {
         userId
       });
     });
-    
+
     // Call signaling
     socket.on('callSignal', async ({ callId, signal }) => {
       if (!callId || !signal) return;
-      // Only a participant of an active call may send signaling.
       const { data: call } = await supabaseAdmin
         .from('call_history')
-        .select('caller_id, callee_id, status')
+        .select('caller_id, callee_id, status, conversation_id')
         .eq('id', callId)
         .in('status', ['ringing', 'accepted'])
-        .single();
+        .maybeSingle();
       if (!call || (call.caller_id !== userId && call.callee_id !== userId)) return;
-      // Forward to the other participant in the call room.
-      socket.to(`call_${callId}`).emit('callSignal', { 
-        from: userId, 
-        signal 
+      // Revalidate conversation membership when a conversation is linked.
+      if (call.conversation_id) {
+        const { data: member } = await supabaseAdmin
+          .from('conversation_members')
+          .select('id')
+          .eq('conversation_id', call.conversation_id)
+          .eq('profile_id', userId)
+          .is('left_at', null)
+          .maybeSingle();
+        if (!member) return;
+      }
+      socket.to(`call_${callId}`).emit('callSignal', {
+        from: userId,
+        signal
       });
     });
-    
+
     socket.on('joinCall', async (callId) => {
       if (!callId) return;
-      // Only participants may join the call signaling room.
       const { data: call } = await supabaseAdmin
         .from('call_history')
-        .select('caller_id, callee_id, status')
+        .select('caller_id, callee_id, status, conversation_id')
         .eq('id', callId)
         .in('status', ['ringing', 'accepted'])
-        .single();
+        .maybeSingle();
       if (!call || (call.caller_id !== userId && call.callee_id !== userId)) return;
+      if (call.conversation_id) {
+        const { data: member } = await supabaseAdmin
+          .from('conversation_members')
+          .select('id')
+          .eq('conversation_id', call.conversation_id)
+          .eq('profile_id', userId)
+          .is('left_at', null)
+          .maybeSingle();
+        if (!member) return;
+      }
       socket.join(`call_${callId}`);
     });
     
@@ -243,8 +297,8 @@ const initialize = (server) => {
         .from('deliveries')
         .select('courier_id')
         .eq('id', deliveryId)
-        .single();
-      
+        .maybeSingle();
+
       if (delivery && delivery.courier_id === userId) {
         // Broadcast to delivery room
         io.to(`delivery_${deliveryId}`).emit('courierLocationUpdate', {

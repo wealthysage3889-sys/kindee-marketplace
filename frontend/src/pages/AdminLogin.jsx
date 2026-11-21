@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { getToken } from "../api/auth";
 
 export default function AdminLogin() {
-  const { isAdmin, loading: authLoading, login, logout } = useAuth();
+  const { isAdmin, loading: authLoading, initializing: authInitializing, login, logout } = useAuth();
   const [form, setForm] = useState({ email: "", password: "" });
   const [errors, setErrors] = useState({});
   const [message, setMessage] = useState("");
@@ -11,11 +12,16 @@ export default function AdminLogin() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (authLoading) return;
-    if (isAdmin) {
-      navigate("/selladmin", { replace: true });
-    }
-  }, [isAdmin, authLoading, navigate]);
+    // Wait for the session check before redirecting. `isAdmin` already requires
+    // both the admin token and an admin/owner role, so this page and
+    // ProtectedRoute always agree.
+    if (authInitializing || authLoading) return;
+    if (!isAdmin) return;
+    // Guard against a stale React state right after logout: if the token is
+    // already gone from storage, there is nothing to return to.
+    if (!getToken("admin")) return;
+    navigate("/selladmin", { replace: true });
+  }, [isAdmin, authLoading, authInitializing, navigate]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -45,7 +51,8 @@ export default function AdminLogin() {
         setMessage("บัญชีนี้ไม่มีสิทธิ์เข้าสู่ระบบแอดมิน (ต้องมี role admin/owner ในฐานข้อมูล)");
         return;
       }
-      navigate("/selladmin", { replace: true });
+      // The success redirect is handled by the effect above once the admin
+      // session state lands, so there is exactly one navigation.
     } catch (err) {
       if (err?.data?.message) {
         setMessage(err.data.message);

@@ -5,6 +5,7 @@ import { useSocket } from "../context/SocketContext";
 import { chatAPI, callAPI, uploadAPI, normalizeAttachment } from "../api";
 import { formatDate } from "../utils/helpers";
 import VoiceCallUI from "./VoiceCallUI";
+import ChatRoutePanel from "./ChatRoutePanel";
 import "./ChatRoom.css";
 
 const MESSAGE_TYPES = {
@@ -78,6 +79,8 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState("");
   const [activeCall, setActiveCall] = useState(null);
+  const [counterpartLastReadId, setCounterpartLastReadId] = useState(null);
+  const [routePanelOpen, setRoutePanelOpen] = useState(false);
 
   const messagesEndRef = useRef(null);
   const messageInputRef = useRef(null);
@@ -90,6 +93,7 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
 
   useEffect(() => {
     lastMarkedReadRef.current = null;
+    setRoutePanelOpen(false);
   }, [conversationId, mode]);
 
   // Load conversation info
@@ -278,7 +282,7 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
       off("newMessage", handleNewMessage);
       off("callStatusUpdate", handleCallStatusUpdate);
     };
-  }, [conversationId, connected, currentUserId, on, off, markAsRead]);
+  }, [conversationId, connected, currentUserId, on, off, markAsRead, messages]);
 
   // Send message
   const handleSendMessage = async (e) => {
@@ -549,6 +553,21 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
           </div>
         </div>
         <div className="chat-header-right">
+          {isAdminMode && conversationId && (
+            <button
+              className="call-btn map-btn"
+              type="button"
+              onClick={() => setRoutePanelOpen(true)}
+              title="ดูเส้นทาง"
+              aria-label="ดูเส้นทาง"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="6" cy="19" r="3" />
+                <path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15" />
+                <circle cx="18" cy="5" r="3" />
+              </svg>
+            </button>
+          )}
           {conversation?.type === "store_customer" && counterpartProfile?.id && (
             <button className="call-btn" type="button" onClick={handleStartCall} title="打电话">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -670,6 +689,20 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
           </button>
         </div>
       </form>
+
+      {routePanelOpen && isAdminMode && (
+        <ChatRoutePanel
+          conversationId={conversationId}
+          mode={mode}
+          messages={messages}
+          currentUserId={currentUserId}
+          onClose={() => setRoutePanelOpen(false)}
+        />
+      )}
     </div>
   );
 }
+
+
+
+

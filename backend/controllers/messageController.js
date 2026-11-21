@@ -274,9 +274,9 @@ const sendMessage = asyncHandler(async (req, res) => {
   });
 
   const populated = await chatService.getMessages(conversation.id, senderId, { page: 1, limit: 1 });
-  const sentMessage = populated[0];
+  const sentMessage = populated?.[0] || message;
 
-  emitNewMessage(sentMessage);
+  // Do not emit here: chatService.sendMessage already emits newMessage to conversation + recipients.
 
   res.status(201).json({ success: true, data: sentMessage });
 });

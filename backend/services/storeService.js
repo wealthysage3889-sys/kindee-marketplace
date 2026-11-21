@@ -331,6 +331,103 @@ export const verifyStore = async (storeId, verified = true) => {
   return store;
 };
 
+// Get public KBZPay payment settings of a store (payment-display fields only).
+// Returns null when the store does not exist or KBZPay is not configured.
+export const getKbzpaySettings = async (storeId) => {
+  const { data: store, error } = await supabaseAdmin
+    .from('stores')
+    .select('id, name, kbzpay_account_name, kbzpay_phone_number, kbzpay_receiver_name, kbzpay_qr_url, kbzpay_enabled')
+    .eq('id', storeId)
+    .single();
+
+  if (error || !store) {
+    return null;
+  }
+
+  return {
+    storeId: store.id,
+    storeName: store.name,
+    accountName: store.kbzpay_account_name || null,
+    phoneNumber: store.kbzpay_phone_number || null,
+    receiverName: store.kbzpay_receiver_name || null,
+    qrUrl: store.kbzpay_qr_url || null,
+    enabled: Boolean(store.kbzpay_enabled)
+  };
+};
+
+// Get KBZPay settings for the store owner (all fields, ownership enforced).
+export const getKbzpaySettingsForOwner = async (storeId, ownerId) => {
+  const store = await getStoreById(storeId);
+  if (store.owner_id !== ownerId) {
+    throw new AppError('Not authorized to view this store KBZPay settings', 403);
+  }
+  return getKbzpaySettings(storeId);
+};
+
+// Update KBZPay payment settings (ownership enforced).
+export const updateKbzpaySettings = async (storeId, ownerId, updates = {}) => {
+  const store = await getStoreById(storeId);
+  if (store.owner_id !== ownerId) {
+    throw new AppError('Not authorized to update this store KBZPay settings', 403);
+  }
+
+  const filtered = {};
+  if (updates.accountName !== undefined) filtered.kbzpay_account_name = updates.accountName.trim() || null;
+  if (updates.phoneNumber !== undefined) filtered.kbzpay_phone_number = updates.phoneNumber.trim() || null;
+  if (updates.receiverName !== undefined) filtered.kbzpay_receiver_name = updates.receiverName.trim() || null;
+  if (updates.enabled !== undefined) filtered.kbzpay_enabled = Boolean(updates.enabled);
+
+  if (Object.keys(filtered).length === 0) {
+    return getKbzpaySettings(storeId);
+  }
+
+  const { data: updatedStore, error } = await supabaseAdmin
+    .from('stores')
+    .update(filtered)
+    .eq('id', storeId)
+    .select('id, name, kbzpay_account_name, kbzpay_phone_number, kbzpay_receiver_name, kbzpay_qr_url, kbzpay_enabled')
+    .single();
+
+  if (error) {
+    throw new AppError(`KBZPay settings update failed: ${error.message}`, 500);
+  }
+
+  return {
+    storeId: updatedStore.id,
+    storeName: updatedStore.name,
+    accountName: updatedStore.kbzpay_account_name || null,
+    phoneNumber: updatedStore.kbzpay_phone_number || null,
+    receiverName: updatedStore.kbzpay_receiver_name || null,
+    qrUrl: updatedStore.kbzpay_qr_url || null,
+    enabled: Boolean(updatedStore.kbzpay_enabled)
+  };
+};
+
+// Update the KBZPay QR code URL (ownership enforced).
+export const updateKbzpayQrUrl = async (storeId, ownerId, qrUrl) => {
+  const store = await getStoreById(storeId);
+  if (store.owner_id !== ownerId) {
+    throw new AppError('Not authorized to update this store KBZPay QR', 403);
+  }
+
+  const { data: updatedStore, error } = await supabaseAdmin
+    .from('stores')
+    .update({ kbzpay_qr_url: qrUrl })
+    .eq('id', storeId)
+    .select('id, name, kbzpay_qr_url')
+    .single();
+
+  if (error) {
+    throw new AppError(`KBZPay QR update failed: ${error.message}`, 500);
+  }
+
+  return {
+    storeId: updatedStore.id,
+    storeName: updatedStore.name,
+    qrUrl: updatedStore.kbzpay_qr_url || null
+  };
+};
+
 // Admin: Get all stores
 export const getAllStores = async (filters = {}, pagination = {}) => {
   const { is_active, is_verified, owner_id, search } = filters;

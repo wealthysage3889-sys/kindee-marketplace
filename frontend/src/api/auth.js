@@ -22,6 +22,11 @@ export function getToken(mode = "customer") {
   return localStorage.getItem(keysFor(mode).token);
 }
 
+// Shared cache + single-flight for public social config
+let socialConfigCache = null; // { data, ts }
+let socialConfigInFlight = null;
+const SOCIAL_CONFIG_TTL_MS = 5 * 60 * 1000;
+
 export async function request(path, options = {}, mode = "customer") {
   const rawToken = getToken(mode);
   const token = rawToken ? rawToken.trim() : null;
@@ -94,5 +99,24 @@ export const authAPI = {
       body: JSON.stringify({ code, redirectUri }),
     }, mode),
 
-  getSocialConfig: () => request("/settings/public/social-config"),
+  getSocialConfig: async () => {
+    const now = Date.now();
+    if (socialConfigCache && now - socialConfigCache.ts < SOCIAL_CONFIG_TTL_MS) {
+      return socialConfigCache.data;
+    }
+    if (socialConfigInFlight) {
+      return socialConfigInFlight;
+    }
+    socialConfigInFlight = request("/settings/public/social-config")
+      .then((res) => {
+        socialConfigCache = { data: res, ts: Date.now() };
+        socialConfigInFlight = null;
+        return res;
+      })
+      .catch((err) => {
+        socialConfigInFlight = null;
+        throw err;
+      });
+    return socialConfigInFlight;
+  },
 };

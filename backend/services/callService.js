@@ -131,13 +131,25 @@ export const expireStaleAcceptedCalls = async () => {
 export const heartbeatCall = async (callId, userId) => {
   const { data: call } = await supabaseAdmin
     .from('call_history')
-    .select('id, caller_id, callee_id, status')
+    .select('id, caller_id, callee_id, status, conversation_id')
     .eq('id', callId)
     .eq('status', 'accepted')
     .single();
-  
+
   if (!call) {
     return false;
+  }
+
+  // Revalidate conversation membership for linked conversations.
+  if (call.conversation_id) {
+    const { data: member } = await supabaseAdmin
+      .from('conversation_members')
+      .select('id')
+      .eq('conversation_id', call.conversation_id)
+      .eq('profile_id', userId)
+      .is('left_at', null)
+      .maybeSingle();
+    if (!member) return false;
   }
   
   const heartbeatColumn = userId === call.caller_id ? 'caller_heartbeat_at'
@@ -259,6 +271,7 @@ export const initiateCall = async (callerId, calleeId, conversationId = null, st
   emitIncomingCall(calleeId, {
     call_id: callId,
     caller_id: callerId,
+    callee_id: calleeId,
     caller_name: caller?.name,
     caller_avatar: caller?.avatar_url,
     conversation_id: conversationId,

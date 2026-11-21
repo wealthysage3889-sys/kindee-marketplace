@@ -10,6 +10,7 @@ import { responseFormatter } from './middleware/responseFormatter.js';
 import apiRoutes from './routes/index.js';
 import { initialize as initSocket } from './services/socketService.js';
 import { supabaseAdmin, isSupabaseConfigured } from './config/supabase.js';
+import { resolveTrustProxy } from './services/ipLocationService.js';
 
 // Fail fast when Supabase credentials are missing: every API route reads from
 // Supabase, so starting without them only produces runtime 500s.
@@ -25,6 +26,14 @@ if (!isSupabaseConfigured) {
 ensureUploadsDir();
 
 // Initialize default settings in database
+//
+// This is a one-time best-effort seed: it calls Supabase over the network, so it
+// can fail (for example "TypeError: fetch failed" when Supabase is unreachable).
+// That does NOT affect order calculation — VAT rate and exchange rate are read
+// directly from the `settings` table at request time (getVatRate / settings API),
+// each with a safe documented fallback, and the frontend never silently falls back
+// to an incorrect exchange rate (it surfaces an error and asks the user to retry
+// or choose another payment method).
 async function initializeSettings() {
   if (!supabaseAdmin) {
     console.warn('Service role key not configured. Skipping settings initialization.');
@@ -38,19 +47,26 @@ async function initializeSettings() {
       if (['42883', 'PGRST202', '404'].includes(String(error.code))) {
         console.log('Default settings initialization skipped (function not deployed)');
       } else {
-        console.error('Failed to initialize default settings:', error.message);
+        // Network/availability failure at startup: warn only, the server keeps
+        // running and reads settings directly from the database per request.
+        console.warn('Default settings initialization failed (non-fatal):', error.message);
       }
     } else {
       console.log('Default settings initialized');
     }
   } catch (error) {
-    console.error('Settings initialization error:', error.message);
+    console.warn('Settings initialization error (non-fatal):', error.message);
   }
 }
 
 initializeSettings();
 
 const app = express();
+
+// Only trust forwarding headers when the deployment explicitly configures it
+// (TRUST_PROXY=1 or a proxy CIDR list). Otherwise Express uses the socket
+// address, so a spoofed X-Forwarded-For cannot influence req.ip.
+app.set('trust proxy', resolveTrustProxy());
 
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }

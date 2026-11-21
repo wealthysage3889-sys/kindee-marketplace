@@ -1,11 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { MapContainer, TileLayer, Marker, Popup, Polyline } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { useAuth } from "../context/AuthContext";
+import { useSocket } from "../context/SocketContext";
 import { orderAPI, deliveryAPI } from "../api";
-import { formatCurrency, formatDate, formatRelativeTime } from "../utils/helpers";
+import { formatCurrency, formatDate, formatRelativeTime, formatAddress } from "../utils/helpers";
 import "./OrderTracking.css";
 
 const STATUS_LABELS = {
@@ -34,43 +35,81 @@ export default function OrderTracking() {
   const { id: orderId } = useParams();
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { on, off } = useSocket();
   
   const [order, setOrder] = useState(null);
   const [delivery, setDelivery] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("summary");
-  const [mapCenter, setMapCenter] = useState([13.7563, 100.5018]);
-  const [mapZoom, setMapZoom] = useState(13);
+const [mapCenter, setMapCenter] = useState([13.7563, 100.5018]);
+const [mapZoom, setMapZoom] = useState(13);
+const [slipFile, setSlipFile] = useState(null);
+const [slipAmount, setSlipAmount] = useState("");
+const [slipNote, setSlipNote] = useState("");
+const [slipUploading, setSlipUploading] = useState(false);
+const [slipError, setSlipError] = useState("");
+
+  const loadOrder = useCallback(async () => {
+    try {
+      const result = await orderAPI.getById(orderId);
+      setOrder(result.data);
+      
+      // Load delivery if exists
+      if (result.data.store_orders?.[0]?.delivery) {
+        setDelivery(result.data.store_orders[0].delivery);
+        
+        // Center map on delivery route
+        const coords = result.data.store_orders[0].delivery;
+        if (coords.pickup_coordinates && coords.delivery_coordinates) {
+          const midLat = (coords.pickup_coordinates.coordinates[1] + coords.delivery_coordinates.coordinates[1]) / 2;
+          const midLng = (coords.pickup_coordinates.coordinates[0] + coords.delivery_coordinates.coordinates[0]) / 2;
+          setMapCenter([midLat, midLng]);
+          setMapZoom(13);
+        }
+      }
+    } catch (err) {
+      setError(err.message || "ไม่พบคำสั่งซื้อ");
+    } finally {
+      setLoading(false);
+    }
+  }, [orderId]);
 
   useEffect(() => {
-    const loadOrder = async () => {
-      try {
-        const result = await orderAPI.getById(orderId);
-        setOrder(result.data);
-        
-        // Load delivery if exists
-        if (result.data.store_orders?.[0]?.delivery) {
-          setDelivery(result.data.store_orders[0].delivery);
-          
-          // Center map on delivery route
-          const coords = result.data.store_orders[0].delivery;
-          if (coords.pickup_coordinates && coords.delivery_coordinates) {
-            const midLat = (coords.pickup_coordinates.coordinates[1] + coords.delivery_coordinates.coordinates[1]) / 2;
-            const midLng = (coords.pickup_coordinates.coordinates[0] + coords.delivery_coordinates.coordinates[0]) / 2;
-            setMapCenter([midLat, midLng]);
-            setMapZoom(13);
-          }
-        }
-      } catch (err) {
-        setError(err.message || "ไม่พบคำสั่งซื้อ");
-      } finally {
-        setLoading(false);
+    loadOrder();
+  }, [loadOrder]);
+
+  const handleSlipUpload = async (e) => {
+    e.preventDefault();
+    if (!slipFile) {
+      setSlipError("กรุณาเลือกไฟล์สลิป");
+      return;
+    }
+    setSlipUploading(true);
+    setSlipError("");
+    try {
+      await orderAPI.uploadPaymentSlip(orderId, slipFile, slipAmount || null, slipNote || null);
+      setSlipFile(null);
+      setSlipAmount("");
+      setSlipNote("");
+      await loadOrder();
+    } catch (err) {
+      setSlipError(err.message || "อัปโหลดสลิปไม่สำเร็จ");
+    } finally {
+      setSlipUploading(false);
+    }
+  };
+
+  // Realtime: refresh order when status changes
+  useEffect(() => {
+    const onOrderStatusUpdate = (data) => {
+      if (!data || data.order_id === orderId || data.store_order_id) {
+        loadOrder();
       }
     };
-    
-    loadOrder();
-  }, [orderId]);
+    on("orderStatusUpdate", onOrderStatusUpdate);
+    return () => off("orderStatusUpdate", onOrderStatusUpdate);
+  }, [on, off, orderId, loadOrder]);
 
   const getCurrentStatusIndex = () => {
     if (!order) return 0;
@@ -85,17 +124,6 @@ export default function OrderTracking() {
 
   const isStatusCurrent = (status) => {
     return order?.status === status;
-  };
-
-  const formatAddress = (address) => {
-    if (!address) return "";
-    const parts = [
-      address.street,
-      address.district,
-      address.province,
-      address.postalCode
-    ].filter(Boolean);
-    return parts.join(", ");
   };
 
   const getCourierLocation = () => {
@@ -188,7 +216,7 @@ export default function OrderTracking() {
               <div className="address-card">
                 <p><strong>{order.customer_snapshot?.name}</strong></p>
                 <p>{order.customer_snapshot?.phone}</p>
-                <p>{order.customer_snapshot?.address}</p>
+                <p>{formatAddress(order.customer_snapshot?.address)}</p>
               </div>
 
               <h3 style={{ marginTop: 20 }}>สรุปยอดชำระ</h3>
@@ -202,7 +230,7 @@ export default function OrderTracking() {
                   <span>{formatCurrency(order.shipping_fee)}</span>
                 </div>
                 <div className="summary-row">
-                  <span>ภาษี (7%)</span>
+                  <span>ภาษีมูลค่าเพิ่ม ({order.vat_rate ?? 7}%)</span>
                   <span>{formatCurrency(order.tax_amount)}</span>
                 </div>
                 {order.discount_amount > 0 && (
@@ -226,6 +254,58 @@ export default function OrderTracking() {
                 {order.payment_status === "paid" ? "ชำระแล้ว" : 
                  order.payment_status === "pending" ? "รอชำระ" : "ล้มเหลว"}
               </span>
+
+              {order.payment_status === "pending" && order.payment_method !== "cod" && (
+                <div className="slip-upload-section">
+                  {order.payment_slips && order.payment_slips.length > 0 ? (
+                    <div className="slip-status">
+                      <h3 style={{ marginTop: 20 }}>สลิปการชำระเงิน</h3>
+                      <p>ไฟล์: {order.payment_slips[0].slip_filename}</p>
+                      <p>จำนวนเงิน: {formatCurrency(order.payment_slips[0].amount_thb)} THB</p>
+                      <span className={`slip-status-badge status-${order.payment_slips[0].slip_status}`}>
+                        {order.payment_slips[0].slip_status === "uploaded" ? "รอการตรวจสอบ" :
+                         order.payment_slips[0].slip_status === "approved" ? "อนุมัติแล้ว" :
+                         order.payment_slips[0].slip_status === "rejected" ? "ปฏิเสธแล้ว" : order.payment_slips[0].slip_status}
+                      </span>
+                      {order.payment_slips[0].slip_status === "rejected" && order.payment_slips[0].reject_reason && (
+                        <p className="slip-reject-reason">สาเหตุ: {order.payment_slips[0].reject_reason}</p>
+                      )}
+                      {order.payment_slips[0].slip_status === "rejected" && (
+                        <button onClick={() => setSlipFile(null)} className="btn-secondary">
+                          อัปโหลดใหม่
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="slip-upload-form">
+                      <h3 style={{ marginTop: 20 }}>อัปโหลดสลิปการชำระเงิน</h3>
+                      <p>อัปโหลดรูปภาพหรือไฟล์ PDF ของสลิปการโอนเงิน</p>
+                      {slipError && <div className="slip-error">{slipError}</div>}
+                      <label className="slip-file-label">
+                        <input type="file" accept="image/*,application/pdf" onChange={(e) => setSlipFile(e.target.files?.[0])} />
+                        {slipFile ? slipFile.name : "เลือกไฟล์สลิป"}
+                      </label>
+                      <div className="slip-form-row">
+                        <input
+                          type="number"
+                          placeholder="จำนวนเงิน (THB)"
+                          value={slipAmount}
+                          onChange={(e) => setSlipAmount(e.target.value)}
+                        />
+                        <input
+                          type="text"
+                          placeholder="หมายเหตุ (ถ้ามี)"
+                          value={slipNote}
+                          onChange={(e) => setSlipNote(e.target.value)}
+                        />
+                      </div>
+                      <button onClick={handleSlipUpload} disabled={slipUploading} className="btn-primary">
+                        {slipUploading ? "กำลังอัปโหลด..." : "อัปโหลดสลิป"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>

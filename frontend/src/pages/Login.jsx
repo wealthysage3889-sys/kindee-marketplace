@@ -15,6 +15,19 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 function resolveRedirect(from) {
   const pathname = from?.pathname;
   if (typeof pathname !== "string" || !pathname.startsWith("/") || pathname.startsWith("//")) return "/";
+  // The customer login must never send the browser back into the admin
+  // namespace or back into the login pages themselves (both cause redirect
+  // ping-pong with their own ProtectedRoute).
+  if (
+    pathname === "/login" ||
+    pathname === "/register" ||
+    pathname === "/selladmin" ||
+    pathname.startsWith("/selladmin/") ||
+    pathname === "/admin" ||
+    pathname.startsWith("/admin/")
+  ) {
+    return "/";
+  }
   return `${pathname}${from?.search || ""}${from?.hash || ""}`;
 }
 
@@ -30,7 +43,7 @@ function loadFacebookSdk(appId) {
 }
 
 export default function Login() {
-  const { customer, loading: authLoading, login, loginWithGoogle, loginWithFacebook } = useAuth();
+  const { customer, loading: authLoading, initializing: authInitializing, login, loginWithGoogle, loginWithFacebook } = useAuth();
   const [form, setForm] = useState({ email: "", password: "" });
   const [errors, setErrors] = useState({});
   const [message, setMessage] = useState("");
@@ -51,9 +64,11 @@ const [socialConfig, setSocialConfig] = useState(null);
   const redirectTo = resolveRedirect(from);
 
   useEffect(() => {
-    if (authLoading || !customer.user) return;
+    if (authInitializing || authLoading) return;
+    if (!customer.isAuthenticated || !customer.user) return;
+    if (location.pathname === redirectTo) return;
     navigate(redirectTo, { replace: true });
-  }, [customer.user, authLoading, navigate, redirectTo]);
+  }, [customer.isAuthenticated, customer.user, authLoading, authInitializing, navigate, redirectTo, location.pathname]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;

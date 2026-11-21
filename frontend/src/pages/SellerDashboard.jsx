@@ -15,7 +15,8 @@ const EditIcon = () => (
 export default function SellerDashboard() {
   const { customer } = useAuth();
   const user = customer?.user;
-  const [store, setStore] = useState(null);
+  const [stores, setStores] = useState([]);
+  const [selectedStoreId, setSelectedStoreId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showEditModal, setShowEditModal] = useState(false);
@@ -23,23 +24,17 @@ export default function SellerDashboard() {
   useEffect(() => {
     let cancelled = false;
     const ownerId = user?._id || user?.id;
-    const loadStore = async () => {
+    const loadStores = async () => {
       if (!ownerId) return;
       try {
         setError("");
         setLoading(true);
-        let storeData = null;
-        try {
-          const response = await storeAPI.getStoreByOwner(ownerId);
-          storeData = response?.data || response || null;
-        } catch (err) {
-          if (err.response?.status !== 404 && err.status !== 404) throw err;
-        }
+        const response = await storeAPI.getStoresByOwner(ownerId);
+        const storesList = response?.data || response || [];
         if (!cancelled) {
-          if (storeData) {
-            setStore(storeData);
-          } else {
-            setError("ยังไม่มีร้านค้า กรุณาสร้างร้านค้าก่อน");
+          setStores(storesList);
+          if (storesList.length > 0 && !selectedStoreId) {
+            setSelectedStoreId(storesList[0].id || storesList[0]._id);
           }
         }
       } catch (err) {
@@ -50,9 +45,11 @@ export default function SellerDashboard() {
         if (!cancelled) setLoading(false);
       }
     };
-    loadStore();
+    loadStores();
     return () => { cancelled = true; };
   }, [user?._id, user?.id]);
+
+  const store = stores.find(s => (s.id || s._id) === selectedStoreId);
 
   const openEditModal = () => setShowEditModal(true);
 
@@ -82,13 +79,13 @@ export default function SellerDashboard() {
     );
   }
 
-  if (error) {
+  if (stores.length === 0) {
     return (
       <div className="page seller-dashboard-page">
         <div className="seller-dashboard-header">
           <h1>จัดการร้านค้า</h1>
         </div>
-        <div className="alert alert-error" role="alert">{error}</div>
+        <div className="alert alert-error" role="alert">{error || "ยังไม่มีร้านค้า"}</div>
         <div className="seller-empty-state">
           <p>คุณยังไม่มีร้านค้า</p>
           <button className="btn" onClick={() => window.location.href = "/stores/create"}>
@@ -99,18 +96,45 @@ export default function SellerDashboard() {
     );
   }
 
-  const coverImage = store.coverImage || store.logo || PLACEHOLDER_IMAGE;
+  if (error) {
+    return (
+      <div className="page seller-dashboard-page">
+        <div className="seller-dashboard-header">
+          <h1>จัดการร้านค้า</h1>
+        </div>
+        <div className="alert alert-error" role="alert">{error}</div>
+      </div>
+    );
+  }
+
+  const coverImage = store.coverImage || store.logo || store.logo_url || store.cover_image_url || PLACEHOLDER_IMAGE;
 
   return (
     <div className="page seller-dashboard-page">
       {/* Store Header */}
       <header className="seller-dashboard-header">
+        {stores.length > 1 && (
+          <div className="seller-store-selector">
+            <label htmlFor="dashboard-store-select">เลือกร้านค้า:</label>
+            <select
+              id="dashboard-store-select"
+              value={selectedStoreId}
+              onChange={(e) => setSelectedStoreId(e.target.value)}
+            >
+              {stores.map((s) => (
+                <option key={s.id || s._id} value={s.id || s._id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div className="seller-store-hero">
           <img src={coverImage} alt={store.name} className="seller-store-cover" />
           <div className="seller-store-info">
             <div className="seller-store-avatar">
-              {store.logo ? (
-                <img src={store.logo} alt={store.name} />
+              {store.logo || store.logo_url ? (
+                <img src={store.logo || store.logo_url} alt={store.name} />
               ) : (
                 store.name ? store.name.charAt(0).toUpperCase() : "?"
               )}

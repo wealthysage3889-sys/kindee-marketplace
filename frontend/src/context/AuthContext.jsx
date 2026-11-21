@@ -27,8 +27,14 @@ function readSession(mode) {
     const token = localStorage.getItem(k.token);
     const user = localStorage.getItem(k.user);
     const refreshToken = localStorage.getItem(k.refreshToken);
+    // A persisted user without a token is not a session. Keeping it would make
+    // login pages redirect to a protected page while ProtectedRoute treats the
+    // request as unauthenticated, which ping-pongs forever.
+    if (!token) {
+      return { token: null, user: null, refreshToken: refreshToken || null };
+    }
     return {
-      token: token || null,
+      token,
       user: user ? JSON.parse(user) : null,
       refreshToken: refreshToken || null,
     };
@@ -75,6 +81,10 @@ export function useAuth() {
 export function AuthProvider({ children }) {
   const [customerSession, setCustomerSession] = useState(() => readSession(MODE_CUSTOMER));
   const [adminSession, setAdminSession] = useState(() => readSession(MODE_ADMIN));
+  // `initializing` stays true until the persisted sessions have been checked
+  // against the server. Routing must not redirect while this is true, otherwise
+  // a refresh can redirect to login before a valid session is restored.
+  const [initializing, setInitializing] = useState(true);
   const [loading, setLoading] = useState(false);
 
   const applySession = useCallback((token, user, refreshToken, mode) => {
@@ -119,20 +129,21 @@ export function AuthProvider({ children }) {
 
   const logout = useCallback(
     async (mode = MODE_CUSTOMER) => {
-      try {
-        const session = mode === MODE_ADMIN ? adminSession : customerSession;
-        if (session.refreshToken) {
-          await authAPI.logout(session.refreshToken, mode);
-        }
-      } catch (error) {
-        console.error("Logout error:", error);
-      } finally {
-        clearSession(mode);
-        if (mode === MODE_ADMIN) {
-          setAdminSession({ token: null, user: null, refreshToken: null });
-        } else {
-          setCustomerSession({ token: null, user: null, refreshToken: null });
-        }
+      const session = mode === MODE_ADMIN ? adminSession : customerSession;
+      // Start the server-side revocation first so the request still carries the
+      // access token from storage, then clear locally without waiting on the
+      // network. A stalled logout must not trap the user on a protected page.
+      const revocation = session.refreshToken
+        ? authAPI.logout(session.refreshToken, mode)
+        : null;
+      if (revocation) {
+        revocation.catch((error) => console.error("Logout error:", error));
+      }
+      clearSession(mode);
+      if (mode === MODE_ADMIN) {
+        setAdminSession({ token: null, user: null, refreshToken: null });
+      } else {
+        setCustomerSession({ token: null, user: null, refreshToken: null });
       }
     },
     [adminSession, customerSession]
@@ -251,19 +262,26 @@ export function AuthProvider({ children }) {
   // try a single refresh; if that fails we clear the session so the user is
   // sent back to /login instead of holding a dead token.
   const validateSession = useCallback(
-    async (mode = MODE_CUSTOMER) => {
-      const session = mode === MODE_ADMIN ? adminSession : customerSession;
-      if (!session.token) return;
+    async (mode = MODE_CUSTOMER, sessionSnapshot = null) => {
+      const session = sessionSnapshot || (mode === MODE_ADMIN ? adminSession : customerSession);
+      if (!session?.token) return;
 
       const setSession = mode === MODE_ADMIN ? setAdminSession : setCustomerSession;
+      // Only clear if the session is still the one we validated: a login that
+      // completes while this request is in flight must never be wiped out.
+      // Check storage too, since the API helpers read the token from there.
+      const clearIfCurrent = () => {
+        if (readSession(mode).token !== session.token) return;
+        clearSession(mode);
+        setSession((prev) => (prev.token === session.token ? { token: null, user: null, refreshToken: null } : prev));
+      };
 
       try {
         await authAPI.getProfile(mode);
         // Token still good — nothing to do.
       } catch (error) {
         if (error?.status !== 401 || !session.refreshToken) {
-          clearSession(mode);
-          setSession({ token: null, user: null, refreshToken: null });
+          clearIfCurrent();
           return;
         }
 
@@ -279,8 +297,23 @@ export function AuthProvider({ children }) {
   );
 
   useEffect(() => {
-    validateSession(MODE_CUSTOMER);
-    validateSession(MODE_ADMIN);
+    let cancelled = false;
+    const bootstrap = async () => {
+      const customerSnapshot = readSession(MODE_CUSTOMER);
+      const adminSnapshot = readSession(MODE_ADMIN);
+      try {
+        await Promise.all([
+          validateSession(MODE_CUSTOMER, customerSnapshot),
+          validateSession(MODE_ADMIN, adminSnapshot),
+        ]);
+      } finally {
+        if (!cancelled) setInitializing(false);
+      }
+    };
+    bootstrap();
+    return () => {
+      cancelled = true;
+    };
     // Run once on mount to reconcile persisted sessions with the server.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -314,7 +347,10 @@ export function AuthProvider({ children }) {
     isAuthenticated: !!adminSession.token,
   };
 
-  const isAdmin = ["admin", "owner"].includes(adminSession.user?.role);
+  // Single source of truth for "can use the admin namespace": a token AND an
+  // admin/owner role. Login pages and ProtectedRoute both read this value, so
+  // they can never disagree and bounce a request back and forth.
+  const isAdmin = !!adminSession.token && ["admin", "owner"].includes(adminSession.user?.role);
   const isSeller = customerSession.user?.role === "seller";
   const isCourier = customerSession.user?.role === "courier";
   const user = customerSession.user;
@@ -323,6 +359,7 @@ export function AuthProvider({ children }) {
 
   const value = {
     loading,
+    initializing,
     customer,
     admin,
     user,

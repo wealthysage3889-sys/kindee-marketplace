@@ -10,6 +10,8 @@ const MODAL_TITLES = {
   password: "เปลี่ยนรหัสผ่าน",
   addAdmin: "เพิ่มแอดมิน",
   socialLogin: "ตั้งค่า Google / Social Login",
+  exchangeRate: "ตั้งค่าอัตราแลกเปลี่ยน THB → MMK",
+  vat: "ตั้งค่าภาษีมูลค่าเพิ่ม",
 };
 
 const MoreVerticalIcon = () => (
@@ -55,6 +57,18 @@ const LogoutIcon = () => (
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" />
   </svg>
 );
+const ExchangeRateIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <line x1="12" y1="1" x2="12" y2="23" />
+    <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+  </svg>
+);
+const VatIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 22l-2-2" />
+    <circle cx="12" cy="8" r="7" />
+  </svg>
+);
 const StoreProductsIcon = () => (
   <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z" /><line x1="3" y1="6" x2="21" y2="6" /><path d="M16 10a4 4 0 0 1-8 0" />
@@ -78,10 +92,10 @@ const StoreSettingsIcon = () => (
 );
 
 const ADMIN_STORE_TILES = [
-  { key: "products", label: "จัดการสินค้า", Icon: StoreProductsIcon, to: "/selladmin/products" },
-  { key: "orders", label: "คำสั่งซื้อของลูกค้า", Icon: OrderIcon, to: "/selladmin/reports" },
-  { key: "stats", label: "สถิติยอดขาย", Icon: StatsIcon, to: "/selladmin/reports" },
-  { key: "store-settings", label: "ตั้งค่าร้านค้า", Icon: StoreSettingsIcon, to: "/selladmin/account" },
+  { key: "kbzpay", label: "ตั้งค่า(Boxer)", Icon: StoreProductsIcon },
+  { key: "orders", label: "รอตั้งชื่อ", Icon: OrderIcon, to: "/selladmin/reports" },
+  { key: "stats", label: "รอตั้งชื่อ", Icon: StatsIcon, to: "/selladmin/reports" },
+  { key: "store-settings", label: "รอตั้งชื่อ", Icon: StoreSettingsIcon, to: "/selladmin/account" },
 ];
 
 const emptySocial = () => ({
@@ -104,9 +118,19 @@ export default function AdminAccount() {
   const [passwordForm, setPasswordForm] = useState({ password: "", confirm: "" });
   const [adminForm, setAdminForm] = useState({ name: "", email: "", password: "" });
   const [socialForm, setSocialForm] = useState(emptySocial());
+  const [exchangeRateForm, setExchangeRateForm] = useState({ rate: "", updatedAt: "" });
+  const [vatForm, setVatForm] = useState({ rate: "", updatedAt: "" });
   const [store, setStore] = useState(null);
   const [storeLoading, setStoreLoading] = useState(true);
   const [storeModalOpen, setStoreModalOpen] = useState(false);
+  const [kbzpayOpen, setKbzpayOpen] = useState(false);
+  const [kbzpayForm, setKbzpayForm] = useState({ accountName: "", phoneNumber: "", receiverName: "", enabled: true });
+  const [kbzpayQrFile, setKbzpayQrFile] = useState(null);
+  const [kbzpayQrPreview, setKbzpayQrPreview] = useState(null);
+  const [kbzpaySaving, setKbzpaySaving] = useState(false);
+  const [kbzpayError, setKbzpayError] = useState("");
+  const [kbzpaySuccess, setKbzpaySuccess] = useState("");
+  const [kbzpaySettings, setKbzpaySettings] = useState(null);
   const menuRef = useRef(null);
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -119,13 +143,49 @@ export default function AdminAccount() {
       setStoreLoading(true);
       try {
         const response = await storeAPI.getStoreByOwner(ownerId, "admin");
-        if (active) setStore(response?.data || response || null);
+        // getStoreByOwner returns an array of stores for the owner.
+        // Normalize to a single store object for this page.
+        const stores = Array.isArray(response?.data) ? response.data : Array.isArray(response) ? response : [];
+        const firstValid = stores.find((s) => s && (s._id || s.id)) || null;
+        if (active) setStore(firstValid);
       } catch { if (active) setStore(null); }
       finally { if (active) setStoreLoading(false); }
     };
     loadStore();
     return () => { active = false; };
   }, [user?._id, user?.id]);
+
+  // โหลดการตั้งค่า KBZPay จริงของร้านค้านี้เมื่อเปิด popup ตั้งค่าการชำระเงิน
+  useEffect(() => {
+    let active = true;
+    if (!kbzpayOpen || !store) return;
+    const storeId = store._id || store.id;
+    if (!storeId) return;
+    setKbzpayError("");
+    const loadSettings = async () => {
+      try {
+        const response = await storeAPI.getKbzpaySettings(storeId, "admin");
+        const data = response?.data || response || null;
+        if (!active) return;
+        if (data) {
+          setKbzpaySettings(data);
+          setKbzpayForm({
+            accountName: data.accountName || "",
+            phoneNumber: data.phoneNumber || "",
+            receiverName: data.receiverName || "",
+            enabled: data.enabled !== undefined ? data.enabled : true,
+          });
+        }
+        if (data?.qrUrl) {
+          setKbzpayQrPreview(data.qrUrl);
+        }
+      } catch {
+        if (active) setKbzpaySettings(null);
+      }
+    };
+    loadSettings();
+    return () => { active = false; };
+  }, [kbzpayOpen, store]);
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -136,7 +196,13 @@ export default function AdminAccount() {
     return () => { document.removeEventListener("mousedown", handleClickOutside); document.removeEventListener("keydown", handleEscape); };
   }, [menuOpen]);
 
-  const handleLogout = () => { setMenuOpen(false); logout("admin"); navigate("/selladmin/login"); };
+  const handleLogout = async () => {
+    setMenuOpen(false);
+    // Clear the admin session and let ProtectedRoute redirect declaratively.
+    // Navigating before the state commit makes the login page observe the
+    // still-active session and bounce back to /selladmin.
+    await logout("admin");
+  };
 
   const openProfile = () => {
     setMenuOpen(false); setFormError(""); setFormSuccess("");
@@ -183,7 +249,102 @@ export default function AdminAccount() {
     setModal("socialLogin");
   };
 
+  const openExchangeRate = async () => {
+    setMenuOpen(false); setFormError(""); setFormSuccess("");
+    try {
+      const response = await adminAPI.getSettings("exchange_rate");
+      const list = Array.isArray(response?.data) ? response.data : [];
+      const get = (k) => {
+        const row = list.find((s) => String(s.key || '').toLowerCase() === String(k).toLowerCase());
+        return row?.value ?? "";
+      };
+      setExchangeRateForm({
+        rate: get("exchange_rate_thb_mmk") || "",
+        updatedAt: ""
+      });
+    } catch {
+      setExchangeRateForm({ rate: "", updatedAt: "" });
+    }
+    setModal("exchangeRate");
+  };
+
+  const openVatSettings = async () => {
+    setMenuOpen(false); setFormError(""); setFormSuccess("");
+    try {
+      const res = await settingsAPI.getByKey("vat_rate");
+      const rate = res?.data?.value != null ? Number(res.data.value) : 7;
+      setVatForm({
+        rate: Number.isFinite(rate) ? String(rate) : "7",
+        updatedAt: ""
+      });
+    } catch {
+      setVatForm({ rate: "7", updatedAt: "" });
+    }
+    setModal("vat");
+  };
+
   const closeModal = () => { if (saving) return; setModal(null); setFormError(""); setFormSuccess(""); };
+
+  const openKbzpay = () => { setKbzpayQrFile(null); setKbzpayQrPreview(null); setKbzpaySettings(null); setKbzpayOpen(true); };
+
+  const closeKbzpay = () => { if (kbzpaySaving) return; setKbzpayOpen(false); setKbzpayError(""); setKbzpaySuccess(""); setKbzpayQrFile(null); setKbzpayQrPreview(null); setKbzpaySettings(null); };
+
+  const handleKbzpayQrChange = (e) => {
+    const file = e.target.files?.[0] || null;
+    setKbzpayError("");
+    if (file && !file.type.startsWith("image/")) {
+      setKbzpayError("กรุณาเลือกไฟล์รูปภาพ");
+      return;
+    }
+    if (file && file.size > 5 * 1024 * 1024) {
+      setKbzpayError("ขนาดไฟล์ต้องไม่เกิน 5MB");
+      return;
+    }
+    setKbzpayQrFile(file);
+    setKbzpayQrPreview(file ? URL.createObjectURL(file) : null);
+  };
+
+  const handleKbzpaySubmit = async (e) => {
+    e.preventDefault();
+    setKbzpayError("");
+    setKbzpaySuccess("");
+    if (!kbzpayForm.accountName.trim()) { setKbzpayError("กรุณากรอกชื่อบัญชี KBZPay"); return; }
+    if (!kbzpayForm.phoneNumber.trim()) { setKbzpayError("กรุณากรอกเบอร์โทรศัพท์"); return; }
+    if (!kbzpayForm.receiverName.trim()) { setKbzpayError("กรุณากรอกชื่อผู้รับเงิน"); return; }
+
+    const storeId = store?._id || store?.id;
+    if (!storeId) { setKbzpayError("ไม่พบร้านค้า"); return; }
+
+    setKbzpaySaving(true);
+    try {
+      await storeAPI.updateKbzpaySettings(storeId, {
+        accountName: kbzpayForm.accountName.trim(),
+        phoneNumber: kbzpayForm.phoneNumber.trim(),
+        receiverName: kbzpayForm.receiverName.trim(),
+        enabled: kbzpayForm.enabled,
+      }, "admin");
+
+      if (kbzpayQrFile) {
+        await storeAPI.uploadKbzpayQr(storeId, kbzpayQrFile, "admin");
+      }
+
+      // โหลดค่าล่าสุดกลับมาแสดงหลังบันทึก
+      const response = await storeAPI.getKbzpaySettings(storeId, "admin");
+      const data = response?.data || response || null;
+      if (data) {
+        setKbzpaySettings(data);
+        if (data.qrUrl) setKbzpayQrPreview(data.qrUrl);
+      }
+
+      setKbzpayQrFile(null);
+      setKbzpaySuccess("บันทึกการตั้งค่า KBZPay เรียบร้อยแล้ว");
+      setTimeout(() => { closeKbzpay(); }, 800);
+    } catch (err) {
+      setKbzpayError(err.message || "บันทึกการตั้งค่า KBZPay ไม่สำเร็จ");
+    } finally {
+      setKbzpaySaving(false);
+    }
+  };
 
   const handleProfileSubmit = async (e) => {
     e.preventDefault(); setFormError(""); setFormSuccess("");
@@ -253,6 +414,56 @@ export default function AdminAccount() {
     finally { setSaving(false); }
   };
 
+  const handleExchangeRateSubmit = async (e) => {
+    e.preventDefault(); setFormError(""); setFormSuccess("");
+    const rate = Number(exchangeRateForm.rate);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      setFormError("กรุณากรอกอัตราแลกเปลี่ยนที่ถูกต้อง (ตัวเลขมากกว่า 0)");
+      return;
+    }
+    setSaving(true);
+    try {
+      const settings = [
+        { key: "exchange_rate_thb_mmk", value: String(rate), category: "exchange_rate", isPublic: true },
+      ];
+      await adminAPI.bulkUpdateSettings(settings);
+      setFormSuccess("บันทึกอัตราแลกเปลี่ยน THB → MMK เรียบร้อยแล้ว");
+      setTimeout(() => setModal(null), 800);
+    } catch (err) { setFormError(err.message || "บันทึกอัตราแลกเปลี่ยนไม่สำเร็จ"); }
+    finally { setSaving(false); }
+  };
+
+  const handleVatSubmit = async (e) => {
+    e.preventDefault(); setFormError(""); setFormSuccess("");
+    const rate = Number(vatForm.rate);
+    if (!Number.isFinite(rate)) {
+      setFormError("กรุณากรอกอัตราภาษีเป็นตัวเลข");
+      return;
+    }
+    if (rate < 0) {
+      setFormError("อัตราภาษีติดลบไม่ได้");
+      return;
+    }
+    if (rate > 100) {
+      setFormError("อัตราภาษีต้องไม่เกิน 100%");
+      return;
+    }
+    setSaving(true);
+    try {
+      const settings = [
+        { key: "vat_rate", value: String(rate), category: "vat", isPublic: true, description: "ภาษีมูลค่าเพิ่ม (VAT) อัตราร้อยละ" }
+      ];
+      await adminAPI.bulkUpdateSettings(settings);
+      setFormSuccess("บันทึกอัตราภาษีมูลค่าเพิ่มเรียบร้อยแล้ว");
+      setVatForm((p) => ({ ...p, updatedAt: new Date().toISOString() }));
+      setTimeout(() => setModal(null), 800);
+    } catch (err) {
+      setFormError(err.message || "บันทึกอัตราภาษีไม่สำเร็จ");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const copyText = async (text) => {
     try { await navigator.clipboard.writeText(text); setFormSuccess("คัดลอก Callback URL แล้ว"); setTimeout(() => setFormSuccess(""), 1500); }
     catch { setFormError("คัดลอกไม่สำเร็จ"); }
@@ -264,12 +475,23 @@ export default function AdminAccount() {
     </button>
   );
 
-  const renderStoreTile = ({ key, label, Icon, to }) => (
-    <Link key={key} to={to} className="admin-store-tile">
-      <span className="admin-store-tile-icon"><Icon /></span>
-      <span className="admin-store-tile-label">{label}</span>
-    </Link>
-  );
+  const renderStoreTile = ({ key, label, Icon, to, onClick }) => {
+    const handleClick = key === "kbzpay" ? openKbzpay : onClick;
+    if (handleClick) {
+      return (
+        <button key={key} type="button" className="admin-store-tile" onClick={handleClick}>
+          <span className="admin-store-tile-icon"><Icon /></span>
+          <span className="admin-store-tile-label">{label}</span>
+        </button>
+      );
+    }
+    return (
+      <Link key={key} to={to} className="admin-store-tile">
+        <span className="admin-store-tile-icon"><Icon /></span>
+        <span className="admin-store-tile-label">{label}</span>
+      </Link>
+    );
+  };
 
   const ProviderSection = ({ title, enabled, onToggle, callbackUrl, callbackLabel, children }) => (
     <div className="form-group" style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: 12, marginBottom: 12 }}>
@@ -336,6 +558,8 @@ export default function AdminAccount() {
               {menuItem("ตั้งค่าระบบ", SettingsIcon, openSettings)}
               {menuItem("เพิ่มแอดมิน", PlusIcon, openAddAdmin)}
               {menuItem("ตั้งค่า Google / Social Login", SocialIcon, openSocialLogin)}
+              {menuItem("ตั้งค่าอัตราแลกเปลี่ยน THB → MMK", ExchangeRateIcon, openExchangeRate)}
+              {menuItem("ภาษีมูลค่าเพิ่ม", VatIcon, openVatSettings)}
               <div className="account-menu-divider" />
               {menuItem("ออกจากระบบ", LogoutIcon, handleLogout, true)}
             </div>
@@ -416,7 +640,7 @@ export default function AdminAccount() {
               </form>
             )}
 
-            {modal === "socialLogin" && (
+{modal === "socialLogin" && (
               <form onSubmit={handleSocialSubmit} className="account-modal-form">
                 <div className="account-modal-body">
                   <ProviderSection
@@ -435,7 +659,7 @@ export default function AdminAccount() {
                       <input type="password" className="form-input" value={socialForm.google.clientSecret} onChange={(e) => setSocialForm((p) => ({ ...p, google: { ...p.google, clientSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
                       {socialForm.google.hasSecret && <p className="form-hint" style={{ color: "#059669", fontSize: 12, marginTop: 4 }}>✓ ตั้งค่า Secret ไว้แล้ว — เว้นว่างเพื่อคงค่าเดิม</p>}
                     </div>
-                    <p className="form-hint">ตั้งค่าใน Google Cloud Console &gt; APIs &amp; Services &gt; Credentials (เพิ่ม Authorized JavaScript origins: {origin})</p>
+                    <p className="form-hint">ตั้งค่าใน Google Cloud Console {">"} APIs & Services {">"} Credentials (เพิ่ม Authorized JavaScript origins: {origin})</p>
                   </ProviderSection>
 
                   <ProviderSection
@@ -454,7 +678,7 @@ export default function AdminAccount() {
                       <input type="password" className="form-input" value={socialForm.facebook.appSecret} onChange={(e) => setSocialForm((p) => ({ ...p, facebook: { ...p.facebook, appSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
                       {socialForm.facebook.hasSecret && <p className="form-hint" style={{ color: "#059669", fontSize: 12, marginTop: 4 }}>✓ ตั้งค่า Secret ไว้แล้ว — เว้นว่างเพื่อคงค่าเดิม</p>}
                     </div>
-                    <p className="form-hint">ตั้งค่าใน Facebook Developers &gt; Facebook Login &gt; Settings (Valid OAuth Redirect URIs: {origin}/login และ {origin}/register)</p>
+                    <p className="form-hint">ตั้งค่าใน Facebook Developers {">"} Facebook Login {">"} Settings (Valid OAuth Redirect URIs: {origin}/login และ {origin}/register)</p>
                   </ProviderSection>
 
                   <ProviderSection
@@ -473,7 +697,7 @@ export default function AdminAccount() {
                       <input type="password" className="form-input" value={socialForm.line.channelSecret} onChange={(e) => setSocialForm((p) => ({ ...p, line: { ...p.line, channelSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
                       {socialForm.line.hasSecret && <p className="form-hint" style={{ color: "#059669", fontSize: 12, marginTop: 4 }}>✓ ตั้งค่า Secret ไว้แล้ว — เว้นว่างเพื่อคงค่าเดิม</p>}
                     </div>
-                    <p className="form-hint">ตั้งค่าใน LINE Developers Console &gt; LINE Login &gt; Callback URL: {origin}/oauth/line/callback (เปิด scope: profile, openid, email)</p>
+                    <p className="form-hint">ตั้งค่าใน LINE Developers Console {">"} LINE Login {">"} Callback URL: {origin}/oauth/line/callback (เปิด scope: profile, openid, email)</p>
                   </ProviderSection>
                 </div>
                 <div className="account-modal-actions">
@@ -482,6 +706,117 @@ export default function AdminAccount() {
                 </div>
               </form>
             )}
+
+            {modal === "exchangeRate" && (
+              <form onSubmit={handleExchangeRateSubmit} className="account-modal-form">
+                <div className="account-modal-body">
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="exchange-rate">อัตราแลกเปลี่ยน (1 THB = ? MMK) *</label>
+                    <input
+                      id="exchange-rate"
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      className="form-input"
+                      value={exchangeRateForm.rate}
+                      onChange={(e) => setExchangeRateForm((p) => ({ ...p, rate: e.target.value }))}
+                      placeholder="เช่น 45.50"
+                      autoComplete="off"
+                    />
+                  </div>
+                  <p className="form-hint">
+                    อัตรานี้จะถูกใช้ในการชำระเงินผ่าน KBZPay (Myanmar Wallet) แทนการดึงอัตราจาก API อัตโนมัติ<br />
+                    หากไม่ได้ตั้งค่า ระบบจะใช้ API open.er-api.com ในการดึงอัตราแบบเรียลไทม์
+                  </p>
+                  <p className="form-hint" style={{ color: "#6b7280", fontSize: 12 }}>
+                    ตัวอย่าง: 1 THB = 45.50 MMK
+                  </p>
+                </div>
+                <div className="account-modal-actions">
+                  <button type="button" className="btn-outline" onClick={closeModal} disabled={saving}>ยกเลิก</button>
+                  <button type="submit" className="btn" disabled={saving}>{saving ? "กำลังบันทึก..." : "บันทึกอัตราแลกเปลี่ยน"}</button>
+                </div>
+</form>
+            )}
+            {modal === "vat" && (
+              <form onSubmit={handleVatSubmit} className="account-modal-form">
+                <div className="account-modal-body">
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="vat-rate">อัตราภาษีมูลค่าเพิ่ม (%) *</label>
+                    <input
+                      id="vat-rate"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      max="100"
+                      className="form-input"
+                      value={vatForm.rate}
+                      onChange={(e) => setVatForm((p) => ({ ...p, rate: e.target.value }))}
+                      placeholder="เช่น 7"
+                      autoComplete="off"
+                    />
+                  </div>
+                  <p className="form-hint">
+                    อัตราปัจจุบัน: <strong>{vatForm.rate === "" ? "7" : vatForm.rate}%</strong> (ค่าเริ่มต้นเมื่อยังไม่ได้ตั้งค่า) ·{" "}
+                    ตัวอย่าง: ราคาสินค้า 1,000 บาท × {(Number(vatForm.rate) || 7)}% = ภาษี {((Number(vatForm.rate) || 7) * 10).toFixed(2)} บาท
+                  </p>
+                  <p className="form-hint" style={{ color: "#6b7280", fontSize: 12 }}>
+                    ค่านี้จะถูกใช้คำนวณภาษีในตะกร้าและหน้าชำระเงินสำหรับลูกค้าทุกคน (0% = ปิด VAT)
+                    {vatForm.updatedAt && (
+                      <span> · แก้ไขล่าสุด: {new Date(vatForm.updatedAt).toLocaleString("th-TH")}</span>
+                    )}
+                  </p>
+                </div>
+                <div className="account-modal-actions">
+                  <button type="button" className="btn-outline" onClick={closeModal} disabled={saving}>ยกเลิก</button>
+                  <button type="submit" className="btn" disabled={saving}>{saving ? "กำลังบันทึก..." : "บันทึกอัตราภาษี"}</button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
+{kbzpayOpen && (
+        <div className="account-modal-overlay" role="dialog" aria-modal="true" aria-label="ตั้งค่าการชำระเงิน" onMouseDown={(e) => { if (e.target === e.currentTarget) closeKbzpay(); }}>
+          <div className="account-modal" style={{ maxWidth: 560, width: "100%" }}>
+            <div className="account-modal-header">
+              <h2>ตั้งค่าการชำระเงิน</h2>
+              <button type="button" className="account-modal-close" onClick={closeKbzpay} aria-label="ปิด">×</button>
+            </div>
+            {kbzpayError && <div className="alert alert-error account-modal-alert">{kbzpayError}</div>}
+            {kbzpaySuccess && <div className="alert alert-success account-modal-alert">{kbzpaySuccess}</div>}
+            <form onSubmit={handleKbzpaySubmit} className="account-modal-form">
+              <div className="account-modal-body">
+                <div className="form-group">
+                  <label className="form-label" htmlFor="kbzpay-account-name">ชื่อบัญชี KBZPay *</label>
+                  <input id="kbzpay-account-name" className="form-input" value={kbzpayForm.accountName} onChange={(e) => setKbzpayForm((p) => ({ ...p, accountName: e.target.value }))} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label" htmlFor="kbzpay-phone">เบอร์โทรศัพท์ *</label>
+                  <input id="kbzpay-phone" className="form-input" value={kbzpayForm.phoneNumber} onChange={(e) => setKbzpayForm((p) => ({ ...p, phoneNumber: e.target.value }))} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label" htmlFor="kbzpay-receiver">ชื่อผู้รับเงิน *</label>
+                  <input id="kbzpay-receiver" className="form-input" value={kbzpayForm.receiverName} onChange={(e) => setKbzpayForm((p) => ({ ...p, receiverName: e.target.value }))} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label" htmlFor="kbzpay-qr">QR Code (ไม่เกิน 5MB)</label>
+                  <input id="kbzpay-qr" type="file" accept="image/*" onChange={handleKbzpayQrChange} />
+                  {kbzpayQrPreview && <img src={kbzpayQrPreview} alt="QR preview" style={{ marginTop: 8, maxWidth: 200, borderRadius: 8 }} />}
+                </div>
+                <div className="form-group">
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14 }}>
+                    <input type="checkbox" checked={kbzpayForm.enabled} onChange={(e) => setKbzpayForm((p) => ({ ...p, enabled: e.target.checked }))} />
+                    เปิดใช้งาน
+                  </label>
+                </div>
+              </div>
+              <div className="account-modal-actions">
+                <button type="button" className="btn-outline" onClick={closeKbzpay} disabled={kbzpaySaving}>ยกเลิก</button>
+                <button type="submit" className="btn" disabled={kbzpaySaving}>{kbzpaySaving ? "กำลังบันทึก..." : "บันทึก"}</button>
+              </div>
+            </form>
           </div>
         </div>
       )}

@@ -79,6 +79,54 @@ router.get('/orders', verifyToken, verifyAdmin, [
   });
 }));
 
+// List payment slips (admin)
+router.get('/payment-slips', verifyToken, verifyAdmin, [
+  query('slipStatus').optional().isIn(['uploaded', 'approved', 'rejected']).withMessage('Invalid slip status'),
+  query('customerId').optional().isUUID(),
+  query('page').optional().isInt({ min: 1 }),
+  query('limit').optional().isInt({ min: 1, max: 100 })
+], validate, asyncHandler(async (req, res) => {
+  const result = await orderService.getPaymentSlips(
+    {
+      slip_status: req.query.slipStatus,
+      customer_id: req.query.customerId
+    },
+    {
+      page: parseInt(req.query.page) || 1,
+      limit: parseInt(req.query.limit) || 20
+    }
+  );
+  
+  res.json({
+    success: true,
+    data: result
+  });
+}));
+
+// Approve payment slip (admin)
+router.patch('/payment-slips/:slipId/approve', validateId('slipId'), verifyToken, verifyAdmin, asyncHandler(async (req, res) => {
+  const result = await orderService.approvePaymentSlip(req.user.id, req.params.slipId);
+  
+  res.json({
+    success: true,
+    message: 'Payment slip approved',
+    data: result
+  });
+}));
+
+// Reject payment slip (admin)
+router.patch('/payment-slips/:slipId/reject', validateId('slipId'), verifyToken, verifyAdmin, [
+  body('reason').optional().trim()
+], validate, asyncHandler(async (req, res) => {
+  const result = await orderService.rejectPaymentSlip(req.user.id, req.params.slipId, req.body.reason);
+  
+  res.json({
+    success: true,
+    message: 'Payment slip rejected',
+    data: result
+  });
+}));
+
 // Update order status (admin)
 router.patch('/orders/:id/status', validateId(), verifyToken, verifyAdmin, [
   body('status').isIn(['pending', 'confirmed', 'preparing', 'ready_for_pickup', 'picked_up', 'in_transit', 'delivered', 'cancelled', 'refunded']).withMessage('Invalid status'),
@@ -89,9 +137,13 @@ router.patch('/orders/:id/status', validateId(), verifyToken, verifyAdmin, [
     .update({ 
       status: req.body.status,
       admin_notes: req.body.notes,
-      ...(req.body.status === 'delivered' && { delivered_at: new Date().toISOString(), payment_status: 'paid' }),
+      ...(req.body.status === 'delivered' && { delivered_at: new Date().toISOString() }),
       ...(req.body.status === 'cancelled' && { cancelled_at: new Date().toISOString() }),
       ...(req.body.status === 'refunded' && { cancelled_at: new Date().toISOString() })
+      // payment_status is NOT automatically set to 'paid' on delivery.
+      // COD: payment_status becomes 'paid' only when cash collection is confirmed.
+      // KBZPay: payment_status becomes 'paid' only when payment gateway confirms.
+      // Other methods (transfer, promptpay, card, wallet): payment_status set via webhook/callback.
     })
     .eq('id', req.params.id)
     .select()

@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '../config/supabase.js';
 import { AppError, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
-import { emitNewMessage, emitToUser, emitMessageRead } from './socketService.js';
+import { emitNewMessage, emitToUser, emitMessageRead, emitToConversation } from './socketService.js';
+import { parseCoordinates } from './routeService.js';
 
 // Attachments may arrive as the message_attachments column names (file_url, ...)
 // or as the upload endpoint's response shape (url, fileName, ...). Normalise both
@@ -28,6 +29,9 @@ const normalizeAttachment = (attachment = {}) => {
 };
 
 // Create or get direct conversation between customer and store
+// customer_id is derived from authenticated identity server-side; never trust client input.
+// Uses unique index (customer_id, store_id) WHERE type='store_customer' AND customer_id IS NOT NULL
+// with conflict retry to guarantee exactly one conversation under concurrency.
 export const getOrCreateConversation = async (customerId, storeId, storeOrderId = null, context = {}) => {
   // The store must exist, otherwise a conversation would be created against
   // nothing and the owner member insert would fail silently.
@@ -45,7 +49,47 @@ export const getOrCreateConversation = async (customerId, storeId, storeOrderId 
     throw new AppError('Store owner is not configured', 500);
   }
 
-  // Check for existing conversation
+  // A store owner is already a member (as admin) of every room of that store,
+  // so there is no customer-side conversation to create for them.
+  const sameUser = String(store.owner_id) === String(customerId);
+  console.info('[chat.getOrCreateConversation]', {
+    storeId,
+    reqUserId: customerId,
+    storeOwnerId: store.owner_id,
+    role: context.role ?? null,
+    sameUser
+  });
+  if (sameUser) {
+    throw new ValidationError('Cannot start a conversation with your own store');
+  }
+
+  // Fast path: try to find existing conversation by customer_id + store_id (uses partial unique index)
+  const { data: existingByCustomer } = await supabaseAdmin
+    .from('conversations')
+    .select('id')
+    .eq('type', 'store_customer')
+    .eq('store_id', storeId)
+    .eq('customer_id', customerId)
+    .maybeSingle();
+
+  if (existingByCustomer) {
+    // Verify membership before returning
+    const { data: member } = await supabaseAdmin
+      .from('conversation_members')
+      .select('id')
+      .eq('conversation_id', existingByCustomer.id)
+      .eq('profile_id', customerId)
+      .is('left_at', null)
+      .maybeSingle();
+    if (member) {
+      return await getConversationById(existingByCustomer.id);
+    }
+    // If membership missing (edge case), fall through to create/repair
+  }
+
+  // Fallback: search by membership (handles legacy NULL customer_id rows).
+  // Deterministic order (oldest first, then id) so when multiple legacy
+  // conversations match the same customer we always pick the same one.
   let query = supabaseAdmin
     .from('conversations')
     .select(`
@@ -53,7 +97,9 @@ export const getOrCreateConversation = async (customerId, storeId, storeOrderId 
       members:conversation_members!inner(profile_id)
     `)
     .eq('type', 'store_customer')
-    .eq('store_id', storeId);
+    .eq('store_id', storeId)
+    .order('created_at', { ascending: true, nullsFirst: true })
+    .order('id', { ascending: true });
 
   if (storeOrderId) {
     query = query.eq('store_order_id', storeOrderId);
@@ -69,54 +115,86 @@ export const getOrCreateConversation = async (customerId, storeId, storeOrderId 
   for (const conv of conversations || []) {
     const isMember = (conv.members || []).some(m => m.profile_id === customerId);
     if (isMember) {
+      // Backfill customer_id if NULL (idempotent)
+      if (conv.customer_id === null) {
+        await supabaseAdmin
+          .from('conversations')
+          .update({ customer_id: customerId })
+          .eq('id', conv.id)
+          .is('customer_id', null);
+      }
       return await getConversationById(conv.id);
     }
   }
 
-  // A store owner is already a member (as admin) of every room of that store,
-  // so there is no customer-side conversation to create for them.
-  const sameUser = String(store.owner_id) === String(customerId);
-  // Temporary non-secret diagnostic log for "Cannot start a conversation with your own store" investigation.
-  console.info('[chat.getOrCreateConversation]', {
-    storeId,
-    reqUserId: customerId,
-    storeOwnerId: store.owner_id,
-    role: context.role ?? null,
-    sameUser
-  });
-  if (sameUser) {
-    throw new ValidationError('Cannot start a conversation with your own store');
-  }
+  // Create new conversation with customer_id; retry on unique conflict
+  const maxRetries = 3;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const { data: conversation, error } = await supabaseAdmin
+      .from('conversations')
+      .insert({
+        type: 'store_customer',
+        store_id: storeId,
+        store_order_id: storeOrderId,
+        customer_id: customerId
+      })
+      .select()
+      .single();
 
-  // Create new conversation
-  const { data: conversation, error } = await supabaseAdmin
-    .from('conversations')
-    .insert({
-      type: 'store_customer',
-      store_id: storeId,
-      store_order_id: storeOrderId
-    })
-    .select()
-    .single();
+    if (!error) {
+      // Add members: the customer is a plain member, the store owner is the
+      // conversation admin. The owner always comes from stores.owner_id.
+      const { error: memberError } = await supabaseAdmin
+        .from('conversation_members')
+        .insert([
+          { conversation_id: conversation.id, profile_id: customerId, role: 'member' },
+          { conversation_id: conversation.id, profile_id: store.owner_id, role: 'admin' }
+        ]);
 
-  if (error) {
+      if (memberError) {
+        // If member insert fails, clean up conversation and retry
+        await supabaseAdmin.from('conversations').delete().eq('id', conversation.id);
+        if (attempt === maxRetries - 1) {
+          throw new AppError(`Failed to add conversation members: ${memberError.message}`, 500);
+        }
+        continue;
+      }
+
+      return getConversationById(conversation.id);
+    }
+
+    // Unique conflict on (customer_id, store_id) - another request won the race.
+    // Match the constraint name via error.constraint (PostgREST/pg 12+) instead
+    // of substring-matching the error message, which varies by Postgres
+    // version and locale. Fall back to the legacy message check only when the
+    // driver did not surface the constraint field.
+    const isStoreCustomerUniqueConflict =
+      error.code === '23505' &&
+      (error.constraint === 'ux_conversations_store_customer' ||
+        (!error.constraint && typeof error.message === 'string' &&
+          error.message.includes('ux_conversations_store_customer')));
+
+    if (isStoreCustomerUniqueConflict) {
+      // Fetch the winning conversation and return it
+      const { data: winner } = await supabaseAdmin
+        .from('conversations')
+        .select('id')
+        .eq('type', 'store_customer')
+        .eq('store_id', storeId)
+        .eq('customer_id', customerId)
+        .maybeSingle();
+      if (winner) {
+        return await getConversationById(winner.id);
+      }
+      // If not found (should not happen), retry
+      continue;
+    }
+
+    // Other error - throw
     throw new AppError(`Conversation creation failed: ${error.message}`, 500);
   }
 
-  // Add members: the customer is a plain member, the store owner is the
-  // conversation admin. The owner always comes from stores.owner_id.
-  const { error: memberError } = await supabaseAdmin
-    .from('conversation_members')
-    .insert([
-      { conversation_id: conversation.id, profile_id: customerId, role: 'member' },
-      { conversation_id: conversation.id, profile_id: store.owner_id, role: 'admin' }
-    ]);
-
-  if (memberError) {
-    throw new AppError(`Failed to add conversation members: ${memberError.message}`, 500);
-  }
-
-  return getConversationById(conversation.id);
+  throw new AppError('Conversation creation failed after retries', 500);
 };
 
 // Get conversation by ID
@@ -177,12 +255,14 @@ const getLatestMessagesByConversation = async (conversationIds) => {
 
 // Get conversations for user
 export const getUserConversations = async (userId, filters = {}, pagination = {}) => {
-  const { type, store_id, page = 1, limit = 20 } = filters;
+  const { type, store_id, page = 1, limit = 20, include_hidden = false } = filters;
 
-  // First, get conversation IDs where the user is an active member
+  // First, get conversation IDs where the user is an active member.
+  // Hidden chats are excluded from the list but stay readable by id and keep
+  // every message/order record intact.
   const { data: memberConversations, error: memberError } = await supabaseAdmin
     .from('conversation_members')
-    .select('conversation_id')
+    .select('conversation_id, is_hidden')
     .eq('profile_id', userId)
     .is('left_at', null);
 
@@ -190,7 +270,9 @@ export const getUserConversations = async (userId, filters = {}, pagination = {}
     throw new AppError(`Failed to fetch user conversations: ${memberError.message}`, 500);
   }
 
-  const conversationIds = (memberConversations || []).map((m) => m.conversation_id);
+  const conversationIds = (memberConversations || [])
+    .filter((m) => include_hidden === true || m.is_hidden !== true)
+    .map((m) => m.conversation_id);
 
   if (conversationIds.length === 0) {
     return {
@@ -210,6 +292,9 @@ export const getUserConversations = async (userId, filters = {}, pagination = {}
         profile_id,
         unread_count,
         last_read_at,
+        last_read_message_id,
+        alias,
+        is_hidden,
         profile:profiles(id, name, avatar_url, role)
       )
     `, { count: 'exact' })
@@ -242,7 +327,7 @@ export const getUserConversations = async (userId, filters = {}, pagination = {}
 
 // Get messages for conversation
 export const getMessages = async (conversationId, userId, pagination = {}) => {
-  const { page = 1, limit = 50, before_id } = pagination;
+  const { page = 1, limit = 50, before_id, after_id } = pagination;
   
   // Verify membership
   await getConversationById(conversationId, userId);
@@ -271,6 +356,22 @@ export const getMessages = async (conversationId, userId, pagination = {}) => {
     
     if (beforeMsg) {
       query = query.lt('created_at', beforeMsg.created_at);
+    }
+  }
+
+  // Reconnect catch-up: return everything after the newest message the client
+  // already has. `gte` (not `gt`) is used so messages sharing the exact same
+  // timestamp are not dropped; the client de-duplicates by message id.
+  if (after_id) {
+    const { data: afterMsg } = await supabaseAdmin
+      .from('messages')
+      .select('created_at')
+      .eq('id', after_id)
+      .eq('conversation_id', conversationId)
+      .single();
+
+    if (afterMsg) {
+      query = query.gte('created_at', afterMsg.created_at);
     }
   }
   
@@ -626,10 +727,14 @@ export const muteConversation = async (conversationId, userId, muted = true) => 
 };
 
 // Upload message attachment
-export const uploadMessageAttachment = async (messageId, fileData, userId = null) => {
+export const uploadMessageAttachment = async (messageId, fileData, userId) => {
+  if (!userId) {
+    throw new AppError('Authenticated userId is required for attachment upload', 401);
+  }
+
   const { data: message, error } = await supabaseAdmin
     .from('messages')
-    .select('id, conversation_id, is_deleted')
+    .select('id, conversation_id, is_deleted, sender_id')
     .eq('id', messageId)
     .single();
 
@@ -639,9 +744,7 @@ export const uploadMessageAttachment = async (messageId, fileData, userId = null
 
   // Membership is required: the service role key bypasses RLS, so without this
   // check any authenticated user could attach files to someone else's message.
-  if (userId) {
-    await getConversationById(message.conversation_id, userId);
-  }
+  await getConversationById(message.conversation_id, userId);
 
   const attachment = normalizeAttachment(fileData);
 
@@ -675,7 +778,7 @@ export const getStoreConversations = async (storeId, ownerId, filters = {}, pagi
     throw new AppError('Store not found or not authorized', 403);
   }
 
-  const { status, page = 1, limit = 20 } = filters;
+  const { status, page = 1, limit = 20, include_spam = false } = filters;
 
   let query = supabaseAdmin
     .from('conversations')
@@ -685,13 +788,20 @@ export const getStoreConversations = async (storeId, ownerId, filters = {}, pagi
         profile_id,
         unread_count,
         last_read_at,
-        profile:profiles(id, name, avatar_url)
+        last_read_message_id,
+        alias,
+        is_hidden,
+        profile:profiles(id, name, avatar_url, role)
       )
     `, { count: 'exact' })
     .eq('store_id', storeId);
 
   if (status === 'unread') {
     query = query.gt('conversation_members.unread_count', 0);
+  }
+
+  if (!include_spam) {
+    query = query.neq('is_spam', true);
   }
 
   query = query
@@ -714,4 +824,161 @@ export const getStoreConversations = async (storeId, ownerId, filters = {}, pagi
     conversations,
     pagination: { page, limit, total: count, totalPages: Math.ceil((count || 0) / limit) }
   };
+};
+
+// Mark conversation as spam (store owner only)
+export const markConversationSpam = async (conversationId, userId) => {
+  const conversation = await getConversationById(conversationId, userId);
+  
+  // Verify user is store owner/admin
+  const membership = conversation.members.find(m => String(m.profile_id) === String(userId));
+  if (!membership || !['admin', 'owner'].includes(membership.role)) {
+    throw new AppError('Not authorized to mark spam', 403);
+  }
+  
+  if (conversation.is_spam) {
+    return conversation;
+  }
+  
+  const { data: updated, error } = await supabaseAdmin
+    .from('conversations')
+    .update({ 
+      is_spam: true,
+      spam_marked_at: new Date().toISOString(),
+      spam_marked_by: userId
+    })
+    .eq('id', conversationId)
+    .select()
+    .single();
+  
+  if (error) {
+    throw new AppError(`Failed to mark spam: ${error.message}`, 500);
+  }
+  
+  return updated;
+};
+
+// Restore conversation from spam (store owner only)
+export const restoreConversationFromSpam = async (conversationId, userId) => {
+  const conversation = await getConversationById(conversationId, userId);
+  
+  // Verify user is store owner/admin
+  const membership = conversation.members.find(m => String(m.profile_id) === String(userId));
+  if (!membership || !['admin', 'owner'].includes(membership.role)) {
+    throw new AppError('Not authorized to restore from spam', 403);
+  }
+  
+  if (!conversation.is_spam) {
+    return conversation;
+  }
+  
+  const { data: updated, error } = await supabaseAdmin
+    .from('conversations')
+    .update({ 
+      is_spam: false,
+      spam_marked_at: null,
+      spam_marked_by: null
+    })
+    .eq('id', conversationId)
+    .select()
+    .single();
+  
+  if (error) {
+    throw new AppError(`Failed to restore from spam: ${error.message}`, 500);
+  }
+  
+  return updated;
+};
+
+// Get spam conversations for store
+export const getSpamConversations = async (storeId, ownerId, pagination = {}) => {
+  const { page = 1, limit = 20 } = pagination;
+  
+  // Verify ownership
+  const { data: store } = await supabaseAdmin
+    .from('stores')
+    .select('id')
+    .eq('id', storeId)
+    .eq('owner_id', ownerId)
+    .single();
+  
+  if (!store) {
+    throw new AppError('Store not found or not authorized', 403);
+  }
+  
+  let query = supabaseAdmin
+    .from('conversations')
+    .select(`
+      *,
+      store:stores(id, name, slug, logo_url),
+      store_order:store_orders(id, store_order_number, status),
+      members:conversation_members!inner(
+        profile_id,
+        unread_count,
+        last_read_at,
+        last_read_message_id,
+        alias,
+        is_hidden,
+        profile:profiles(id, name, avatar_url, role)
+      )
+    `, { count: 'exact' })
+    .eq('store_id', storeId)
+    .eq('is_spam', true)
+    .order('spam_marked_at', { ascending: false })
+    .range((page - 1) * limit, page * limit - 1);
+  
+  const { data, error, count } = await query;
+  
+  if (error) {
+    throw new AppError(`Failed to fetch spam conversations: ${error.message}`, 500);
+  }
+  
+  const latestMessages = await getLatestMessagesByConversation((data || []).map((c) => c.id));
+  const conversations = (data || []).map((conversation) => ({
+    ...conversation,
+    last_message: latestMessages.get(conversation.id) || null,
+  }));
+  
+  return {
+    conversations,
+    pagination: { page, limit, total: count, totalPages: Math.ceil((count || 0) / limit) }
+  };
+};
+
+// Update conversation member alias (rename chat for user)
+export const updateConversationAlias = async (conversationId, userId, alias) => {
+  await getConversationById(conversationId, userId);
+  
+  const { data: updated, error } = await supabaseAdmin
+    .from('conversation_members')
+    .update({ alias: alias?.trim() || null })
+    .eq('conversation_id', conversationId)
+    .eq('profile_id', userId)
+    .select()
+    .single();
+  
+  if (error) {
+    throw new AppError(`Failed to update alias: ${error.message}`, 500);
+  }
+  
+  return updated;
+};
+
+// Update conversation member hidden state (hide chat for user)
+export const updateConversationHidden = async (conversationId, userId, isHidden) => {
+  await getConversationById(conversationId, userId);
+  
+  const { data: updated, error } = await supabaseAdmin
+    .from('conversation_members')
+    .update({ is_hidden: Boolean(isHidden) })
+    .eq('conversation_id', conversationId)
+    .eq('profile_id', userId)
+    .select()
+    .single();
+  
+  if (error) {
+    throw new AppError(`Failed to update hidden state: ${error.message}`, 500);
+  }
+  
+  return updated;
 };

@@ -14,6 +14,7 @@ const fileFilter = (req, file, cb) => {
   const allowedTypes = {
     'avatars': ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
     'store-logos': ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+    'store-kbzpay-qr': ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
     'store-covers': ['image/jpeg', 'image/png', 'image/webp'],
     'product-images': ['image/jpeg', 'image/png', 'image/webp'],
     'chat-attachments': ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],

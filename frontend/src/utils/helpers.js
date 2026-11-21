@@ -94,6 +94,27 @@ export const formatDuration = (seconds) => {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 };
 
+// Formats a delivery/customer address for display. Accepts either a plain
+// string or an address object such as { name, phone, address, district, province, postalCode }.
+// The backend stores delivery_address under customer_snapshot.address, where the street
+// line may be stored under `address` or `street`.
+export const formatAddress = (address) => {
+  if (!address) return "";
+  if (typeof address === "string") return address;
+  const street = address.address || address.street || "";
+  const parts = [street, address.district, address.province, address.postalCode].filter(Boolean);
+  return parts.join(", ");
+};
+
+// Formats a customer snapshot (name, phone, address) into a single display string.
+// Accepts an object { name, phone, address } or a plain string.
+export const formatCustomerAddress = (snapshot) => {
+  if (!snapshot) return "";
+  if (typeof snapshot === "string") return snapshot;
+  const parts = [snapshot.name, snapshot.phone, formatAddress(snapshot.address)].filter(Boolean);
+  return parts.join(" | ");
+};
+
 export const formatThaiPhone = (phone) => {
   if (!phone) return '';
   const cleaned = phone.replace(/[-\s]/g, '');
@@ -114,6 +135,62 @@ export const validateThaiPhone = (phone) => {
   if (!phone) return false;
   const cleaned = phone.replace(/[-\s]/g, '');
   return /^(\+66|0)[0-9]{8,9}$/.test(cleaned);
+};
+
+export const validatePhone = (phone) => {
+  if (!phone) return false;
+  const cleaned = phone.replace(/[-\s]/g, '');
+  // Thai numbers
+  if (/^(\+66|0)[0-9]{8,9}$/.test(cleaned)) return true;
+  // Myanmar numbers (mobile: 9 digits after +95/09, landline: varies)
+  if (/^(\+95|09)[0-9]{7,10}$/.test(cleaned)) return true;
+  return false;
+};
+
+export const formatPhone = (phone) => {
+  if (!phone) return '';
+  const cleaned = phone.replace(/[-\s]/g, '');
+  // Thai numbers
+  if (cleaned.startsWith('+66')) {
+    return cleaned.replace('+66', '0').replace(/(\d{3})(\d{3})(\d{4})/, '$1-$2-$3');
+  }
+  if (/^0[0-9]{9}$/.test(cleaned)) {
+    return cleaned.replace(/(\d{3})(\d{3})(\d{4})/, '$1-$2-$3');
+  }
+  // Myanmar numbers
+  if (cleaned.startsWith('+95')) {
+    const national = cleaned.slice(3);
+    return `+95 ${national.replace(/(\d{2})(\d{3})(\d{4})/, '$1 $2 $3')}`;
+  }
+  if (/^09\d{8,9}$/.test(cleaned)) {
+    return cleaned.replace(/(\d{3})(\d{3})(\d{4})/, '$1-$2-$3');
+  }
+  return cleaned;
+};
+
+export const toThaiDomesticPhone = (phone) => {
+  if (!phone) return '';
+  const cleaned = phone.replace(/[-\s]/g, '');
+  if (cleaned.startsWith('+66')) {
+    return cleaned.replace('+66', '0');
+  }
+  return cleaned;
+};
+
+// Validate phone number for a specific country
+export const validatePhoneForCountry = (phone, countryCode) => {
+  if (!phone) return false;
+  const cleaned = phone.replace(/[-\s]/g, '');
+  
+  if (countryCode === 'TH') {
+    // Thai: +66 or 0 followed by 8-9 digits (total 10-11 with leading 0)
+    return /^(\+66|0)[0-9]{8,9}$/.test(cleaned);
+  }
+  if (countryCode === 'MM') {
+    // Myanmar: +95 or 09 followed by 7-10 digits
+    return /^(\+95|09)[0-9]{7,10}$/.test(cleaned);
+  }
+  return false;
 };
 
 export const generateSlug = (text) => {

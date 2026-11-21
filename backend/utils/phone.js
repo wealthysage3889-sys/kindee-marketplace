@@ -84,3 +84,67 @@ export const toE164ThaiPhone = (value) => {
 
   return null;
 };
+
+// Myanmar phone normalization for E.164 format (+95XXXXXXXXX).
+//
+// Accepted inputs:
+//   - E.164: +95 followed by mobile prefix 9 and 7-9 subscriber digits
+//     (e.g. +959252788463; national significant number is 8-10 digits)
+//   - Domestic Myanmar mobile: 09XXXXXXXX (10-11 digits starting with 09)
+//   - With dashes/spaces
+//
+// Returns E.164 string (+95...) or null.
+export const normalizeMyanmarPhone = (value) => {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') value = String(value);
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+
+  let digits = trimmed.replace(/[^0-9+]/g, '');
+  let international = false;
+
+  if (digits.startsWith('+')) {
+    digits = digits.slice(1);
+    international = true;
+  }
+  if (digits.startsWith('00')) {
+    digits = digits.slice(2);
+    international = true;
+  }
+
+  if (international) {
+    // Country code 95 followed by 7-9 digits
+    if (!/^959\d{7,9}$/.test(digits)) return null;
+    return `+95${digits.slice(2)}`;
+  }
+
+  // Domestic format: 09 followed by 7-9 digits (total 10-11 digits)
+  if (!/^09\d{7,9}$/.test(digits)) return null;
+
+  // Convert domestic 09... -> +95 9... (drop leading 0)
+  return `+95${digits.slice(1)}`;
+};
+
+// Combined E.164 validator for both Thai (+66) and Myanmar (+95) numbers.
+// Returns the E.164 string, or null if invalid.
+export const normalizePhoneE164 = (value) => {
+  const thai = normalizeThaiPhone(value);
+  if (thai) {
+    if (thai.startsWith('+66')) return thai;
+    if (thai.startsWith('0')) return `+66${thai.slice(1)}`;
+  }
+  return normalizeMyanmarPhone(value);
+};
+
+// express-validator compatible predicate for combined TH/MM phone validation.
+// Returns true when the value is a valid Thai or Myanmar phone number.
+export const isPhoneValid = (value) => {
+  if (value === undefined || value === null || value === '') return true;
+  return normalizePhoneE164(value) !== null;
+};
+
+// Custom express-validator rule for combined phone validation.
+export const validatePhone = (value) => {
+  if (isPhoneValid(value)) return true;
+  throw new Error('Invalid phone');
+};

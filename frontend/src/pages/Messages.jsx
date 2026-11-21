@@ -17,6 +17,28 @@ const ChevronLeftIcon = () => (
   </svg>
 );
 
+const MoreIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="1" />
+    <circle cx="19" cy="12" r="1" />
+    <circle cx="5" cy="12" r="1" />
+  </svg>
+);
+
+const EditIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+  </svg>
+);
+
+const EyeOffIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+    <line x1="1" y1="1" x2="23" y2="23" />
+  </svg>
+);
+
 const formatTime = (iso) => {
   try {
     return new Date(iso).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
@@ -41,6 +63,11 @@ export default function Messages() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [openingId, setOpeningId] = useState("");
+  // Three-dot menu state
+  const [menuOpenFor, setMenuOpenFor] = useState(null);
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameValue, setRenameValue] = useState("");
+  
   const location = useLocation();
   const navigate = useNavigate();
   const { customer } = useAuth();
@@ -50,6 +77,7 @@ export default function Messages() {
   const chatsRef = useRef([]);
   const mountedRef = useRef(true);
   const seenMessageIdsRef = useRef(new Set());
+  const menuRef = useRef(null);
 
   const rememberSeen = useCallback((id) => {
     if (id == null) return;
@@ -84,6 +112,8 @@ export default function Messages() {
         },
         lastMessage: c.last_message || null,
         unreadCount: currentMember?.unread_count || 0,
+        alias: currentMember?.alias || null,
+        isHidden: currentMember?.is_hidden || false,
       };
     },
     [currentUserId]
@@ -124,6 +154,18 @@ export default function Messages() {
   useEffect(() => {
     chatsRef.current = conversations;
   }, [conversations]);
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setMenuOpenFor(null);
+        setRenamingId(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   // Realtime: update chat list on new messages
   useEffect(() => {
@@ -268,6 +310,52 @@ export default function Messages() {
     navigate(`/messages/${conversationId}`);
   };
 
+  // Three-dot menu handlers
+  const toggleMenu = (conversationId) => {
+    setMenuOpenFor(menuOpenFor === conversationId ? null : conversationId);
+    setRenamingId(null);
+  };
+
+  const handleRename = async (conversationId, currentAlias) => {
+    setRenamingId(conversationId);
+    setRenameValue(currentAlias || "");
+    setMenuOpenFor(null);
+  };
+
+  const saveRename = async (conversationId) => {
+    try {
+      await chatAPI.updateAlias(conversationId, renameValue.trim(), "customer");
+      loadConversations();
+    } catch (err) {
+      setError(err.message || "ไม่สามารถเปลี่ยนชื่อได้");
+    }
+    setRenamingId(null);
+    setRenameValue("");
+  };
+
+  const cancelRename = () => {
+    setRenamingId(null);
+    setRenameValue("");
+  };
+
+  const handleHide = async (conversationId) => {
+    try {
+      await chatAPI.updateHidden(conversationId, true, "customer");
+      loadConversations();
+    } catch (err) {
+      setError(err.message || "ไม่สามารถซ่อนแชทได้");
+    }
+    setMenuOpenFor(null);
+  };
+
+  const handleKeyDownRename = (e, conversationId) => {
+    if (e.key === "Enter") {
+      saveRename(conversationId);
+    } else if (e.key === "Escape") {
+      cancelRename();
+    }
+  };
+
   return (
     <div className="page customer-page messages-page">
       <div className="customer-page-header">
@@ -292,17 +380,20 @@ export default function Messages() {
             <div className="chat-list">
               {conversations.map((chat) => {
                 const store = chat.store || chat.customer;
-                const storeName = store?.name || "ร้านค้า";
+                const storeName = chat.alias || store?.name || "ร้านค้า";
                 const storeAvatar = store?.logo_url || store?.avatar_url;
                 const lastMsg = chat.lastMessage;
                 const unreadCount = chat.unreadCount || 0;
+                const isMenuOpen = menuOpenFor === chat.id;
+                const isRenaming = renamingId === chat.id;
 
                 return (
                   <div
                     key={chat.id}
                     className="chat-card"
-                    onClick={() => handleChatClick(chat.id)}
-                    style={{ cursor: "pointer" }}
+                    onClick={() => !isRenaming && handleChatClick(chat.id)}
+                    style={{ cursor: isRenaming ? "default" : "pointer", position: "relative" }}
+                    ref={isMenuOpen ? menuRef : null}
                   >
                     <span className="chat-avatar">
                       {storeAvatar ? (
@@ -311,26 +402,73 @@ export default function Messages() {
                         storeName.charAt(0)
                       )}
                     </span>
-                    <div className="chat-info">
-                      <div className="chat-info-top">
-                        <strong className="chat-name">{storeName}</strong>
-                        {lastMsg?.created_at && (
-                          <span className="chat-time">
-                            {formatDate(lastMsg.created_at)} {formatTime(lastMsg.created_at)}
-                          </span>
-                        )}
-                      </div>
-                      <div className="chat-info-bottom">
-                        <span className="chat-preview">
-                          {lastMsg?.sender_id === currentUserId ? "คุณ: " : ""}
-                          {lastMsg?.content || "ไม่มีข้อความ"}
-                        </span>
-                        {unreadCount > 0 && (
-                          <span className="chat-badge">
-                            {unreadCount > 99 ? "99+" : unreadCount}
-                          </span>
-                        )}
-                      </div>
+                    <div className="chat-info" style={{ flex: 1, minWidth: 0 }}>
+                      {isRenaming ? (
+                        <input
+                          type="text"
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onKeyDown={(e) => handleKeyDownRename(e, chat.id)}
+                          onBlur={() => saveRename(chat.id)}
+                          autoFocus
+                          className="chat-rename-input"
+                          style={{ width: "100%", fontSize: "inherit", fontWeight: "bold" }}
+                        />
+                      ) : (
+                        <>
+                          <div className="chat-info-top">
+                            <strong className="chat-name" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{storeName}</strong>
+                            {lastMsg?.created_at && (
+                              <span className="chat-time">
+                                {formatDate(lastMsg.created_at)} {formatTime(lastMsg.created_at)}
+                              </span>
+                            )}
+                          </div>
+                          <div className="chat-info-bottom">
+                            <span className="chat-preview" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {lastMsg?.sender_id === currentUserId ? "คุณ: " : ""}
+                              {lastMsg?.content || "ไม่มีข้อความ"}
+                            </span>
+                            {unreadCount > 0 && (
+                              <span className="chat-badge">
+                                {unreadCount > 99 ? "99+" : unreadCount}
+                              </span>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    {/* Three-dot menu */}
+                    <div className="chat-menu-wrapper">
+                      <button
+                        type="button"
+                        className="chat-menu-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleMenu(chat.id);
+                        }}
+                        aria-label="เมนูเพิ่มเติม"
+                      >
+                        <MoreIcon />
+                      </button>
+                      {isMenuOpen && (
+                        <div className="chat-menu-dropdown">
+                          <button
+                            type="button"
+                            className="chat-menu-item"
+                            onClick={() => handleRename(chat.id, chat.alias)}
+                          >
+                            <EditIcon /> เปลี่ยนชื่อ
+                          </button>
+                          <button
+                            type="button"
+                            className="chat-menu-item"
+                            onClick={() => handleHide(chat.id)}
+                          >
+                            <EyeOffIcon /> ซ่อนแชทนี้
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 );

@@ -250,6 +250,23 @@ export function createFakeSupabase(seed = {}) {
             break;
           }
         }
+        // Idempotent message delivery: ux_messages_client_id is unique on
+        // (conversation_id, sender_id, client_message_id) WHERE client_message_id
+        // IS NOT NULL. Enforce it so order-chat retries collapse to one message.
+        if (table === 'messages' && item.client_message_id !== null && item.client_message_id !== undefined) {
+          const clash = [...tables.messages.values()].some((m) =>
+            m.client_message_id === item.client_message_id &&
+            m.conversation_id === item.conversation_id &&
+            m.sender_id === item.sender_id);
+          if (clash) {
+            uniqueViolations.push({
+              code: '23505',
+              constraint: 'ux_messages_client_id',
+              message: 'duplicate key value violates unique constraint "ux_messages_client_id"',
+            });
+            break;
+          }
+        }
       }
       if (uniqueViolations.length) {
         return { data: null, error: uniqueViolations[0], count: 0 };

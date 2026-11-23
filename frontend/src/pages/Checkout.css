@@ -567,3 +567,28 @@
   font-size: 15px;
   font-weight: 600;
 }
+
+/* Standalone rate error shown on the confirmation step (not inside the
+   payment-option card). Keeps the message and the back button readable. */
+.checkout-form .rate-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #c62828;
+  font-size: 14px;
+}
+
+.checkout-form .rate-error .btn-secondary {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: #e0e0e0;
+  color: #333;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.checkout-form .rate-error .btn-secondary:hover {
+  background: #d5d5d5;
+}

@@ -1,9 +1,9 @@
 import express from 'express';
-import { body, param } from 'express-validator';
+import { body, param, query } from 'express-validator';
 import { validate, validateId } from '../middleware/validate.js';
 import { verifyToken, authorize } from '../middleware/auth.js';
 import { asyncHandler, AppError } from '../middleware/errorHandler.js';
-import { uploadSingle, uploadMultiple, uploadToSupabase, generateFileName, generateStoragePath, getSignedUrl } from '../middleware/upload.js';
+import { uploadSingle, uploadMultiple, uploadToSupabase, generateFileName, generateStoragePath, getSignedUrl, deleteFromSupabase, normalizeStoragePath } from '../middleware/upload.js';
 import { supabaseAdmin } from '../config/supabase.js';
 
 const router = express.Router();
@@ -84,11 +84,14 @@ router.post('/chat/:conversationId', validateId('conversationId'), verifyToken, 
 
 // Get signed URL for private file
 router.get('/signed-url', verifyToken, [
-  body('bucket').isIn(['avatars', 'store-logos', 'store-covers', 'product-images', 'chat-attachments', 'voice-recordings']).withMessage('Invalid bucket'),
-  body('path').notEmpty().withMessage('File path required'),
-  body('expiresIn').optional().isInt({ min: 60, max: 86400 }).withMessage('Invalid expiry')
+  query('bucket').isIn(['avatars', 'store-logos', 'store-covers', 'product-images', 'chat-attachments', 'voice-recordings']).withMessage('Invalid bucket'),
+  query('path').notEmpty().withMessage('File path required'),
+  query('expiresIn').optional().isInt({ min: 60, max: 86400 }).withMessage('Invalid expiry')
 ], validate, asyncHandler(async (req, res) => {
-  const { bucket, path, expiresIn = 3600 } = req.body;
+  const { bucket, path: rawPath, expiresIn = 3600 } = req.query;
+
+  // Normalize object path: never include bucket name as first segment
+  const path = normalizeStoragePath(bucket, rawPath);
   
   // Verify access based on bucket
   let hasAccess = false;
@@ -99,7 +102,7 @@ router.get('/signed-url', verifyToken, [
     const { data: member } = await supabaseAdmin
       .from('conversation_members')
       .select('id')
-      .eq('conversation_id', path.split('/')[1])
+      .eq('conversation_id', path.split('/')[0])
       .eq('profile_id', req.user.id)
       .is('left_at', null)
       .single();
@@ -182,9 +185,7 @@ router.delete('/:bucket/:path(*)', verifyToken, asyncHandler(async (req, res) =>
     throw new AppError('Not authorized to delete this file', 403);
   }
   
-  await supabaseAdmin.storage
-    .from(bucket)
-    .remove([path]);
+  await deleteFromSupabase(supabaseAdmin, bucket, path);
   
   res.json({
     success: true,

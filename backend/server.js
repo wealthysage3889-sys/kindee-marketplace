@@ -8,7 +8,7 @@ import { ensureUploadsDir, uploadsDir } from './config/uploadDir.js';
 import { errorHandler, notFound } from './middleware/errorHandler.js';
 import { responseFormatter } from './middleware/responseFormatter.js';
 import apiRoutes from './routes/index.js';
-import { initialize as initSocket } from './services/socketService.js';
+import { initialize as initSocket, corsOrigin } from './services/socketService.js';
 import { supabaseAdmin, isSupabaseConfigured } from './config/supabase.js';
 import { resolveTrustProxy } from './services/ipLocationService.js';
 
@@ -72,8 +72,8 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 app.use(cors({ 
-  origin: process.env.CLIENT_URL || "*", 
-  credentials: true 
+  origin: corsOrigin,
+  credentials: true
 }));
 app.use(morgan("dev"));
 app.use(express.json({ limit: "10mb" }));

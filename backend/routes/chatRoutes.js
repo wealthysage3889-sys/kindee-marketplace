@@ -6,7 +6,7 @@ import * as chatService from '../services/chatService.js';
 import { getConversationRoute } from '../services/routeService.js';
 import { getConversationIpLocation, getClientIp, recordCustomerIp } from '../services/ipLocationService.js';
 import { asyncHandler, AppError, NotFoundError } from '../middleware/errorHandler.js';
-import { uploadMultiple, uploadToSupabase, generateFileName, generateStoragePath } from '../middleware/upload.js';
+import { uploadMultiple, uploadToSupabase, generateFileName, generateStoragePath, getSignedUrl } from '../middleware/upload.js';
 import { supabaseAdmin } from '../config/supabase.js';
 
 const router = express.Router();
@@ -239,8 +239,11 @@ router.post('/messages/:id/attachments', validateId(), verifyToken, uploadMultip
     
     const result = await uploadToSupabase(supabaseAdmin, 'chat-attachments', filePath, file.buffer, file.mimetype);
     
+    // chat-attachments bucket is private, use signed URL
+    const signedUrl = await getSignedUrl(supabaseAdmin, 'chat-attachments', result.path, 3600);
+    
     const attachment = await chatService.uploadMessageAttachment(req.params.id, {
-      file_url: result.publicUrl,
+      file_url: signedUrl,
       file_name: file.originalname,
       file_size: file.size,
       mime_type: file.mimetype

@@ -9,10 +9,35 @@ const userSockets = new Map(); // userId -> Set of socketIds
 const socketUsers = new Map(); // socketId -> userId
 const userDisconnectAt = new Map(); // userId -> timestamp of last disconnect (grace period tracking)
 
+// Allowed Socket.IO / CORS origins:
+//   * The configured production frontend URL (CLIENT_URL) is always allowed.
+//   * In non-production, localhost loopback origins (Vite dev server on :3000 and
+//     the backend on :5000 when the socket is proxied) are allowed so local
+//     development can establish a WebSocket connection. Loopback addresses are
+//     unreachable from outside the machine, so this does not weaken production
+//     security when NODE_ENV=production.
+const buildAllowedOrigins = () => {
+  const origins = [];
+  const clientUrl = process.env.CLIENT_URL;
+  if (clientUrl) origins.push(clientUrl);
+  if (process.env.NODE_ENV !== 'production') {
+    origins.push('http://localhost:3000', 'http://localhost:5000');
+  }
+  return origins;
+};
+
+// Socket.IO/Express CORS origin callback. Same-origin requests (no Origin
+// header) are allowed; otherwise the origin must be in the allow list.
+export const corsOrigin = (origin, callback) => {
+  if (!origin) return callback(null, true);
+  if (buildAllowedOrigins().includes(origin)) return callback(null, true);
+  return callback(new Error(`Not allowed by CORS: ${origin}`), false);
+};
+
 const initialize = (server) => {
   io = new Server(server, {
     cors: {
-      origin: process.env.CLIENT_URL || '*',
+      origin: corsOrigin,
       methods: ['GET', 'POST'],
       credentials: true
     },

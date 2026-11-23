@@ -1,10 +1,12 @@
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { useSocket } from "../context/SocketContext";
 import { addressAPI, orderAPI } from "../api";
+import { storeAPI } from "../api/product";
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { extractList, formatThaiPhone, validateThaiPhone, formatCurrency, formatDate } from "../utils/helpers";
-import { countOrdersByFilter, matchesOrderFilter, ORDER_FILTERS, orderStatusLabel, paymentStatusLabel } from "../utils/orderFilters";
-import { getPendingPaymentOrders } from "../utils/pendingPayments";
+import { countOrdersByFilter, getReadDeliveredOrderIds, getStoreOrderStatusDisplay, markDeliveredOrdersRead, matchesOrderFilter, ORDER_FILTERS, orderStatusLabel, paymentStatusLabel, sortOrdersByNewest } from "../utils/orderFilters";
+import { getPendingPaymentOrders, getStoreOrders, resolveStoreOrderStoreId, getOrderPaymentCurrency, getOrderPaymentAmount, roundMoney } from "../utils/pendingPayments";
 import StoreLocationMap from "../components/StoreLocationMap";
 import OrderPaymentModal from "../components/OrderPaymentModal";
 import KBZPayPaymentPopup from "../components/KBZPayPaymentPopup";
@@ -175,9 +177,9 @@ const hasValidCoordinates = (address) =>
 
 const PURCHASE_TILES = [
   { key: "topay", label: "ที่ต้องชำระ", Icon: WalletPayIcon, badge: 0 },
-  { key: "toreceive", label: "ที่ต้องจัดส่ง", Icon: BoxIcon, badge: 0 },
-  { key: "toship", label: "ที่ต้องได้รับ", Icon: TruckIcon, badge: 0 },
-  { key: "toreview", label: "ให้คะแนน", Icon: StarIcon, badge: 0 },
+  { key: "toship", label: "ที่ต้องจัดส่ง", Icon: TruckIcon, badge: 0 },
+  { key: "toreceive", label: "ที่ต้องได้รับ", Icon: BoxIcon, badge: 0 },
+  { key: "toreview", label: "รับสินค้าแล้ว", Icon: StarIcon, badge: 0 },
 ];
 
 const WALLET_ITEMS = [
@@ -203,20 +205,15 @@ const OrderListModal = ({ orders, filter, onClose, payableOrders = [], onPay }) 
   const navigate = useNavigate();
 
   const filteredOrders = useMemo(() => {
-    if (!filter || filter === "all") return orders;
-    return orders.filter((order) => matchesOrderFilter(order, filter));
+    const filtered = !filter || filter === "all"
+      ? orders
+      : orders.filter((order) => matchesOrderFilter(order, filter));
+    return sortOrdersByNewest(filtered);
   }, [orders, filter]);
 
   const getFilterLabel = (key) => {
     const f = ORDER_FILTERS.find((fl) => fl.key === key);
     return f?.label || key;
-  };
-
-  const getOrderCurrency = (order) => {
-    if (order.payment_method === "kbzpay" && order.amount_mmk) {
-      return "MMK";
-    }
-    return "THB";
   };
 
   const pendingOrders = useMemo(() => {
@@ -228,12 +225,13 @@ const OrderListModal = ({ orders, filter, onClose, payableOrders = [], onPay }) 
   const currencyGroups = useMemo(() => {
     const groups = {};
     pendingOrders.forEach((order) => {
-      const currency = getOrderCurrency(order);
+      const currency = getOrderPaymentCurrency(order);
+      const amount = getOrderPaymentAmount(order, currency);
       if (!groups[currency]) {
         groups[currency] = { orders: [], total: 0 };
       }
-      groups[currency].orders.push(order);
-      groups[currency].total += Number(order.total_amount || 0);
+      groups[currency].orders.push({ order, amount });
+      groups[currency].total = roundMoney(groups[currency].total + amount);
     });
     return groups;
   }, [pendingOrders]);
@@ -243,7 +241,11 @@ const OrderListModal = ({ orders, filter, onClose, payableOrders = [], onPay }) 
   if (filteredOrders.length === 0) {
     return (
       <div className="modal-order-list-empty">
-        <p>ไม่พบคำสั่งซื้อในหมวด "{getFilterLabel(filter)}"</p>
+        <p>
+          {filter === "toreview"
+            ? "ยังไม่มีออเดอร์ที่รับสินค้าแล้ว"
+            : `ไม่พบคำสั่งซื้อในหมวด "${getFilterLabel(filter)}"`}
+        </p>
       </div>
     );
   }
@@ -270,17 +272,20 @@ const OrderListModal = ({ orders, filter, onClose, payableOrders = [], onPay }) 
           </div>
 
           <div className="modal-order-stores">
-            {(order.store_orders || []).map((storeOrder) => (
-              <div className="modal-order-store" key={storeOrder.id}>
-                <span className="modal-order-store-name">
-                  {storeOrder.store_snapshot?.name || storeOrder.store?.name || "ร้านค้า"}
-                </span>
-                <span className="modal-order-store-total">{formatCurrency(storeOrder.total_amount)}</span>
-                <span className={`modal-store-status status-${storeOrder.status}`}>
-                  {orderStatusLabel(storeOrder.status)}
-                </span>
-              </div>
-            ))}
+            {(order.store_orders || []).map((storeOrder) => {
+              const storeStatus = getStoreOrderStatusDisplay(order.status, storeOrder.status);
+              return (
+                <div className="modal-order-store" key={storeOrder.id}>
+                  <span className="modal-order-store-name">
+                    {storeOrder.store_snapshot?.name || storeOrder.store?.name || "ร้านค้า"}
+                  </span>
+                  <span className="modal-order-store-total">{formatCurrency(storeOrder.total_amount)}</span>
+                  <span className={`modal-store-status ${storeStatus.statusClass}`}>
+                    {storeStatus.label}
+                  </span>
+                </div>
+              );
+            })}
           </div>
 
           <div className="modal-order-card-foot">
@@ -294,12 +299,17 @@ const OrderListModal = ({ orders, filter, onClose, payableOrders = [], onPay }) 
                  order.payment_method === "kbzpay" ? "KBZPay" : order.payment_method}
               </span>
               <span className={`modal-payment-status status-${order.payment_status}`}>
-                {paymentStatusLabel(order.payment_status)}
+                {paymentStatusLabel(order.payment_status, order.status, order.payment_method)}
               </span>
             </div>
             <div className="modal-order-total">
               <span>รวมทั้งสิ้น</span>
-              <strong>{formatCurrency(order.total_amount)}</strong>
+              <strong>
+                {formatCurrency(
+                  getOrderPaymentAmount(order, getOrderPaymentCurrency(order)),
+                  getOrderPaymentCurrency(order)
+                )}
+              </strong>
             </div>
           </div>
         </div>
@@ -314,10 +324,10 @@ const OrderListModal = ({ orders, filter, onClose, payableOrders = [], onPay }) 
                 <span className="modal-summary-count">{group.orders.length} Orders</span>
               </div>
               <div className="modal-summary-total">
-                {group.orders.map((order) => (
+                {group.orders.map(({ order, amount }) => (
                   <div key={order.id} className="modal-summary-order-line">
                     <span>#{order.order_number}</span>
-                    <span>{formatCurrency(order.total_amount, currency)}</span>
+                    <span>{formatCurrency(amount, currency)}</span>
                   </div>
                 ))}
                 <div className="modal-summary-grand-total">
@@ -346,6 +356,7 @@ const OrderListModal = ({ orders, filter, onClose, payableOrders = [], onPay }) 
 export default function Account() {
   const { customer, logout } = useAuth();
   const user = customer?.user;
+  const { on, off } = useSocket();
   const navigate = useNavigate();
   const isLoggedIn = Boolean(user);
 
@@ -354,10 +365,12 @@ export default function Account() {
   const [activeModal, setActiveModal] = useState(null);
   const [payModalOpen, setPayModalOpen] = useState(false);
   const [payPopupOrders, setPayPopupOrders] = useState([]);
+  const [kbzpaySettingsByStore, setKbzpaySettingsByStore] = useState({});
 
   const [orders, setOrders] = useState([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState("");
+  const [ordersLoaded, setOrdersLoaded] = useState(false);
   const [addresses, setAddresses] = useState([]);
   const [addressesLoading, setAddressesLoading] = useState(false);
   const [addressesError, setAddressesError] = useState("");
@@ -374,6 +387,16 @@ export default function Account() {
   const [bankAccounts, setBankAccounts] = useState([]);
   const [financeHistory, setFinanceHistory] = useState([]);
 
+  const [readDeliveredIds, setReadDeliveredIds] = useState(() => new Set());
+  useEffect(() => {
+    setReadDeliveredIds(getReadDeliveredOrderIds(user?.id));
+  }, [user?.id]);
+
+  const unreadDeliveredCount = useMemo(() => {
+    const deliveredIds = orders.filter((order) => matchesOrderFilter(order, "toreview")).map((order) => order?.id).filter(Boolean);
+    return deliveredIds.filter((id) => !readDeliveredIds.has(id)).length;
+  }, [orders, readDeliveredIds]);
+
   const purchaseTileBadges = useMemo(() => countOrdersByFilter(orders), [orders]);
 
   // Every unpaid order of the current customer, regardless of the active
@@ -382,9 +405,9 @@ export default function Account() {
 
   const PURCHASE_TILES = useMemo(() => [
     { key: "topay", label: "ที่ต้องชำระ", Icon: WalletPayIcon, badge: purchaseTileBadges.topay || 0 },
-    { key: "toreceive", label: "ที่ต้องจัดส่ง", Icon: BoxIcon, badge: purchaseTileBadges.toreceive || 0 },
-    { key: "toship", label: "ที่ต้องได้รับ", Icon: TruckIcon, badge: purchaseTileBadges.toship || 0 },
-    { key: "toreview", label: "ให้คะแนน", Icon: StarIcon, badge: purchaseTileBadges.toreview || 0 },
+    { key: "toship", label: "ที่ต้องจัดส่ง", Icon: TruckIcon, badge: purchaseTileBadges.toship || 0 },
+    { key: "toreceive", label: "ที่ต้องได้รับ", Icon: BoxIcon, badge: purchaseTileBadges.toreceive || 0 },
+    { key: "toreview", label: '\u0E23\u0E31\u0E1A\u0E2A\u0E34\u0E19\u0E04\u0E49\u0E32\u0E41\u0E25\u0E49\u0E27', Icon: StarIcon, badge: unreadDeliveredCount || 0 },
   ], [purchaseTileBadges]);
 
   const loadOrders = useCallback(async () => {
@@ -397,10 +420,16 @@ export default function Account() {
       setOrders(Array.isArray(list) ? list : []);
     } catch (err) {
       setOrdersError(err.message || "ไม่สามารถ加载ประวัติคำสั่งซื้อได้");
-    } finally {
-      setOrdersLoading(false);
-    }
+     } finally {
+       setOrdersLoading(false);
+       setOrdersLoaded(true);
+     }
   }, [isLoggedIn]);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    loadOrders();
+  }, [isLoggedIn, loadOrders]);
 
   const loadAddresses = useCallback(async () => {
     if (!isLoggedIn) return;
@@ -457,6 +486,32 @@ export default function Account() {
     }
   }, [activeModal, loadOrders, loadAddresses, loadWallet, loadFinance]);
 
+  // Auto-close the "ที่ต้องชำระ" order list modal once there are no more
+  // orders that still require payment (e.g. after a successful slip submit).
+  // Other category modals are intentionally left untouched.
+  useEffect(() => {
+    if (activeModal !== "orders-topay" || ordersLoading || !ordersLoaded) return;
+    const hasTopay = orders.some((order) => matchesOrderFilter(order, "topay"));
+    if (!hasTopay) {
+      setActiveModal(null);
+      setPayModalOpen(false);
+      setPayPopupOrders([]);
+    }
+  }, [activeModal, orders, ordersLoading, ordersLoaded]);
+
+  // Realtime: refresh orders when an order status changes (e.g. store owner
+  // accepts an order) so the account modal shows the latest status and payment
+  // badge consistently with /selladmin/orders. The customer socket joins the
+  // user_* room on connect, so orderStatusUpdate for this customer arrives here.
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    const onOrderStatusUpdate = () => {
+      loadOrders();
+    };
+    on("orderStatusUpdate", onOrderStatusUpdate);
+    return () => off("orderStatusUpdate", onOrderStatusUpdate);
+  }, [on, off, isLoggedIn, loadOrders]);
+
   const handleOpenModal = (modalName) => setActiveModal(modalName);
 
   const handleCloseModal = () => {
@@ -469,10 +524,42 @@ export default function Account() {
     setAddressFormError("");
   };
 
-  const handlePay = (orders) => {
-    setPayPopupOrders(Array.isArray(orders) ? orders : []);
+  const handlePay = async (orders) => {
+    const orderList = Array.isArray(orders) ? orders : [];
+    setPayPopupOrders(orderList);
+    await loadKbzpaySettings(orderList);
     setPayModalOpen(true);
   };
+
+  const loadKbzpaySettings = useCallback(async (orderList) => {
+    // Resolve store ids from the SAME order data the modal/popup render.
+    // The customer order payload nests the store under store_order.store, so we
+    // must read the id from there (a flat store_order.store_id is not returned).
+    const storeIds = new Set();
+    (Array.isArray(orderList) ? orderList : []).forEach((o) => {
+      getStoreOrders(o).forEach((so) => {
+        const sid = resolveStoreOrderStoreId(so);
+        if (sid) storeIds.add(sid);
+      });
+    });
+    setKbzpaySettingsByStore({});
+    if (!storeIds.size) {
+      return;
+    }
+    const results = await Promise.all(
+      [...storeIds].map((sid) =>
+        storeAPI
+          .getKbzpaySettings(sid, "customer")
+          .then((res) => ({ sid, data: res?.data ?? res ?? null }))
+          .catch(() => ({ sid, data: null }))
+      )
+    );
+    const next = {};
+    results.forEach(({ sid, data }) => {
+      next[sid] = data;
+    });
+    setKbzpaySettingsByStore(next);
+  }, []);
 
   const openAddressForm = (address = null) => {
     setEditingAddressId(address?.id || null);
@@ -651,7 +738,7 @@ export default function Account() {
         if (key === "topay") handleOpenModal("orders-topay");
         else if (key === "toreceive") handleOpenModal("orders-toreceive");
         else if (key === "toship") handleOpenModal("orders-toship");
-        else if (key === "toreview") handleOpenModal("orders-toreview");
+        else if (key === "toreview") { const deliveredIds = orders.filter((order) => matchesOrderFilter(order, "toreview")).map((order) => order?.id).filter(Boolean); markDeliveredOrdersRead(user?.id, deliveredIds); setReadDeliveredIds(getReadDeliveredOrderIds(user?.id)); handleOpenModal("orders-toreview"); }
       }}
     >
       <span className="acct-tile-icon">
@@ -1144,8 +1231,15 @@ return (
           open={payModalOpen}
           onClose={() => setPayModalOpen(false)}
           orders={payPopupOrders}
+          ordersLoading={ordersLoading}
+          kbzpaySettings={kbzpaySettingsByStore}
+          onSubmitted={() => { loadOrders(); }}
         />
       )}
     </div>
   );
 }
+
+
+
+

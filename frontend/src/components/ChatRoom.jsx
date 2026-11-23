@@ -2,10 +2,12 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useSocket } from "../context/SocketContext";
-import { chatAPI, callAPI, uploadAPI, normalizeAttachment } from "../api";
+import { chatAPI, callAPI, uploadAPI, normalizeAttachment, adminAPI } from "../api";
 import { formatDate } from "../utils/helpers";
+import { extractStorageObjectPath } from "../utils/storageUrl";
 import VoiceCallUI from "./VoiceCallUI";
 import ChatRoutePanel from "./ChatRoutePanel";
+import OrderDetailModal from "./OrderDetailModal";
 import "./ChatRoom.css";
 
 const MESSAGE_TYPES = {
@@ -17,6 +19,43 @@ const MESSAGE_TYPES = {
   order_update: "order_update",
   voice_call: "voice_call"
 };
+
+// Order status transition constants (mirrors AdminOrders logic)
+const FORWARD_CHAIN = [
+  "pending",
+  "confirmed",
+  "preparing",
+  "ready_for_pickup",
+  "picked_up",
+  "in_transit",
+  "delivered",
+];
+
+const DELIVERABLE_STATUSES = [
+  "confirmed",
+  "preparing",
+  "ready_for_pickup",
+  "picked_up",
+  "in_transit",
+];
+
+const CANCELLABLE_STATUSES = [
+  "pending",
+  "confirmed",
+  "preparing",
+  "ready_for_pickup",
+  "picked_up",
+];
+
+function getOrderCardStatusActions(status) {
+  if (status === "pending") {
+    return [{ value: "confirmed", label: "รับออเดอร์" }];
+  }
+  if (DELIVERABLE_STATUSES.includes(status)) {
+    return [{ value: "delivered", label: "ส่งเสร็จ" }];
+  }
+  return [];
+}
 
 // The chat room is mounted from two routes:
 //   /messages/:conversationId            -> customer session (kindee:customer:token)
@@ -43,6 +82,66 @@ function attachmentMime(att) {
 function attachmentSize(att) {
   const size = att?.file_size ?? att?.fileSize ?? att?.size ?? 0;
   return size > 0 ? `${(size / 1024).toFixed(1)} KB` : "";
+}
+
+// Chat attachments live in a private Supabase bucket and are persisted as
+// signed URLs that expire (default 1h). A stored URL that has since expired
+// returns 400/403 and the image breaks. This component renders the image and,
+// on load failure, derives the { bucket, path } from the stored URL and fetches
+// a fresh signed URL — so both old and new attachments display without changing
+// where or how files are stored.
+function AttachmentImage({ src, alt, onOpen, mode = "customer" }) {
+  const [resolvedSrc, setResolvedSrc] = useState(src);
+  const [error, setError] = useState(false);
+  const retriedRef = useRef(false);
+
+  useEffect(() => {
+    setResolvedSrc(src);
+    setError(false);
+    retriedRef.current = false;
+  }, [src]);
+
+  const handleError = useCallback(async () => {
+    if (retriedRef.current) {
+      setError(true);
+      return;
+    }
+    const parsed = extractStorageObjectPath(src);
+    if (!parsed) {
+      setError(true);
+      return;
+    }
+    retriedRef.current = true;
+    try {
+      const res = await uploadAPI.getSignedUrl(parsed.bucket, parsed.path, 3600, mode);
+      const fresh = res?.data?.signedUrl;
+      if (fresh) {
+        setResolvedSrc(fresh);
+        setError(false);
+      } else {
+        setError(true);
+      }
+    } catch {
+      setError(true);
+    }
+  }, [src, mode]);
+
+  if (error) {
+    return (
+      <div className="attachment-image-error" role="button" tabIndex={0} onClick={() => onOpen?.(src)}>
+        <span>โหลดรูปภาพไม่สำเร็จ</span>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={resolvedSrc}
+      alt={alt}
+      onError={handleError}
+      onClick={() => onOpen?.(resolvedSrc)}
+    />
+  );
 }
 
 export default function ChatRoom({ conversationId: conversationIdProp, mode: modeProp, initialMessages }) {
@@ -81,6 +180,10 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
   const [activeCall, setActiveCall] = useState(null);
   const [counterpartLastReadId, setCounterpartLastReadId] = useState(null);
   const [routePanelOpen, setRoutePanelOpen] = useState(false);
+  const [orderDetailOpen, setOrderDetailOpen] = useState(false);
+  const [orderDetailId, setOrderDetailId] = useState(null);
+  const [orderActionLoading, setOrderActionLoading] = useState({});
+  const [orderActionError, setOrderActionError] = useState({});
 
   const messagesEndRef = useRef(null);
   const messageInputRef = useRef(null);
@@ -165,6 +268,77 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
     }
   }, [conversationId, mode]);
 
+  // Handle order status change from the order card in chat
+  // Mirrors AdminOrders logic: for "delivered" walk the forward chain from current status
+  const handleOrderStatusChange = useCallback(async (orderId, newStatus, currentStatus) => {
+    if (!orderId || !newStatus) return;
+    if (!isAdminMode) return; // Only allow in admin/selladmin mode
+    // Never re-send a status the order is already in. This prevents a stale
+    // order card (whose snapshot status lags the live order) from firing a
+    // no-op update such as confirmed -> confirmed. The backend also treats a
+    // same-status update as an idempotent no-op as a second line of defence.
+    if (currentStatus && newStatus === currentStatus) return;
+
+    const loadingKey = `${orderId}-${newStatus}`;
+    setOrderActionLoading((prev) => ({ ...prev, [loadingKey]: true }));
+    setOrderActionError((prev) => ({ ...prev, [loadingKey]: "" }));
+
+    try {
+      let hops = [];
+      if (newStatus === "delivered" && DELIVERABLE_STATUSES.includes(currentStatus)) {
+        const currentIndex = FORWARD_CHAIN.indexOf(currentStatus);
+        hops = currentIndex >= 0 ? FORWARD_CHAIN.slice(currentIndex + 1) : [];
+      } else if (newStatus === "confirmed" && currentStatus === "pending") {
+        hops = ["confirmed"];
+      } else {
+        // Order is not in a state this action applies to; skip without error
+        setOrderActionLoading((prev) => ({ ...prev, [loadingKey]: false }));
+        return;
+      }
+
+       let lastOrder = null;
+       for (const hop of hops) {
+         // eslint-disable-next-line no-await-in-loop
+         const res = await adminAPI.updateOrderStatus(orderId, hop, hop === newStatus ? "" : undefined);
+         lastOrder = res?.data || res || lastOrder;
+       }
+       const finalStatus = lastOrder?.status || newStatus;
+       const statusLabels = {
+         pending: "รอร้านค้ายืนยัน",
+         confirmed: "ร้านค้ายืนยันแล้ว",
+         preparing: "กำลังเตรียม",
+         ready_for_pickup: "พร้อมรับ",
+         picked_up: "รับแล้ว",
+         in_transit: "กำลังจัดส่ง",
+         delivered: "ส่งสำเร็จ",
+         cancelled: "ยกเลิก",
+         refunded: "คืนเงิน",
+       };
+       const finalLabel = statusLabels[finalStatus] || finalStatus;
+       // Update the order card in chat from the real backend response
+       setMessages((prev) =>
+         prev.map((m) => {
+           const meta = m.metadata || {};
+           if (meta.kind !== "order_chat" || String(meta.order_id) !== String(orderId)) return m;
+           return {
+             ...m,
+             metadata: {
+               ...meta,
+               order_status: finalStatus,
+               order_status_label: finalLabel,
+             },
+           };
+         })
+       );
+       // Clear error on success
+       setOrderActionError((prev) => ({ ...prev, [loadingKey]: "" }));
+    } catch (err) {
+      setOrderActionError((prev) => ({ ...prev, [loadingKey]: err.message || "เปลี่ยนสถานะไม่สำเร็จ" }));
+    } finally {
+      setOrderActionLoading((prev) => ({ ...prev, [loadingKey]: false }));
+    }
+  }, [isAdminMode]);
+
   // Determine the other party in the conversation (counterpart)
   const currentMember = conversation?.members?.find(
     (m) => String(m.profile_id ?? m.profileId) === String(currentUserId)
@@ -202,78 +376,99 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
 
   // Scroll to bottom
   const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (messagesEndRef.current?.scrollIntoView) {
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
   }, []);
 
   useEffect(() => {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
-  // Socket event handlers
+  // Socket event handlers (stable callbacks so on()/off() can match references
+  // and never leak duplicate listeners on the socket).
+  const handleNewMessage = useCallback((message) => {
+    const incomingConversationId = message?.conversation_id ?? message?.conversationId;
+    // Never touch another room's state.
+    if (incomingConversationId && String(incomingConversationId) !== String(conversationId)) return;
+
+    const senderId = message?.sender_id ?? message?.senderId;
+    if (senderId && currentUserId && String(senderId) === String(currentUserId)) return;
+
+    setMessages(prev => {
+      const id = message?.id ?? message?._id;
+      if (prev.some(m => String(m.id ?? m._id) === String(id))) return prev;
+      const incomingMeta = message?.metadata || {};
+      const incomingOrderId = incomingMeta.order_id ?? incomingMeta.orderId;
+      const incomingStatus = incomingMeta.order_status ?? incomingMeta.orderStatus;
+      let next = prev;
+      if (incomingMeta.kind === "order_chat" && incomingOrderId && incomingStatus) {
+        next = prev.map((m) => {
+          const meta = m.metadata || {};
+          if (meta.kind !== "order_chat") return m;
+          const mid = meta.order_id ?? meta.orderId;
+          if (String(mid) !== String(incomingOrderId)) return m;
+          return {
+            ...m,
+            metadata: {
+              ...meta,
+              order_status: incomingStatus,
+              order_status_label: incomingMeta.order_status_label ?? incomingMeta.orderStatusLabel ?? meta.order_status_label,
+            },
+          };
+        });
+      }
+      return [...next, message];
+    });
+
+    // User is in the room and can see the message -> mark read now.
+    if (visibleRef.current) {
+      markAsRead(message?.id ?? message?._id);
+    }
+  }, [conversationId, currentUserId, markAsRead]);
+
+  const handleCallStatusUpdate = useCallback((data) => {
+    const incomingConvId = data?.conversation_id ?? data?.conversationId;
+    if (incomingConvId && String(incomingConvId) !== String(conversationId)) return;
+
+    const status = data?.status;
+    const duration = data?.duration_seconds ?? 0;
+    const callId = data?.call_id ?? data?.callId;
+    if (!status || !callId) return;
+
+    const statusLabels = {
+      completed: 'สนทนาสำเร็จ',
+      no_answer: 'ไม่ได้รับสาย',
+      cancelled: 'ยกเลิกการโทร',
+      rejected: 'ปฏิเสธสาย',
+      failed: 'โทรไม่สำเร็จ',
+      accepted: 'รับสายแล้ว',
+    };
+    const statusLabel = statusLabels[status] || status;
+    const durationText = duration > 0
+      ? ` • ${Math.floor(duration / 60)}:${String(duration % 60).padStart(2, '0')} นาที`
+      : '';
+
+    // Add as a synthetic system message (voice_call type)
+    const callEventMessage = {
+      id: `call-event-${callId}-${status}`,
+      conversation_id: conversationId,
+      type: 'voice_call',
+      content: `📞 ${statusLabel}${durationText}`,
+      metadata: { call_id: callId, call_status: status, duration_seconds: duration },
+      created_at: new Date().toISOString(),
+      sender_id: data?.caller_id,
+    };
+
+    setMessages(prev => {
+      // Avoid duplicate call events
+      if (prev.some(m => m.id === callEventMessage.id)) return prev;
+      return [...prev, callEventMessage];
+    });
+  }, [conversationId]);
+
   useEffect(() => {
     if (!connected) return;
-
-    const handleNewMessage = (message) => {
-      const incomingConversationId = message?.conversation_id ?? message?.conversationId;
-      // Never touch another room's state.
-      if (incomingConversationId && String(incomingConversationId) !== String(conversationId)) return;
-
-      const senderId = message?.sender_id ?? message?.senderId;
-      if (senderId && currentUserId && String(senderId) === String(currentUserId)) return;
-
-      setMessages(prev => {
-        const id = message?.id ?? message?._id;
-        if (prev.some(m => String(m.id ?? m._id) === String(id))) return prev;
-        return [...prev, message];
-      });
-
-      // User is in the room and can see the message -> mark read now.
-      if (visibleRef.current) {
-        markAsRead(message?.id ?? message?._id);
-      }
-    };
-
-    // Real-time call history: when a call status changes, add a system message
-    // so both parties see the call event appear in chat without refresh.
-    const handleCallStatusUpdate = (data) => {
-      const incomingConvId = data?.conversation_id ?? data?.conversationId;
-      if (incomingConvId && String(incomingConvId) !== String(conversationId)) return;
-
-      const status = data?.status;
-      const duration = data?.duration_seconds ?? 0;
-      const callId = data?.call_id ?? data?.callId;
-      if (!status || !callId) return;
-
-      const statusLabels = {
-        completed: 'สนทนาสำเร็จ',
-        no_answer: 'ไม่ได้รับสาย',
-        cancelled: 'ยกเลิกการโทร',
-        rejected: 'ปฏิเสธสาย',
-        failed: 'โทรไม่สำเร็จ',
-        accepted: 'รับสายแล้ว',
-      };
-      const statusLabel = statusLabels[status] || status;
-      const durationText = duration > 0
-        ? ` • ${Math.floor(duration / 60)}:${String(duration % 60).padStart(2, '0')} นาที`
-        : '';
-
-      // Add as a synthetic system message (voice_call type)
-      const callEventMessage = {
-        id: `call-event-${callId}-${status}`,
-        conversation_id: conversationId,
-        type: 'voice_call',
-        content: `📞 ${statusLabel}${durationText}`,
-        metadata: { call_id: callId, call_status: status, duration_seconds: duration },
-        created_at: new Date().toISOString(),
-        sender_id: data?.caller_id,
-      };
-
-      setMessages(prev => {
-        // Avoid duplicate call events
-        if (prev.some(m => m.id === callEventMessage.id)) return prev;
-        return [...prev, callEventMessage];
-      });
-    };
 
     on("newMessage", handleNewMessage);
     on("callStatusUpdate", handleCallStatusUpdate);
@@ -282,7 +477,7 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
       off("newMessage", handleNewMessage);
       off("callStatusUpdate", handleCallStatusUpdate);
     };
-  }, [conversationId, connected, currentUserId, on, off, markAsRead, messages]);
+  }, [connected, on, off, handleNewMessage, handleCallStatusUpdate]);
 
   // Send message
   const handleSendMessage = async (e) => {
@@ -399,6 +594,132 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
     }
   };
 
+  // Render the rich order card for order_update messages. Falls back to the
+  // plain text body when metadata is missing (legacy/system messages).
+  const renderOrderUpdate = (message) => {
+    const meta = message.metadata || {};
+    const isOrderChat = meta.kind === "order_chat";
+
+    const openOrder = () => {
+      const orderId = meta.order_id;
+      if (orderId) {
+        setOrderDetailId(orderId);
+        setOrderDetailOpen(true);
+      }
+    };
+
+    if (!isOrderChat) {
+      return (
+        <div className="message-order-update">
+          <span className="order-badge">📦 อัปเดตออเดอร์</span>
+          <p>{message.content}</p>
+        </div>
+      );
+    }
+
+    const items = Array.isArray(meta.items) ? meta.items : [];
+    const formatTHB = (amount) => {
+      const n = Number(amount);
+      if (!Number.isFinite(n)) return "฿0.00";
+      return `฿${n.toFixed(2)}`;
+    };
+
+    return (
+      <div className="message-order-card">
+        <div className="order-card-head">
+          <span className="order-card-badge">📦 {meta.headline || "คำสั่งซื้อ"}</span>
+          {meta.store_order_number && (
+            <span className="order-card-number">#{meta.store_order_number}</span>
+          )}
+        </div>
+        {items.length > 0 && (
+          <ul className="order-card-items">
+            {items.map((it, i) => (
+              <li key={it.product_name ? `${it.product_name}-${i}` : i}>
+                <span className="order-card-item-name">{it.product_name}</span>
+                <span className="order-card-item-qty">× {it.quantity}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="order-card-totals">
+          <div className="order-card-row">
+            <span>ยอดรวม</span>
+            <span className="order-card-total">{formatTHB(meta.total_amount)}</span>
+          </div>
+          <div className="order-card-row">
+            <span>ค่าจัดส่ง</span>
+            <span>{formatTHB(meta.shipping_fee)}</span>
+          </div>
+        </div>
+        <div className="order-card-meta">
+          <div className="order-card-row">
+            <span>ชำระเงิน</span>
+            <span>{meta.payment_method_label || meta.payment_method || "-"}</span>
+          </div>
+          <div className="order-card-row">
+            <span>สถานะคำสั่งซื้อ</span>
+            <span className={`order-card-status status-${meta.order_status || ""}`}>
+              {meta.order_status_label || meta.order_status || "-"}
+            </span>
+          </div>
+          <div className="order-card-row">
+            <span>สถานะชำระเงิน</span>
+            <span className={`order-card-status pay-${meta.payment_status || ""}`}>
+              {meta.payment_status_label || meta.payment_status || "-"}
+            </span>
+          </div>
+          {meta.ordered_at && (
+            <div className="order-card-row">
+              <span>วันที่สั่งซื้อ</span>
+              <span>{formatDate(meta.ordered_at)}</span>
+            </div>
+          )}
+        </div>
+        {(meta.order_url || meta.order_id) && (
+          <button type="button" className="order-card-link" onClick={openOrder}>
+            ดูรายละเอียดคำสั่งซื้อ →
+          </button>
+        )}
+        {/* Status change buttons for store owners in selladmin chat */}
+        {isAdminMode && meta.order_id && (() => {
+          const currentStatus = meta.order_status;
+          const actions = getOrderCardStatusActions(currentStatus);
+          if (actions.length === 0) return null;
+
+          return (
+            <div className="order-card-actions">
+              {actions.map((action) => {
+                const loadingKey = `${meta.order_id}-${action.value}`;
+                const isLoading = orderActionLoading[loadingKey];
+                const actionError = orderActionError[loadingKey];
+                const handleClick = () => handleOrderStatusChange(meta.order_id, action.value, currentStatus);
+
+                return (
+                  <button
+                    key={action.value}
+                    type="button"
+                    className={`btn ${action.value === "cancelled" ? "btn-danger" : "btn-primary"}`}
+                    onClick={handleClick}
+                    disabled={isLoading}
+                    style={{ marginTop: 8, marginRight: 8 }}
+                  >
+                    {isLoading ? "กำลังดำเนินการ..." : action.label}
+                  </button>
+                );
+              })}
+              {Object.keys(orderActionError).some(k => k.startsWith(meta.order_id) && orderActionError[k]) && (
+                <div className="order-card-action-error" role="alert" style={{ marginTop: 8, color: "var(--color-error)", fontSize: 13 }}>
+                  {Object.entries(orderActionError).find(([k, v]) => k.startsWith(meta.order_id) && v)?.[1]}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+      </div>
+    );
+  };
+
   // Render message content
   const renderMessageContent = (message) => {
     const attachments = message.attachments || [];
@@ -408,11 +729,11 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
       case "image":
         return (
           <div className="message-image">
-            <img
+            <AttachmentImage
               src={attachmentUrl(firstAttachment) || message.content}
               alt={attachmentName(firstAttachment)}
-              onClick={() => {
-                const url = attachmentUrl(firstAttachment);
+              mode={mode}
+              onOpen={(url) => {
                 if (url) window.open(url, "_blank");
               }}
             />
@@ -439,12 +760,7 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
           <div className="message-system">{message.content}</div>
         );
       case "order_update":
-        return (
-          <div className="message-order-update">
-            <span className="order-badge">📦 อัปเดตออเดอร์</span>
-            <p>{message.content}</p>
-          </div>
-        );
+        return renderOrderUpdate(message);
       case "voice_call":
         return (
           <div className="message-voice-call">
@@ -461,10 +777,11 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
                 {attachments.map((att, i) => (
                   <div key={att.id || i} className="attachment">
                     {attachmentMime(att).startsWith("image/") ? (
-                      <img
+                      <AttachmentImage
                         src={attachmentUrl(att)}
                         alt={attachmentName(att)}
-                        onClick={() => window.open(attachmentUrl(att), "_blank")}
+                        mode={mode}
+                        onOpen={(url) => window.open(url, "_blank")}
                       />
                     ) : (
                       <a href={attachmentUrl(att)} target="_blank" rel="noopener noreferrer">
@@ -699,6 +1016,16 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
           onClose={() => setRoutePanelOpen(false)}
         />
       )}
+
+      <OrderDetailModal
+        isOpen={orderDetailOpen}
+        onClose={() => {
+          setOrderDetailOpen(false);
+          setOrderDetailId(null);
+        }}
+        orderId={orderDetailId}
+        mode={mode}
+      />
     </div>
   );
 }

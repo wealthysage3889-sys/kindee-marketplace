@@ -184,81 +184,20 @@
   background: #f9fafb;
 }
 
-.kbzpay-qr-empty {
-  color: #9ca3af;
-  font-size: 12px;
-}
-
-.kbzpay-currency-group {
-  padding: 10px 0;
-  border-top: 1px solid #f3f4f6;
-}
-
-.kbzpay-currency-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 6px;
-}
-
-.kbzpay-currency-label {
-  font-size: 12px;
-  font-weight: 700;
-  color: #374151;
-}
-
-.kbzpay-currency-count {
-  font-size: 12px;
-  color: #6b7280;
-}
-
-.kbzpay-order-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.kbzpay-order-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  font-size: 12px;
-  background: #fff;
-}
-
-.kbzpay-order-number {
-  font-weight: 700;
-  color: #111827;
-}
-
-.kbzpay-order-date {
-  color: #6b7280;
-}
-
-.kbzpay-order-amount {
-  margin-left: auto;
-  font-weight: 700;
-  color: #111827;
-}
-
-.kbzpay-currency-total {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
+.kbzpay-download-btn,
+.kbzpay-copy-btn {
   margin-top: 6px;
-  font-size: 13px;
-  color: #374151;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-block;
 }
-
-.kbzpay-currency-total strong {
-  color: #111827;
-}
+.kbzpay-copy-btn { margin-left: 8px; margin-top: 0; background: #10b981; }
+.kbzpay-qr-error { display: block; color: #991b1b; font-size: 12px; margin-top: 4px; }
 
 .kbzpay-store-total {
   display: flex;
@@ -284,23 +223,108 @@
   color: #9ca3af;
 }
 
-.kbzpay-order-numbers {
+.kbzpay-slip-upload {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px solid #f3f4f6;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kbzpay-slip-label {
+  color: #374151;
+  font-size: 13px;
+}
+
+.kbzpay-slip-hint {
+  margin: 0;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.kbzpay-slip-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.kbzpay-slip-preview-img {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+
+.kbzpay-slip-filename {
   font-size: 12px;
   color: #6b7280;
-}
-
-.kbzpay-order-numbers strong {
-  color: #374151;
-  display: block;
-  margin-bottom: 4px;
-}
-
-.kbzpay-order-number-list {
   word-break: break-all;
-  line-height: 1.6;
+}
+
+.kbzpay-slip-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.kbzpay-slip-select {
+  display: inline-block;
+  background: #2563eb;
+  color: #fff;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.kbzpay-slip-input {
+  display: none;
+}
+
+.kbzpay-slip-submit {
+  background: #10b981;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.kbzpay-slip-submit:disabled {
+  background: #d1d5db;
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+.kbzpay-slip-error {
+  color: #991b1b;
+  font-size: 12px;
+}
+
+.kbzpay-slip-success {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  color: #065f46;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.kbzpay-slip-success-title {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.kbzpay-slip-success-hint {
+  font-size: 12px;
+  color: #047857;
 }
 
 .kbzpay-popup-foot {
@@ -331,6 +355,52 @@
 }
 
 .kbzpay-popup-done {
+  width: 100%;
+  background: #111827;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Alert popup styles */
+.kbzpay-alert-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.kbzpay-alert-panel {
+  width: min(90vw, 360px);
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  text-align: center;
+}
+
+.kbzpay-alert-title {
+  margin: 0 0 12px;
+  font-size: 17px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.kbzpay-alert-message {
+  margin: 0 0 20px;
+  font-size: 14px;
+  color: #374151;
+  line-height: 1.5;
+}
+
+.kbzpay-alert-btn {
   width: 100%;
   background: #111827;
   color: #fff;

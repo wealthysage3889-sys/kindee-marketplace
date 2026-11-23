@@ -15,7 +15,7 @@ import AdminLogin from "./pages/AdminLogin";
 import SellerDashboard from "./pages/SellerDashboard";
 import SellerOrders from "./pages/SellerOrders";
 import AdminDashboard from "./pages/AdminDashboard";
-import AdminOrders from "./pages/AdminOrders";
+import SellAdminOrders from "./pages/SellAdminOrders";
 import AdminPaymentSlips from "./pages/AdminPaymentSlips";
 import Users from "./pages/Users";
 import Account from "./pages/Account";
@@ -96,7 +96,7 @@ const router = createBrowserRouter([
       { path: "messages", element: <ProtectedRoute mode="admin"><SellAdminMessages /></ProtectedRoute> },
       { path: "messages/:conversationId", element: <ProtectedRoute mode="admin"><ChatRoom mode="admin" /></ProtectedRoute> },
       { path: "account", element: <ProtectedRoute mode="admin"><AdminAccount /></ProtectedRoute> },
-      { path: "orders", element: <ProtectedRoute mode="admin"><AdminOrders /></ProtectedRoute> },
+      { path: "orders", element: <ProtectedRoute mode="seller-or-admin"><SellAdminOrders /></ProtectedRoute> },
       { path: "payment-slips", element: <ProtectedRoute mode="admin"><AdminPaymentSlips /></ProtectedRoute> },
     ],
   },

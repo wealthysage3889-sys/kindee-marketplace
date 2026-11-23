@@ -127,32 +127,19 @@ router.patch('/payment-slips/:slipId/reject', validateId('slipId'), verifyToken,
   });
 }));
 
-// Update order status (admin)
+// Update order status (admin) — validated against the fulfilment workflow.
+// Authorization stays verifyAdmin (admin/owner only); payment_status is never
+// touched here (payment confirmation is a separate slip-review flow).
 router.patch('/orders/:id/status', validateId(), verifyToken, verifyAdmin, [
   body('status').isIn(['pending', 'confirmed', 'preparing', 'ready_for_pickup', 'picked_up', 'in_transit', 'delivered', 'cancelled', 'refunded']).withMessage('Invalid status'),
   body('notes').optional().trim()
 ], validate, asyncHandler(async (req, res) => {
-  const { data: order, error } = await supabaseAdmin
-    .from('orders')
-    .update({ 
-      status: req.body.status,
-      admin_notes: req.body.notes,
-      ...(req.body.status === 'delivered' && { delivered_at: new Date().toISOString() }),
-      ...(req.body.status === 'cancelled' && { cancelled_at: new Date().toISOString() }),
-      ...(req.body.status === 'refunded' && { cancelled_at: new Date().toISOString() })
-      // payment_status is NOT automatically set to 'paid' on delivery.
-      // COD: payment_status becomes 'paid' only when cash collection is confirmed.
-      // KBZPay: payment_status becomes 'paid' only when payment gateway confirms.
-      // Other methods (transfer, promptpay, card, wallet): payment_status set via webhook/callback.
-    })
-    .eq('id', req.params.id)
-    .select()
-    .single();
-  
-  if (error) {
-    throw new AppError(`Order status update failed: ${error.message}`, 500);
-  }
-  
+  const order = await orderService.updateOrderStatusAdmin(
+    req.params.id,
+    req.body.status,
+    req.body.notes
+  );
+
   res.json({
     success: true,
     message: 'Order status updated',

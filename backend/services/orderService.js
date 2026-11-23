@@ -1,7 +1,10 @@
 import { supabaseAdmin } from '../config/supabase.js';
-import { AppError, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
+import { normalizeStoragePath, getSignedUrl } from '../middleware/upload.js';
+import { AppError, ConflictError, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
 import { resolveEffectivePrice, roundMoney } from '../utils/productPricing.js';
-import { emitNewOrder, emitOrderUpdate } from './socketService.js';
+import { emitNewOrder, emitOrderUpdate, emitToStore, emitToUser, emitNotification } from './socketService.js';
+import { createSystemNotification } from './notificationService.js';
+import { sendOrderChatForOrder, sendOrderChatForStoreOrder } from './orderChatService.js';
 import { normalizePhoneE164 } from '../utils/phone.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -13,6 +16,12 @@ export const calculateEffectivePrice = (price, discountPrice) =>
   resolveEffectivePrice(price, discountPrice);
 
 const MAX_QUANTITY = 9999;
+
+// Minimum interval between inline expired-reservation cleanups. The cleanup RPC
+// is an unbounded per-row loop (meant for cron); throttle it so order creation
+// does not scan the whole backlog on every request.
+const RESERVATION_CLEANUP_INTERVAL_MS = 60 * 1000;
+let lastReservationCleanupAt = 0;
 
 // VAT default (7%) used only when the `vat_rate` setting has not been configured yet.
 const VAT_DEFAULT_RATE = 7;
@@ -48,6 +57,21 @@ const buildOrderPlan = async (items) => {
     throw new ValidationError('Order must have at least one item');
   }
 
+  // Best-effort cleanup of expired stock reservations. This RPC is an unbounded
+  // per-row loop meant to run via cron; running it inline on every order creation
+  // would scan the whole backlog and take product row locks under load. Throttle
+  // it to run at most once per interval per process and never fail the order if
+  // it errors.
+  const now = Date.now();
+  if (now - lastReservationCleanupAt >= RESERVATION_CLEANUP_INTERVAL_MS) {
+    lastReservationCleanupAt = now;
+    try {
+      await supabaseAdmin.rpc('cleanup_expired_reservations');
+    } catch (cleanupError) {
+      console.error('cleanup_expired_reservations failed:', cleanupError?.message || cleanupError);
+    }
+  }
+
   const itemsByStore = {};
   for (const item of items) {
     const quantity = Number(item.quantity);
@@ -57,7 +81,7 @@ const buildOrderPlan = async (items) => {
 
     const { data: product } = await supabaseAdmin
       .from('products')
-      .select('id, store_id, name, price, discount_price, stock, images, is_active')
+      .select('id, store_id, name, price, discount_price, stock, reserved_stock, images, is_active')
       .eq('id', item.product_id)
       .single();
 
@@ -69,8 +93,9 @@ const buildOrderPlan = async (items) => {
       throw new ValidationError(`Product ${product.name} is not available`);
     }
 
-    if (product.stock < quantity) {
-      throw new ValidationError(`Insufficient stock for ${product.name}`);
+    const availableStock = (product.stock || 0) - (product.reserved_stock || 0);
+    if (availableStock < quantity) {
+      throw new ValidationError(`Insufficient stock for ${product.name} (available: ${availableStock})`);
     }
 
     // Never price an item at 0. A zero total cannot be paid (payments.amount
@@ -449,6 +474,19 @@ const createOrderInternal = async (customerId, orderData) => {
     throw error;
   }
 
+  // Order-to-Chat: post the order summary into each store's customer<->store
+  // conversation. For COD the order is complete now, so we post immediately.
+  // KBZPay must wait until the customer's slip is submitted successfully
+  // (see submitStorePaymentSlips), so we do NOT post here for kbzpay.
+  // Best-effort and idempotent: a failure never blocks or rolls back the order.
+  if (payment_method === 'cod') {
+    try {
+      await sendOrderChatForOrder(order.id, { event: 'order_created' });
+    } catch (chatError) {
+      console.error('Failed to post COD order to chat:', chatError);
+    }
+  }
+
   // Return full order with store orders
   return getOrderById(order.id);
 };
@@ -602,7 +640,14 @@ export const getOrderById = async (orderId, userId = null, userRole = null) => {
   if (error || !order) {
     throw new NotFoundError('Order');
   }
-  
+
+  // Decorate payment slips with a freshly signed view URL so the Admin order
+  // detail can render the private slip object. slip_url alone may be a bare
+  // storage path (multi-order flow) or an expired public URL (legacy flow).
+  if (Array.isArray(order.payment_slips) && order.payment_slips.length > 0) {
+    order.payment_slips = await withSignedUrls(order.payment_slips);
+  }
+
   return order;
 };
 
@@ -795,7 +840,16 @@ export const updateStoreOrderStatus = async (storeOrderId, ownerId, newStatus, n
   
   // Check if all store orders have same status, update parent order
   await syncParentOrderStatus(storeOrder.parent_order_id);
-  
+
+  // Order-to-Chat: reflect the new status in the order card inside this store's
+  // customer<->store conversation. Idempotent per (store_order, event, status),
+  // so repeated transitions or retries never duplicate cards. Best-effort.
+  try {
+    await sendOrderChatForStoreOrder(storeOrderId, { event: 'status_updated' });
+  } catch (chatError) {
+    console.error('Failed to sync store order status to chat:', chatError);
+  }
+
   return updatedOrder;
 };
 
@@ -1018,6 +1072,93 @@ export const getAllOrders = async (filters = {}, pagination = {}) => {
 };
 
 // ---------------------------------------------------------------------------
+// Order status transitions (shared by the admin order-status endpoint)
+// ---------------------------------------------------------------------------
+// The parent order follows the fulfilment lifecycle. A transition is only
+// allowed to one of the explicitly listed next states, so an admin cannot skip
+// steps (e.g. pending -> delivered) without a supporting rule. Payment status
+// is intentionally NOT part of this map: changing the order status must never
+// confirm a payment (see approveStorePaymentSlip / approvePaymentSlip for that).
+export const ORDER_STATUS_TRANSITIONS = {
+  pending: ['confirmed', 'cancelled'],
+  confirmed: ['preparing', 'cancelled'],
+  preparing: ['ready_for_pickup', 'cancelled'],
+  ready_for_pickup: ['picked_up', 'cancelled'],
+  picked_up: ['in_transit', 'cancelled'],
+  in_transit: ['delivered', 'refunded'],
+  delivered: ['refunded'],
+  cancelled: ['refunded'],
+  refunded: []
+};
+
+export const getAllowedOrderStatusTransitions = (status) =>
+  ORDER_STATUS_TRANSITIONS[status] || [];
+
+// Admin: update a parent order status with workflow validation.
+// - Verifies the order exists.
+// - Rejects transitions that are not allowed by ORDER_STATUS_TRANSITIONS.
+// - Persists to the DB (never React-only).
+// - For COD orders delivered, automatically sets payment_status to 'paid'.
+export const updateOrderStatusAdmin = async (orderId, newStatus, notes) => {
+  const { data: current, error: fetchError } = await supabaseAdmin
+    .from('orders')
+    .select('id, status, payment_method, payment_status')
+    .eq('id', orderId)
+    .single();
+
+  if (fetchError || !current) {
+    throw new NotFoundError('Order');
+  }
+
+  // Idempotent no-op: the order is already in the requested status. This
+  // happens when a client re-sends the status the order already has — e.g. a
+  // stale order card in chat that still shows "รับออเดอร์" after the order was
+  // accepted elsewhere. Return the existing row WITHOUT writing to the DB,
+  // WITHOUT posting to chat, and WITHOUT emitting notifications, so no
+  // duplicate history/notification is created. Genuinely illegal transitions
+  // (a *different*, disallowed status) are still rejected below.
+  if (current.status === newStatus) {
+    return current;
+  }
+
+  const allowed = getAllowedOrderStatusTransitions(current.status);
+  if (!allowed.includes(newStatus)) {
+    throw new ValidationError(
+      `Invalid status transition from ${current.status} to ${newStatus}`
+    );
+  }
+
+  const updateData = {
+    status: newStatus,
+    ...(notes !== undefined && { admin_notes: notes }),
+    ...(newStatus === 'delivered' && { delivered_at: new Date().toISOString() }),
+    ...(newStatus === 'cancelled' && { cancelled_at: new Date().toISOString() }),
+    ...(newStatus === 'refunded' && { cancelled_at: new Date().toISOString() })
+  };
+
+  const { data: order, error } = await supabaseAdmin
+    .from('orders')
+    .update(updateData)
+    .eq('id', orderId)
+    .select()
+    .single();
+
+  if (error) {
+    throw new AppError(`Order status update failed: ${error.message}`, 500);
+  }
+
+  // Order-to-Chat: sync the new status into every affected store conversation.
+  // The admin updates the parent order, so each store_order card is refreshed.
+  try {
+    await sendOrderChatForOrder(orderId, { event: 'status_updated' });
+  } catch (chatError) {
+    console.error('Failed to sync admin order status to chat:', chatError);
+  }
+
+  return order;
+};
+
+// ---------------------------------------------------------------------------
 // Payment slip upload (Existing Order Payment — Phase 1)
 // ---------------------------------------------------------------------------
 
@@ -1123,7 +1264,7 @@ export const uploadPaymentSlip = async (
 
   const { data: { publicUrl } } = await supabaseAdmin.storage
     .from('payment-slips')
-    .getPublicUrl(uploadData.path);
+    .getPublicUrl(normalizeStoragePath('payment-slips', uploadData.path));
 
   // 4. Create payment slip record (ON CONFLICT DO NOTHING as race backstop)
   const { data: slip, error: slipError } = await supabaseAdmin
@@ -1175,7 +1316,7 @@ export const getPaymentSlips = async (filters = {}, pagination = {}) => {
   }
 
   return {
-    slips: data || [],
+    slips: await withSignedUrls(data || []),
     pagination: { page, limit, total: count, totalPages: Math.ceil(count / limit) }
   };
 };
@@ -1272,4 +1413,557 @@ export const rejectPaymentSlip = async (adminId, slipId, rejectReason) => {
   }
 
   return { slip: { id: slipId, slip_status: 'rejected', reject_reason: rejectReason } };
+};
+
+// ===========================================================================
+// Payment slip upload — multi-order, single transfer (Existing Order Payment)
+// ---------------------------------------------------------------------------
+// One file covers one or more KBZPay orders that belong to the SAME store.
+// The customer uploads once; we create one payment_slips row per order (all
+// sharing a submission_id and slip_path), flip each order to 'awaiting_review',
+// and notify the store owner. Money math (amount_mmk / total_amount) is read
+// from the database, never trusted from the client.
+// ===========================================================================
+
+const SLIP_BUCKET = 'payment-slips';
+const SLIP_SIGNED_URL_TTL = 60 * 60; // seconds
+
+// Generate a short-lived signed URL for a private slip object. Never returns a
+// public URL: the bucket is private, so only holders of a signed URL can read it.
+//
+// Uses getSignedUrl() from upload.js so the stored object key is normalized
+// (bucket prefix stripped) before createSignedUrl() is called. Without this,
+// a stored key like `payment-slips/<orderId>/file.jpg` would be signed as
+// `payment-slips/payment-slips/<orderId>/file.jpg` — a double-prefixed key that
+// does not exist in the bucket (same class of bug fixed for chat attachments).
+export const signPaymentSlipUrl = async (slipPath, expiresIn = SLIP_SIGNED_URL_TTL) => {
+  if (!slipPath || typeof slipPath !== 'string') return null;
+  try {
+    return await getSignedUrl(supabaseAdmin, SLIP_BUCKET, slipPath, expiresIn);
+  } catch {
+    return null;
+  }
+};
+
+// Decorate raw slip rows with a freshly signed view URL derived from slip_path
+// (falling back to the legacy slip_url path if slip_path is missing).
+const withSignedUrls = (slips) =>
+  Promise.all((slips || []).map(async (slip) => {
+    const path = slip.slip_path || extractPaymentSlipStoragePath(slip.slip_url);
+    const signedUrl = await signPaymentSlipUrl(path);
+    return { ...slip, slip_view_url: signedUrl };
+  }));
+
+// Submit one transfer slip for one or more orders of a single store.
+export const submitStorePaymentSlips = async (
+  customerId,
+  storeId,
+  orderIds,
+  { fileBuffer, fileName, mimeType, note }
+) => {
+  if (!storeId) throw new ValidationError('กรุณาระบุร้านค้า');
+  if (!Array.isArray(orderIds) || orderIds.length === 0) {
+    throw new ValidationError('กรุณาเลือกคำสั่งซื้ออย่างน้อยหนึ่งรายการ');
+  }
+  const uniqueOrderIds = Array.from(new Set(orderIds));
+  if (uniqueOrderIds.length === 0) {
+    throw new ValidationError('กรุณาเลือกคำสั่งซื้ออย่างน้อยหนึ่งรายการ');
+  }
+  if (!fileBuffer || !fileName) {
+    throw new ValidationError('กรุณาแนบไฟล์สลิป');
+  }
+
+  // 1) Load the orders with their store membership and store owner.
+  const { data: orders, error: ordersError } = await supabaseAdmin
+    .from('orders')
+    .select(`
+      id, customer_id, order_number, payment_status, payment_method,
+      total_amount, amount_mmk,
+      store_orders:store_orders(store_id, store:stores!store_id(id, name, owner_id))
+    `)
+    .in('id', uniqueOrderIds);
+
+  if (ordersError) {
+    throw new AppError(`โหลดคำสั่งซื้อไม่สำเร็จ: ${ordersError.message}`, 500);
+  }
+
+  if (!orders || orders.length === 0) {
+    throw new NotFoundError('ไม่พบคำสั่งซื้อที่เลือก');
+  }
+  if (orders.length !== uniqueOrderIds.length) {
+    const foundIds = new Set((orders || []).map((o) => o.id));
+    const missingIds = uniqueOrderIds.filter((id) => !foundIds.has(id));
+    throw new NotFoundError(`ไม่พบคำสั่งซื้อบางรายการ (ID ที่ไม่พบ: ${missingIds.join(', ')})`);
+  }
+
+  let storeOwnerId = null;
+  let storeName = null;
+  const payableOrders = [];
+
+  for (const order of orders) {
+    if (order.customer_id !== customerId) {
+      throw new AppError('ไม่มีสิทธิ์อัปโหลดสลิปสำหรับคำสั่งซื้อนี้', 403);
+    }
+    if (order.payment_method !== 'kbzpay') {
+      throw new ValidationError(`คำสั่งซื้อ #${order.order_number} ไม่ใช่การชำระเงินผ่าน KBZPay`);
+    }
+    if (!['pending', 'awaiting_review'].includes(order.payment_status)) {
+      throw new ValidationError(
+        `คำสั่งซื้อ #${order.order_number} ไม่อยู่ในสถานะรอชำระเงิน (สถานะ: ${order.payment_status})`
+      );
+    }
+    const soList = order.store_orders || [];
+    const match = soList.find((so) => {
+      if (so.store_id === storeId) return true;
+      if (so.store?.id === storeId) return true;
+      if (so.store_snapshot?.store_id === storeId) return true;
+      return false;
+    });
+    if (!match) {
+      throw new ValidationError(`คำสั่งซื้อ #${order.order_number} ไม่ได้สังกัดร้านค้าที่เลือก`);
+    }
+    const ownerId = match.store?.owner_id || null;
+    if (!storeOwnerId && ownerId) storeOwnerId = ownerId;
+    if (!storeName && match.store?.name) storeName = match.store.name;
+    payableOrders.push(order);
+  }
+
+  // 2) Duplicate guard: any order that already has a non-rejected slip for THIS
+  //    store is locked. Scoped by store_id so a single parent order spanning
+  //    multiple stores can carry one slip per store (see 022 migration).
+  const { data: existingSlips, error: existingError } = await supabaseAdmin
+    .from('payment_slips')
+    .select('id, order_id, slip_status')
+    .in('order_id', uniqueOrderIds)
+    .eq('store_id', storeId)
+    .neq('slip_status', 'rejected');
+
+  if (existingError) {
+    throw new AppError(`ตรวจสอบสลิปเดิมไม่สำเร็จ: ${existingError.message}`, 500);
+  }
+  if (existingSlips && existingSlips.length > 0) {
+    const locked = new Set(existingSlips.map((s) => s.order_id));
+    const names = payableOrders
+      .filter((o) => locked.has(o.id))
+      .map((o) => `#${o.order_number}`)
+      .join(', ');
+    throw new ValidationError(`มีการส่งสลิปสำหรับคำสั่งซื้อ ${names} แล้ว กรุณารอการตรวจสอบ`);
+  }
+
+  // 2b) Clear any previously REJECTED slips for these orders at this store so a
+  //     re-upload after rejection can insert cleanly. Without this the insert in
+  //     step 5 collides with the surviving rejected row under the
+  //     UNIQUE(order_id, store_id) index and the customer gets permanently stuck
+  //     (order back to pending, yet no new slip can be attached). The old storage
+  //     objects are intentionally left in place: a rejected submission's file may
+  //     be shared across several orders (same submission_id), so deleting it here
+  //     could break other orders' slip views. Orphan cleanup is out of scope.
+  const { error: clearRejectedError } = await supabaseAdmin
+    .from('payment_slips')
+    .delete()
+    .in('order_id', uniqueOrderIds)
+    .eq('store_id', storeId)
+    .eq('slip_status', 'rejected');
+
+  if (clearRejectedError) {
+    throw new AppError(`ล้างสลิปเดิมที่ไม่อนุมัติไม่สำเร็จ: ${clearRejectedError.message}`, 500);
+  }
+
+  // 3) Money math from the DB (never trust a client-supplied amount).
+  let amountMmk = 0;
+  let amountThb = 0;
+  for (const order of payableOrders) {
+    const mmk = Number(order.amount_mmk);
+    amountMmk += Number.isFinite(mmk) ? mmk : 0;
+    amountThb += Number(order.total_amount) || 0;
+  }
+  amountMmk = roundMoney(amountMmk);
+  amountThb = roundMoney(amountThb);
+  if (!(amountMmk > 0) && !(amountThb > 0)) {
+    throw new ValidationError('ยอดชำระเงินไม่ถูกต้อง');
+  }
+
+  // 4) Upload the single file under the first order's folder.
+  const primaryOrderId = payableOrders[0].id;
+  const timestamp = Date.now();
+  const safeFileName = String(fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const slipPath = `${SLIP_BUCKET}/${primaryOrderId}/${timestamp}-${safeFileName}`;
+  const submissionId = uuidv4();
+
+  const { error: uploadError } = await supabaseAdmin.storage
+    .from(SLIP_BUCKET)
+    .upload(slipPath, fileBuffer, { contentType: mimeType, upsert: false });
+
+  if (uploadError) {
+    throw new AppError(`อัปโหลดไฟล์สลิปไม่สำเร็จ: ${uploadError.message}`, 500);
+  }
+
+  // 5) Create one slip row per order, all sharing submission_id + slip_path.
+  const rows = payableOrders.map((order) => ({
+    order_id: order.id,
+    customer_id: customerId,
+    store_id: storeId,
+    submission_id: submissionId,
+    slip_path: slipPath,
+    slip_url: slipPath,
+    slip_filename: safeFileName,
+    slip_mime: mimeType || null,
+    slip_status: 'uploaded',
+    currency: 'MMK',
+    amount: roundMoney(Number(order.amount_mmk) || 0),
+    amount_thb: roundMoney(Number(order.total_amount) || 0),
+    note: note || null
+  }));
+
+  const { data: insertedSlips, error: insertError } = await supabaseAdmin
+    .from('payment_slips')
+    .insert(rows)
+    .select();
+
+  if (insertError) {
+    // Roll back the uploaded file so a failed insert leaves no orphan object.
+    await supabaseAdmin.storage.from(SLIP_BUCKET).remove([slipPath]);
+    // A unique violation on payment_slips.order_id means a concurrent submit
+    // already created a slip for one of these orders — surface it as 409
+    // instead of a generic 500 so the client knows the order is already locked.
+    if (insertError.code === '23505') {
+      throw new ConflictError('มีการส่งสลิปสำหรับคำสั่งซื้อบางรายการแล้ว กรุณารอการตรวจสอบ');
+    }
+    throw new AppError(`บันทึกสลิปไม่สำเร็จ: ${insertError.message}`, 500);
+  }
+
+  // 6) Flip every order to 'awaiting_review' — guarded on still being 'pending'
+  //    so a concurrent approval cannot be overwritten back to awaiting review.
+  const { data: updatedOrders, error: updateError } = await supabaseAdmin
+    .from('orders')
+    .update({ payment_status: 'awaiting_review' })
+    .in('id', uniqueOrderIds)
+    .eq('payment_status', 'pending')
+    .select('id, order_number, payment_status');
+
+  if (updateError) {
+    throw new AppError(`อัปเดตสถานะคำสั่งซื้อไม่สำเร็จ: ${updateError.message}`, 500);
+  }
+
+  // 6b) Order-to-Chat: the slip is now submitted successfully, so post the
+  //     order summary into the customer<->store conversation for each affected
+  //     order. This is the ONLY point KBZPay orders enter chat — never at order
+  //     creation. Best-effort and idempotent; never fails the slip submission.
+  for (const updated of updatedOrders || []) {
+    try {
+      await sendOrderChatForOrder(updated.id, { event: 'slip_submitted' });
+    } catch (chatError) {
+      console.error('Failed to post KBZPay order to chat:', chatError);
+    }
+  }
+
+  const result = {
+    submissionId,
+    slipPath,
+    amount: amountMmk,
+    amountThb,
+    currency: 'MMK',
+    storeId,
+    storeName,
+    slips: insertedSlips || [],
+    orders: updatedOrders || []
+  };
+
+  // 7) Notify the store owner (best-effort: never fail the upload on notify).
+  try {
+    await notifyStoreOwnerOfSlip({
+      storeId,
+      storeName,
+      ownerId: storeOwnerId,
+      orders: payableOrders,
+      amount: amountMmk,
+      currency: 'MMK',
+      submittedAt: new Date().toISOString()
+    });
+  } catch (notifyError) {
+    console.error('Failed to notify store owner of payment slip:', notifyError);
+  }
+
+  return result;
+};
+
+// Notify the store owner (and store room) that a slip is awaiting review.
+const notifyStoreOwnerOfSlip = async ({ storeId, storeName, ownerId, orders, amount, currency, submittedAt }) => {
+  const orderNumbers = orders.map((o) => `#${o.order_number}`).join(', ');
+  const orderIds = orders.map((o) => o.id);
+  const primaryOrderId = orderIds[0] || null;
+
+  if (ownerId) {
+    await createSystemNotification(
+      ownerId,
+      'payment',
+      'มีการแนบสลิปการชำระเงินใหม่',
+      `ลูกค้าส่งสลิป KBZPay สำหรับ ${orderNumbers} จำนวน ${amount.toLocaleString('en-US')} ${currency} เมื่อ ${submittedAt} รอตรวจสอบ`,
+      primaryOrderId,
+      'order',
+      {
+        kind: 'payment_slip_uploaded',
+        store_id: storeId,
+        store_name: storeName,
+        order_ids: orderIds,
+        order_numbers: orderNumbers,
+        amount,
+        currency,
+        submitted_at: submittedAt,
+      }
+    );
+  }
+
+  // Real-time: tell the store room and the owner so the order list refreshes.
+  emitToStore(storeId, 'paymentSlipUploaded', {
+    storeId,
+    orderIds,
+    orderNumbers,
+    amount,
+    currency,
+    submittedAt
+  });
+  if (ownerId) {
+    emitToUser(ownerId, 'paymentSlipUploaded', { storeId, orderIds, orderNumbers, amount, currency, submittedAt });
+  }
+};
+
+// Verify a user owns (or manages, or is platform admin of) the given store.
+const assertStoreAccess = async (storeId, userId, userRole) => {
+  if (['admin', 'owner'].includes(userRole)) return true;
+  const { data: store } = await supabaseAdmin
+    .from('stores')
+    .select('id, owner_id')
+    .eq('id', storeId)
+    .maybeSingle();
+  if (!store) return false;
+  if (store.owner_id === userId) return true;
+  const { data: member } = await supabaseAdmin
+    .from('store_memberships')
+    .select('id')
+    .eq('store_id', storeId)
+    .eq('profile_id', userId)
+    .is('left_at', null)
+    .is('suspended_at', null)
+    .in('role', ['manager', 'staff'])
+    .maybeSingle();
+  return Boolean(member);
+};
+
+// Store owner: list payment slips for their own store, with signed view URLs.
+export const getStorePaymentSlips = async (storeId, user, filters = {}, pagination = {}) => {
+  const hasAccess = await assertStoreAccess(storeId, user.id, user.role);
+  if (!hasAccess) {
+    throw new AppError('ไม่มีสิทธิ์เข้าถึงสลิปของร้านค้านี้', 403);
+  }
+
+  const { slip_status, page = 1, limit = 20 } = filters;
+  let query = supabaseAdmin
+    .from('payment_slips')
+    .select(`
+      *,
+      order:orders(id, order_number, payment_status, customer_id, total_amount, amount_mmk,
+        customer:profiles!customer_id(id, name, phone)),
+      store:stores(id, name)
+    `, { count: 'exact' })
+    .eq('store_id', storeId);
+
+  if (slip_status) query = query.eq('slip_status', slip_status);
+
+  query = query
+    .order('created_at', { ascending: false })
+    .range((page - 1) * limit, page * limit - 1);
+
+  const { data, error, count } = await query;
+  if (error) {
+    throw new AppError(`โหลดสลิปไม่สำเร็จ: ${error.message}`, 500);
+  }
+
+  const slips = await withSignedUrls(data);
+  return {
+    slips,
+    pagination: { page, limit, total: count, totalPages: Math.ceil(count / limit) }
+  };
+};
+
+// Store owner: approve one slip — verify store ownership, then set the order
+// to 'paid' (manual confirmation by the store owner, never automatic).
+export const approveStorePaymentSlip = async (userId, userRole, slipId) => {
+  const { data: slip, error: slipError } = await supabaseAdmin
+    .from('payment_slips')
+    .select('*, order:orders(id, order_number, payment_status, customer_id, store_orders:store_orders(store_id))')
+    .eq('id', slipId)
+    .single();
+
+  if (slipError || !slip) {
+    throw new NotFoundError('ไม่พบสลิปการชำระเงิน');
+  }
+
+  const storeId = slip.store_id || slip.order?.store_orders?.[0]?.store_id;
+  if (storeId) {
+    const hasAccess = await assertStoreAccess(storeId, userId, userRole);
+    if (!hasAccess) throw new AppError('ไม่มีสิทธิ์อนุมัติสลิปของร้านค้านี้', 403);
+  } else if (!['admin', 'owner'].includes(userRole)) {
+    throw new AppError('ไม่มีสิทธิ์อนุมัติสลิปนี้', 403);
+  }
+
+  if (slip.slip_status !== 'uploaded') {
+    throw new ValidationError(
+      slip.slip_status === 'approved'
+        ? 'สลิปนี้ได้รับการอนุมัติแล้ว'
+        : 'สลิปนี้ถูกปฏิเสธแล้ว ไม่สามารถอนุมัติซ้ำได้'
+    );
+  }
+
+  const { error: updateSlipError } = await supabaseAdmin
+    .from('payment_slips')
+    .update({ slip_status: 'approved', reviewed_by: userId, reviewed_at: new Date().toISOString() })
+    .eq('id', slipId);
+  if (updateSlipError) {
+    throw new AppError(`อนุมัติสลิปไม่สำเร็จ: ${updateSlipError.message}`, 500);
+  }
+
+  // Finalize the parent order as 'paid' only once EVERY non-rejected slip for
+  // the order is approved. A single parent order can span multiple stores (each
+  // pays separately), so one store's approval must not mark the whole order paid.
+  const { data: siblingSlips, error: siblingError } = await supabaseAdmin
+    .from('payment_slips')
+    .select('id, slip_status')
+    .eq('order_id', slip.order_id)
+    .neq('slip_status', 'rejected');
+  if (siblingError) {
+    throw new AppError(`ตรวจสอบสถานะสลิปไม่สำเร็จ: ${siblingError.message}`, 500);
+  }
+  const allApproved =
+    (siblingSlips || []).length > 0 &&
+    siblingSlips.every((s) => s.slip_status === 'approved');
+
+  const { data: order, error: orderError } = await supabaseAdmin
+    .from('orders')
+    .update({ payment_status: allApproved ? 'paid' : 'awaiting_review' })
+    .eq('id', slip.order_id)
+    .select('id, order_number, payment_status, customer_id')
+    .single();
+  if (orderError) {
+    throw new AppError(`อัปเดตสถานะคำสั่งซื้อไม่สำเร็จ: ${orderError.message}`, 500);
+  }
+
+  // Only tell the customer the payment is fully confirmed once the whole order
+  // is paid; per-store approvals that leave the order in awaiting_review are not
+  // a final confirmation.
+  if (allApproved) {
+    try {
+      await createSystemNotification(
+        slip.customer_id,
+        'payment',
+        'การชำระเงินได้รับการยืนยัน',
+        `ร้านค้าได้ยืนยันการชำระเงินสำหรับคำสั่งซื้อ #${order.order_number} แล้ว`,
+        order.id,
+        'order',
+        { kind: 'payment_slip_approved', order_number: order.order_number }
+      );
+    } catch (notifyError) {
+      console.error('Failed to notify customer of slip approval:', notifyError);
+    }
+  }
+
+  // Order-to-Chat: update the order card to reflect the confirmed payment.
+  try {
+    await sendOrderChatForOrder(slip.order_id, {
+      event: 'payment_confirmed',
+      storeId: storeId || slip.store_id || null,
+    });
+  } catch (chatError) {
+    console.error('Failed to sync payment approval to chat:', chatError);
+  }
+
+  return { slip: { id: slipId, slip_status: 'approved' }, order };
+};
+
+// Store owner: reject one slip — the order returns to 'pending' so the customer
+// can re-submit. Never sets a paid status.
+export const rejectStorePaymentSlip = async (userId, userRole, slipId, reason) => {
+  const { data: slip, error: slipError } = await supabaseAdmin
+    .from('payment_slips')
+    .select('*, order:orders(id, order_number, payment_status, customer_id, store_orders:store_orders(store_id))')
+    .eq('id', slipId)
+    .single();
+
+  if (slipError || !slip) {
+    throw new NotFoundError('ไม่พบสลิปการชำระเงิน');
+  }
+
+  const storeId = slip.store_id || slip.order?.store_orders?.[0]?.store_id;
+  if (storeId) {
+    const hasAccess = await assertStoreAccess(storeId, userId, userRole);
+    if (!hasAccess) throw new AppError('ไม่มีสิทธิ์ปฏิเสธสลิปของร้านค้านี้', 403);
+  } else if (!['admin', 'owner'].includes(userRole)) {
+    throw new AppError('ไม่มีสิทธิ์ปฏิเสธสลิปนี้', 403);
+  }
+
+  if (slip.slip_status !== 'uploaded') {
+    throw new ValidationError(
+      slip.slip_status === 'approved'
+        ? 'สลิปนี้ได้รับการอนุมัติแล้ว ไม่สามารถปฏิเสธได้'
+        : 'สลิปนี้ถูกปฏิเสธแล้ว'
+    );
+  }
+
+  const { error: updateSlipError } = await supabaseAdmin
+    .from('payment_slips')
+    .update({
+      slip_status: 'rejected',
+      reviewed_by: userId,
+      reviewed_at: new Date().toISOString(),
+      reject_reason: reason || null
+    })
+    .eq('id', slipId);
+  if (updateSlipError) {
+    throw new AppError(`ปฏิเสธสลิปไม่สำเร็จ: ${updateSlipError.message}`, 500);
+  }
+
+  // Return the order to pending ONLY if no other non-rejected slips remain for
+  // the order (i.e. this was the only active slip). If sibling stores still have
+  // uploaded/approved slips, keep the order in awaiting_review.
+  const { data: remainingSlips, error: remainingError } = await supabaseAdmin
+    .from('payment_slips')
+    .select('id')
+    .eq('order_id', slip.order_id)
+    .neq('slip_status', 'rejected');
+  if (remainingError) {
+    throw new AppError(`ตรวจสอบสถานะสลิปไม่สำเร็จ: ${remainingError.message}`, 500);
+  }
+  if ((remainingSlips || []).length === 0) {
+    await supabaseAdmin
+      .from('orders')
+      .update({ payment_status: 'pending' })
+      .eq('id', slip.order_id)
+      .eq('payment_status', 'awaiting_review');
+  }
+
+  try {
+    await createSystemNotification(
+      slip.customer_id,
+      'payment',
+      'สลิปการชำระเงินถูกปฏิเสธ',
+      `ร้านค้าปฏิเสธสลิปสำหรับคำสั่งซื้อ #${slip.order?.order_number || ''}${reason ? ` เหตุผล: ${reason}` : ''} กรุณาส่งสลิปใหม่`,
+      slip.order_id,
+      'order',
+      { kind: 'payment_slip_rejected', order_id: slip.order_id, reason: reason || null }
+    );
+  } catch (notifyError) {
+    console.error('Failed to notify customer of slip rejection:', notifyError);
+  }
+
+  // Order-to-Chat: reflect the returned-to-pending state in the order card.
+  try {
+    await sendOrderChatForOrder(slip.order_id, {
+      event: 'payment_rejected',
+      storeId: storeId || slip.store_id || null,
+    });
+  } catch (chatError) {
+    console.error('Failed to sync payment rejection to chat:', chatError);
+  }
+
+  return { slip: { id: slipId, slip_status: 'rejected', reject_reason: reason || null } };
 };

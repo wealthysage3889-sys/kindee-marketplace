@@ -122,6 +122,7 @@ export default function AdminAccount() {
   const [vatForm, setVatForm] = useState({ rate: "", updatedAt: "" });
   const [store, setStore] = useState(null);
   const [storeLoading, setStoreLoading] = useState(true);
+  const [storeLoadError, setStoreLoadError] = useState(false);
   const [storeModalOpen, setStoreModalOpen] = useState(false);
   const [kbzpayOpen, setKbzpayOpen] = useState(false);
   const [kbzpayForm, setKbzpayForm] = useState({ accountName: "", phoneNumber: "", receiverName: "", enabled: true });
@@ -139,16 +140,23 @@ export default function AdminAccount() {
     let active = true;
     const ownerId = user?._id || user?.id;
     const loadStore = async () => {
-      if (!ownerId) { if (active) { setStore(null); setStoreLoading(false); } return; }
+      if (!ownerId) { if (active) { setStore(null); setStoreLoadError(false); setStoreLoading(false); } return; }
       setStoreLoading(true);
+      setStoreLoadError(false);
       try {
         const response = await storeAPI.getStoreByOwner(ownerId, "admin");
-        // getStoreByOwner returns an array of stores for the owner.
-        // Normalize to a single store object for this page.
-        const stores = Array.isArray(response?.data) ? response.data : Array.isArray(response) ? response : [];
+        console.debug("[AdminAccount] store response", response);
+        let stores = [];
+        if (Array.isArray(response)) stores = response;
+        else if (Array.isArray(response?.data)) stores = response.data;
+        else if (response?.data && typeof response.data === "object") stores = [response.data];
+        else if (response && typeof response === "object" && (response._id || response.id)) stores = [response];
         const firstValid = stores.find((s) => s && (s._id || s.id)) || null;
         if (active) setStore(firstValid);
-      } catch { if (active) setStore(null); }
+      } catch (err) {
+        console.error("[AdminAccount] store load error", err?.message || err);
+        if (active) { setStore(null); setStoreLoadError(true); }
+      }
       finally { if (active) setStoreLoading(false); }
     };
     loadStore();
@@ -170,14 +178,18 @@ export default function AdminAccount() {
         if (data) {
           setKbzpaySettings(data);
           setKbzpayForm({
-            accountName: data.accountName || "",
-            phoneNumber: data.phoneNumber || "",
-            receiverName: data.receiverName || "",
-            enabled: data.enabled !== undefined ? data.enabled : true,
+            accountName: data.kbzpay_account_name ?? data.accountName ?? "",
+            phoneNumber: data.kbzpay_phone_number ?? data.phoneNumber ?? "",
+            receiverName: data.kbzpay_receiver_name ?? data.receiverName ?? "",
+            enabled: data.kbzpay_enabled !== undefined
+              ? Boolean(data.kbzpay_enabled)
+              : data.enabled !== undefined
+                ? Boolean(data.enabled)
+                : true,
           });
         }
-        if (data?.qrUrl) {
-          setKbzpayQrPreview(data.qrUrl);
+        if (data?.kbzpay_qr_url ?? data?.qrUrl) {
+          setKbzpayQrPreview(data.kbzpay_qr_url ?? data.qrUrl ?? null);
         }
       } catch {
         if (active) setKbzpaySettings(null);
@@ -333,7 +345,7 @@ export default function AdminAccount() {
       const data = response?.data || response || null;
       if (data) {
         setKbzpaySettings(data);
-        if (data.qrUrl) setKbzpayQrPreview(data.qrUrl);
+        if (data.kbzpay_qr_url ?? data.qrUrl) setKbzpayQrPreview(data.kbzpay_qr_url ?? data.qrUrl ?? null);
       }
 
       setKbzpayQrFile(null);
@@ -659,7 +671,7 @@ export default function AdminAccount() {
                       <input type="password" className="form-input" value={socialForm.google.clientSecret} onChange={(e) => setSocialForm((p) => ({ ...p, google: { ...p.google, clientSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
                       {socialForm.google.hasSecret && <p className="form-hint" style={{ color: "#059669", fontSize: 12, marginTop: 4 }}>✓ ตั้งค่า Secret ไว้แล้ว — เว้นว่างเพื่อคงค่าเดิม</p>}
                     </div>
-                    <p className="form-hint">ตั้งค่าใน Google Cloud Console {">"} APIs & Services {">"} Credentials (เพิ่ม Authorized JavaScript origins: {origin})</p>
+                     <p className="form-hint">ตั้งค่าใน Google Cloud Console &gt; APIs &amp; Services &gt; Credentials (เพิ่ม Authorized JavaScript origins: {origin})</p>
                   </ProviderSection>
 
                   <ProviderSection
@@ -678,7 +690,7 @@ export default function AdminAccount() {
                       <input type="password" className="form-input" value={socialForm.facebook.appSecret} onChange={(e) => setSocialForm((p) => ({ ...p, facebook: { ...p.facebook, appSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
                       {socialForm.facebook.hasSecret && <p className="form-hint" style={{ color: "#059669", fontSize: 12, marginTop: 4 }}>✓ ตั้งค่า Secret ไว้แล้ว — เว้นว่างเพื่อคงค่าเดิม</p>}
                     </div>
-                    <p className="form-hint">ตั้งค่าใน Facebook Developers {">"} Facebook Login {">"} Settings (Valid OAuth Redirect URIs: {origin}/login และ {origin}/register)</p>
+                     <p className="form-hint">ตั้งค่าใน Facebook Developers &gt; Facebook Login &gt; Settings (Valid OAuth Redirect URIs: {origin}/login และ {origin}/register)</p>
                   </ProviderSection>
 
                   <ProviderSection
@@ -697,7 +709,7 @@ export default function AdminAccount() {
                       <input type="password" className="form-input" value={socialForm.line.channelSecret} onChange={(e) => setSocialForm((p) => ({ ...p, line: { ...p.line, channelSecret: e.target.value } }))} placeholder="เว้นว่างเพื่อคงค่าเดิม" />
                       {socialForm.line.hasSecret && <p className="form-hint" style={{ color: "#059669", fontSize: 12, marginTop: 4 }}>✓ ตั้งค่า Secret ไว้แล้ว — เว้นว่างเพื่อคงค่าเดิม</p>}
                     </div>
-                    <p className="form-hint">ตั้งค่าใน LINE Developers Console {">"} LINE Login {">"} Callback URL: {origin}/oauth/line/callback (เปิด scope: profile, openid, email)</p>
+                     <p className="form-hint">ตั้งค่าใน LINE Developers Console &gt; LINE Login &gt; Callback URL: {origin}/oauth/line/callback (เปิด scope: profile, openid, email)</p>
                   </ProviderSection>
                 </div>
                 <div className="account-modal-actions">

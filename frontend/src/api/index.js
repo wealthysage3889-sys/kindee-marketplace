@@ -79,10 +79,14 @@ export async function request(path, options = {}, mode = "customer") {
 
   let retried = false;
   
-  async function doRequest(currentToken) {
+  async function doRequest(currentToken, skipCache = false) {
     const requestHeaders = new Headers(headers);
     if (currentToken) {
       requestHeaders.set("Authorization", `Bearer ${currentToken}`);
+    }
+    if (skipCache) {
+      requestHeaders.set("Cache-Control", "no-cache");
+      requestHeaders.set("Pragma", "no-cache");
     }
     
     const response = await fetch(`${API_BASE}${path}`, {
@@ -91,6 +95,12 @@ export async function request(path, options = {}, mode = "customer") {
       body: options.body,
       credentials: "omit",
     });
+
+    // Handle 304 Not Modified: browser should serve cached response,
+    // but if no cache exists, re-fetch without cache validation.
+    if (response.status === 304 && !skipCache) {
+      return doRequest(currentToken, true);
+    }
 
     const data = await response.json().catch(() => ({}));
     
@@ -343,9 +353,9 @@ export const orderAPI = {
     return request(`/orders/store/${storeId}?${query}`);
   },
 
-  getAllOrders: (params = {}) => {
+  getAllOrders: (params = {}, mode = "admin") => {
     const query = new URLSearchParams(params).toString();
-    return request(`/orders/admin/all?${query}`);
+    return request(`/orders/admin/all?${query}`, {}, mode);
   },
 
   updateStoreOrderStatus: (storeOrderId, status, notes) =>
@@ -370,6 +380,35 @@ export const orderAPI = {
       body: formData,
     });
   },
+
+  // Submit ONE slip for one or more KBZPay orders of the same store.
+  submitStorePaymentSlips: (storeId, orderIds, file, note) => {
+    const formData = new FormData();
+    formData.append("slip", file);
+    formData.append("storeId", String(storeId));
+    formData.append("orderIds", JSON.stringify(Array.isArray(orderIds) ? orderIds : []));
+    if (note != null) formData.append("note", note);
+    return request("/orders/submit-slip", {
+      method: "POST",
+      body: formData,
+    });
+  },
+
+  // Store owner: list payment slips for their own store.
+  getStorePaymentSlips: (storeId, params = {}, mode = "customer") => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/orders/store/${storeId}/payment-slips${query ? `?${query}` : ""}`, {}, mode);
+  },
+
+  // Store owner: approve/reject a slip (manual payment confirmation).
+  approveStorePaymentSlip: (slipId, mode = "customer") =>
+    request(`/orders/store/payment-slips/${slipId}/approve`, { method: "PATCH" }, mode),
+
+  rejectStorePaymentSlip: (slipId, reason, mode = "customer") =>
+    request(`/orders/store/payment-slips/${slipId}/reject`, {
+      method: "PATCH",
+      body: JSON.stringify({ reason }),
+    }, mode),
 };
 
 // Address Book API
@@ -778,11 +817,8 @@ export const uploadAPI = {
     });
   },
 
-  getSignedUrl: (bucket, path, expiresIn) =>
-    request("/upload/signed-url", {
-      method: "POST",
-      body: JSON.stringify({ bucket, path, expiresIn }),
-    }),
+  getSignedUrl: (bucket, path, expiresIn, mode = "customer") =>
+    request(`/upload/signed-url?bucket=${encodeURIComponent(bucket)}&path=${encodeURIComponent(path)}&expiresIn=${encodeURIComponent(expiresIn ?? 3600)}`, {}, mode),
 
   deleteFile: (bucket, path) =>
     request(`/upload/${bucket}/${path}`, {
@@ -795,16 +831,16 @@ export const adminAPI = {
   getStats: () =>
     request("/admin/stats"),
 
-  getOrders: (params = {}) => {
+  getOrders: (params = {}, mode = "admin") => {
     const query = new URLSearchParams(params).toString();
-    return request(`/admin/orders?${query}`);
+    return request(`/admin/orders?${query}`, {}, mode);
   },
 
-  updateOrderStatus: (id, status, notes) =>
+  updateOrderStatus: (id, status, notes, mode = "admin") =>
     request(`/admin/orders/${id}/status`, {
       method: "PATCH",
       body: JSON.stringify({ status, notes }),
-    }),
+    }, mode),
 
   getStores: (params = {}) => {
     const query = new URLSearchParams(params).toString();

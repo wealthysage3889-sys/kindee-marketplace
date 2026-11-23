@@ -4,6 +4,7 @@ import { useSocket } from "../context/SocketContext";
 import { storeAPI } from "../api/product";
 import { orderAPI } from "../api";
 import "./SellerOrders.css";
+import { paymentStatusLabel } from "../utils/orderFilters";
 
 const STATUS_LABELS = {
   pending: "รอดำเนินการ",
@@ -18,36 +19,43 @@ const STATUS_LABELS = {
   refunded: "คืนเงิน",
 };
 
-const STATUS_TRANSITIONS = {
-  pending: ["confirmed", "cancelled"],
-  confirmed: ["preparing", "cancelled"],
-  preparing: ["ready_for_pickup", "cancelled"],
-  ready_for_pickup: ["picked_up", "cancelled"],
-  picked_up: ["in_transit", "cancelled"],
-  in_transit: ["delivered", "failed"],
-  delivered: [],
-  cancelled: [],
-  failed: [],
-};
+// Store-facing fulfilment is intentionally reduced to two forward steps:
+//   1) รับออเดอร์  (pending -> confirmed)
+//   2) ส่งเสร็จ     (confirmed..in_transit -> delivered)
+// The backend still owns the granular lifecycle and validates every single hop
+// in updateStoreOrderStatus. "ส่งเสร็จ" simply walks the remaining validated
+// hops one-by-one so no step is skipped and no new status is introduced.
+const FORWARD_CHAIN = [
+  "pending",
+  "confirmed",
+  "preparing",
+  "ready_for_pickup",
+  "picked_up",
+  "in_transit",
+  "delivered",
+];
 
-const TRANSITION_LABELS = {
-  confirmed: "รับออเดอร์",
-  cancelled: "ปฏิเสธ/ยกเลิก",
-  preparing: "เริ่มเตรียม",
-  ready_for_pickup: "พร้อมรับ",
-  picked_up: "รับแล้ว",
-  in_transit: "ส่งออก",
-  delivered: "ส่งสำเร็จ",
-  failed: "ล้มเหลว",
-};
+// Orders waiting for the store to accept -> show "รับออเดอร์".
+const ACCEPTABLE_STATUSES = ["pending"];
 
-const PAYMENT_STATUS_LABELS = {
-  pending: "รอชำระ",
-  paid: "ชำระแล้ว",
-  failed: "ชำระล้มเหลว",
-  refunded: "คืนเงินแล้ว",
-  partially_refunded: "คืนเงินบางส่วน",
-};
+// Orders already accepted but not finished -> show "ส่งเสร็จ".
+const DELIVERABLE_STATUSES = [
+  "confirmed",
+  "preparing",
+  "ready_for_pickup",
+  "picked_up",
+  "in_transit",
+];
+
+// Statuses the backend still allows a store to reject/cancel from
+// (mirrors the store-order validTransitions: in_transit cannot be cancelled).
+const CANCELLABLE_STATUSES = [
+  "pending",
+  "confirmed",
+  "preparing",
+  "ready_for_pickup",
+  "picked_up",
+];
 
 function formatCurrency(amount) {
   const num = Number(amount);
@@ -148,11 +156,23 @@ export default function SellerOrders() {
     return () => off("orderStatusUpdate", onOrderStatusUpdate);
   }, [on, off, selectedStoreId, fetchOrders]);
 
+  // Realtime: a customer submitting a KBZPay slip flips the order to
+  // 'awaiting_review' and emits 'paymentSlipUploaded' to the store owner.
+  // Reuse that existing event to refresh the list instead of polling.
+  useEffect(() => {
+    const onPaymentSlipUploaded = (payload) => {
+      if (!selectedStoreId) return;
+      if (payload?.storeId && String(payload.storeId) !== String(selectedStoreId)) return;
+      fetchOrders();
+    };
+    on("paymentSlipUploaded", onPaymentSlipUploaded);
+    return () => off("paymentSlipUploaded", onPaymentSlipUploaded);
+  }, [on, off, selectedStoreId, fetchOrders]);
+
   const handleTransition = async (storeOrderId, newStatus) => {
     let notes = "";
-    if (newStatus === "cancelled" || newStatus === "failed") {
-      const promptMsg = newStatus === "cancelled" ? "เหตุผลในการปฏิเสธ/ยกเลิก:" : "เหตุผลในการบันทึกสถานะล้มเหลว:";
-      notes = window.prompt(promptMsg) || "";
+    if (newStatus === "cancelled") {
+      notes = window.prompt("เหตุผลในการปฏิเสธ/ยกเลิก:") || "";
       if (!notes.trim()) return;
     }
     try {
@@ -160,6 +180,35 @@ export default function SellerOrders() {
       await orderAPI.updateStoreOrderStatus(storeOrderId, newStatus, notes);
       await fetchOrders();
     } catch (err) {
+      setError(err.message || "อัปเดตสถานะไม่สำเร็จ");
+    } finally {
+      setActionLoading((p) => ({ ...p, [storeOrderId]: false }));
+    }
+  };
+
+  // "ส่งเสร็จ": advance the order to delivered through the backend's validated
+  // hops (preparing -> ready_for_pickup -> picked_up -> in_transit -> delivered).
+  // Each hop is a normal updateStoreOrderStatus call, so backend validation,
+  // history logging and parent-order sync all run exactly as before. If a hop
+  // fails partway (e.g. network), the loop stops, the error surfaces, and the
+  // card re-fetches so the store sees the real persisted status and can resume.
+  const handleDeliver = async (storeOrder) => {
+    const currentIndex = FORWARD_CHAIN.indexOf(storeOrder.status);
+    const remaining = currentIndex >= 0
+      ? FORWARD_CHAIN.slice(currentIndex + 1)
+      : [];
+    const storeOrderId = storeOrder.id;
+    try {
+      setActionLoading((p) => ({ ...p, [storeOrderId]: true }));
+      for (const nextStatus of remaining) {
+        // eslint-disable-next-line no-await-in-loop
+        await orderAPI.updateStoreOrderStatus(storeOrderId, nextStatus, "");
+      }
+      await fetchOrders();
+    } catch (err) {
+      // Re-fetch first so the card reflects the real persisted status, then
+      // surface the error (fetchOrders clears it, so set it afterwards).
+      await fetchOrders();
       setError(err.message || "อัปเดตสถานะไม่สำเร็จ");
     } finally {
       setActionLoading((p) => ({ ...p, [storeOrderId]: false }));
@@ -282,7 +331,10 @@ export default function SellerOrders() {
       ) : (
         <div className="seller-orders-list">
           {filtered.map((so) => {
-            const transitions = STATUS_TRANSITIONS[so.status] || [];
+            const canAccept = ACCEPTABLE_STATUSES.includes(so.status);
+            const canDeliver = DELIVERABLE_STATUSES.includes(so.status);
+            const canCancel = CANCELLABLE_STATUSES.includes(so.status);
+            const isTerminal = so.status === "delivered" || so.status === "refunded" || so.status === "failed";
             const isActionLoading = actionLoading[so.id];
             const isHistoryLoading = historyLoading[so.order?.id || so.parent_order_id];
             const isExpanded = expanded[so.order?.id || so.parent_order_id];
@@ -299,8 +351,8 @@ export default function SellerOrders() {
                     <span>ลูกค้า: {so.order?.customer_snapshot?.name || "-"}</span>
                     <span>
                       ชำระเงิน:{' '}
-                      <span className="payment-status">
-                        {PAYMENT_STATUS_LABELS[so.order?.payment_status] || so.order?.payment_status || "-"}
+                      <span className={`payment-status${so.order?.payment_status === "awaiting_review" ? " payment-status-awaiting" : ""}`}>
+                        {paymentStatusLabel(so.order?.payment_status, so.status, so.order?.payment_method)}
                       </span>
                     </span>
                     <span>ยอด: {formatCurrency(so.total_amount)}</span>
@@ -331,16 +383,38 @@ export default function SellerOrders() {
                 )}
 
                 <div className="seller-order-actions">
-                  {transitions.map((t) => (
+                  {canAccept && (
                     <button
-                      key={t}
-                      className={(t === "cancelled" || t === "failed") ? "btn btn-danger" : "btn btn-primary"}
+                      className="btn btn-primary"
                       disabled={isActionLoading}
-                      onClick={() => handleTransition(so.id, t)}
+                      onClick={() => handleTransition(so.id, "confirmed")}
                     >
-                      {isActionLoading ? "กำลังดำเนินการ..." : (TRANSITION_LABELS[t] || t)}
+                      {isActionLoading ? "กำลังดำเนินการ..." : "รับออเดอร์"}
                     </button>
-                  ))}
+                  )}
+                  {canDeliver && (
+                    <button
+                      className="btn btn-primary"
+                      disabled={isActionLoading}
+                      onClick={() => handleDeliver(so)}
+                    >
+                      {isActionLoading ? "กำลังดำเนินการ..." : "ส่งเสร็จ"}
+                    </button>
+                  )}
+                  {canCancel && (
+                    <button
+                      className="btn btn-danger"
+                      disabled={isActionLoading}
+                      onClick={() => handleTransition(so.id, "cancelled")}
+                    >
+                      {isActionLoading ? "กำลังดำเนินการ..." : "ปฏิเสธ/ยกเลิก"}
+                    </button>
+                  )}
+                  {isTerminal && !canCancel && (
+                    <span className={`badge badge-${so.status}`}>
+                      {so.status === "delivered" ? "จัดส่งสำเร็จ" : (STATUS_LABELS[so.status] || so.status)}
+                    </span>
+                  )}
                   <button
                     className="btn btn-outline"
                     onClick={() => toggleHistory(so.order?.id || so.parent_order_id)}

@@ -170,8 +170,14 @@ export function SocketProvider({ children }) {
       transports: ["websocket", "polling"],
       auth: { token },
       reconnection: true,
-      reconnectionAttempts: 5,
+      // Keep reconnecting indefinitely with backoff so a brief network/server
+      // blip does not leave the socket permanently closed ("connection closed"
+      // that never recovers). Messaging and voice-call signaling resume once
+      // the socket reconnects and rooms are re-joined.
+      reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      randomizationFactor: 0.5,
     });
   }, []);
 
@@ -211,10 +217,18 @@ export function SocketProvider({ children }) {
     setConnected(false);
   }, []);
 
+  // Connect/reconcile sockets whenever the token set changes. connect() already
+  // drops sockets for tokens that disappeared and creates sockets for new ones,
+  // so we must NOT call disconnectAll() here — that would tear down every socket
+  // (including ones still mid-handshake) on every token refresh, producing
+  // "WebSocket is closed before the connection is established". Sockets are
+  // torn down only when their token is removed (logout) or when the page unloads.
   useEffect(() => {
     connect();
-    return disconnectAll;
-  }, [connect, disconnectAll]);
+    return () => {
+      disconnectAll();
+    };
+  }, [connect]);
 
   useEffect(() => {
     const unlock = () => {

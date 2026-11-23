@@ -19,6 +19,25 @@ export default function ProtectedRoute({ children, allowedRoles, mode = "custome
     return <Navigate to={path} replace state={state} />;
   };
 
+  // Shared order-management route for the Sell Admin area: it must serve both the
+  // platform admin (admin namespace) and the store owner (seller in the customer
+  // namespace). This check spans BOTH namespaces, so it runs before the
+  // single-session `isAuthenticated` guard below (a platform admin has no
+  // customer session). Authorization is still enforced server-side per endpoint
+  // (/orders/admin/all stays admin-only, /orders/store/:storeId checks ownership).
+  if (mode === "seller-or-admin") {
+    const adminOk = admin?.isAuthenticated && ["admin", "owner"].includes(admin?.user?.role);
+    const sellerOk = customer?.isAuthenticated && customer?.user?.role === "seller";
+    if (adminOk || sellerOk) {
+      return children;
+    }
+    // A signed-in non-seller has no business here; send everyone else to login.
+    if (customer?.isAuthenticated) {
+      return redirectTo("/");
+    }
+    return redirectTo("/selladmin/login");
+  }
+
   if (!isAuthenticated) {
     const loginPath = mode === "admin" ? "/selladmin/login" : "/login";
     return redirectTo(loginPath, { from: location });

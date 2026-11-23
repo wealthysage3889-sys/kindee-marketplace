@@ -385,13 +385,41 @@ export const getMessages = async (conversationId, userId, pagination = {}) => {
     throw new AppError(`Failed to fetch messages: ${error.message}`, 500);
   }
   
-  // Reverse to show oldest first
-  return data.reverse();
+   // Enrich order_chat messages with the latest order status from backend so
+   // stale snapshots in old chat cards never disagree with the order page.
+   const orderIds = [...new Set((data || [])
+     .map((m) => (m.metadata && (m.metadata.order_id || m.metadata.orderId)) || null)
+     .filter(Boolean))];
+   let statusByOrder = {};
+   if (orderIds.length) {
+     const { data: orders } = await supabaseAdmin
+       .from('orders')
+       .select('id, status')
+       .in('id', orderIds);
+     for (const o of orders || []) statusByOrder[String(o.id)] = o.status;
+   }
+   const enriched = (data || []).map((m) => {
+     const meta = m.metadata;
+     if (!meta || meta.kind !== 'order_chat') return m;
+     const oid = meta.order_id || meta.orderId;
+     const latest = oid ? statusByOrder[String(oid)] : null;
+     if (!latest || latest === (meta.order_status || meta.orderStatus)) return m;
+     const labels = {
+       pending: 'รอร้านค้ายืนยัน', confirmed: 'ร้านค้ายืนยันแล้ว',
+       preparing: 'กำลังเตรียม', ready_for_pickup: 'พร้อมรับ',
+       picked_up: 'รับแล้ว', in_transit: 'กำลังจัดส่ง',
+       delivered: 'ส่งสำเร็จ', cancelled: 'ยกเลิก', refunded: 'คืนเงิน',
+     };
+     return { ...m, metadata: { ...meta, order_status: latest, order_status_label: labels[latest] || latest } };
+   });
+
+   // Reverse to show oldest first
+   return enriched.reverse();
 };
 
 // Send message
 export const sendMessage = async (conversationId, senderId, messageData = {}) => {
-  const { content, type = 'text', metadata = {}, reply_to_id, attachments = [] } = messageData;
+  const { content, type = 'text', metadata = {}, reply_to_id, attachments = [], client_message_id } = messageData;
 
   // Verify membership: only a member of this conversation may post in it.
   // senderId always comes from the verified token (req.user.id).
@@ -403,6 +431,28 @@ export const sendMessage = async (conversationId, senderId, messageData = {}) =>
     throw new ValidationError('Message content or attachment required');
   }
 
+  // Idempotency: when a client_message_id is supplied, a retry of the same
+  // logical message (same conversation+sender+client_message_id) must not create
+  // a duplicate. The DB unique index ux_messages_client_id enforces this; on a
+  // 23505 conflict we fetch and return the already-stored message instead.
+  if (client_message_id) {
+    const { data: existing, error: existingError } = await supabaseAdmin
+      .from('messages')
+      .select(`
+        *,
+        sender:profiles!sender_id(id, name, avatar_url, role)
+      `)
+      .eq('conversation_id', conversationId)
+      .eq('sender_id', senderId)
+      .eq('client_message_id', client_message_id)
+      .maybeSingle();
+
+    if (existing) return existing;
+    // existingError other than "no rows" is unexpected but non-fatal here; the
+    // insert path below is the source of truth and will surface real errors.
+    void existingError;
+  }
+
   // Create message
   const { data: message, error } = await supabaseAdmin
     .from('messages')
@@ -412,13 +462,30 @@ export const sendMessage = async (conversationId, senderId, messageData = {}) =>
       type,
       content,
       metadata,
-      reply_to_id
+      reply_to_id,
+      client_message_id: client_message_id || null
     })
     .select(`
       *,
       sender:profiles!sender_id(id, name, avatar_url, role)
     `)
     .single();
+
+  // Concurrent insert of the same client_message_id: another request won the
+  // race. Treat it as success and return the existing row (idempotent retry).
+  if (error && error.code === '23505' && client_message_id) {
+    const { data: winner } = await supabaseAdmin
+      .from('messages')
+      .select(`
+        *,
+        sender:profiles!sender_id(id, name, avatar_url, role)
+      `)
+      .eq('conversation_id', conversationId)
+      .eq('sender_id', senderId)
+      .eq('client_message_id', client_message_id)
+      .maybeSingle();
+    if (winner) return winner;
+  }
 
   if (error) {
     throw new AppError(`Message creation failed: ${error.message}`, 500);

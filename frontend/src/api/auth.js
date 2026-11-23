@@ -23,14 +23,14 @@ export function getToken(mode = "customer") {
 }
 
 // Shared cache + single-flight for public social config
-let socialConfigCache = null; // { data, ts }
+let socialConfigCache = null; // { data, ts, failed? }
 let socialConfigInFlight = null;
 const SOCIAL_CONFIG_TTL_MS = 5 * 60 * 1000;
+const SOCIAL_CONFIG_FAILED_TTL_MS = 30 * 1000;
 
 export async function request(path, options = {}, mode = "customer") {
   const rawToken = getToken(mode);
   const token = rawToken ? rawToken.trim() : null;
-  let response;
 
   const isFormData = options.body instanceof FormData;
   const headers = new Headers();
@@ -45,25 +45,48 @@ export async function request(path, options = {}, mode = "customer") {
     extra.forEach((value, key) => headers.set(key, value));
   }
 
-  try {
-    response = await fetch(`${API_BASE}${path}`, {
-      method: options.method,
-      headers,
-      body: options.body,
-      credentials: "omit",
-    });
-  } catch {
-    throw new Error("ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้");
+  let retried304 = false;
+
+  async function doRequest(currentToken, skipCache = false) {
+    const requestHeaders = new Headers(headers);
+    if (currentToken) {
+      requestHeaders.set("Authorization", `Bearer ${currentToken}`);
+    }
+    if (skipCache) {
+      requestHeaders.set("Cache-Control", "no-store");
+      requestHeaders.set("Pragma", "no-cache");
+    }
+
+    let response;
+    try {
+      response = await fetch(`${API_BASE}${path}`, {
+        method: options.method,
+        headers: requestHeaders,
+        body: options.body,
+        credentials: "omit",
+        cache: skipCache ? "no-store" : undefined,
+      });
+    } catch {
+      throw new Error("ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้");
+    }
+
+    // Handle 304 Not Modified: retry exactly once without cache validation.
+    if (response.status === 304 && !skipCache && !retried304) {
+      retried304 = true;
+      return doRequest(currentToken, true);
+    }
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const err = new Error(data.message || "ดึงข้อมูลจากเซิร์ฟเวอร์ไม่สำเร็จ");
+      err.data = data;
+      err.status = response.status;
+      throw err;
+    }
+    return data;
   }
 
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const err = new Error(data.message || "ดึงข้อมูลจากเซิร์ฟเวอร์ไม่สำเร็จ");
-    err.data = data;
-    err.status = response.status;
-    throw err;
-  }
-  return data;
+  return await doRequest(token);
 }
 
 export const apiRequest = request;
@@ -101,8 +124,11 @@ export const authAPI = {
 
   getSocialConfig: async () => {
     const now = Date.now();
-    if (socialConfigCache && now - socialConfigCache.ts < SOCIAL_CONFIG_TTL_MS) {
-      return socialConfigCache.data;
+    if (socialConfigCache) {
+      const ttl = socialConfigCache.failed ? SOCIAL_CONFIG_FAILED_TTL_MS : SOCIAL_CONFIG_TTL_MS;
+      if (now - socialConfigCache.ts < ttl) {
+        return socialConfigCache.data;
+      }
     }
     if (socialConfigInFlight) {
       return socialConfigInFlight;
@@ -114,6 +140,7 @@ export const authAPI = {
         return res;
       })
       .catch((err) => {
+        socialConfigCache = { data: null, ts: Date.now(), failed: true };
         socialConfigInFlight = null;
         throw err;
       });

@@ -131,8 +131,8 @@ export default function AdminPaymentSlips() {
                   <td>
                     <div className="slip-preview">
                       <img
-                        src={slip.slip_url}
-                        alt="สลิป"
+                        src={slip.slip_view_url || slip.slip_url}
+                        alt="สป"
                         className="slip-preview-img"
                         onError={(e) => { e.target.src = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjE1MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZTRlNGU0Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZpbGw9IiM5OTkiIGRvbWluYW50LWJhc2VsaW5lPSJtaQ=="; }}
                       />

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useCart } from "../context/CartContext";
@@ -6,6 +6,7 @@ import html2canvas from "html2canvas";
 import { addressAPI, orderAPI, storeAPI, settingsAPI } from "../api";
 import { extractList, formatCurrency, formatPhone, validatePhone } from "../utils/helpers";
 import PhoneInput from "../components/PhoneInput";
+import KBZPayPaymentPopup from "../components/KBZPayPaymentPopup";
 import "./Checkout.css";
 
 const NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse";
@@ -26,6 +27,18 @@ const roundMoney = (value) => {
   const amount = Number(value);
   if (!Number.isFinite(amount)) return 0;
   return Math.round((amount + Number.EPSILON) * 100) / 100;
+};
+
+// Formats a Myanmar Kyat amount for display, e.g. "MMK 724,855.00".
+// Uses the same 2-decimal rounding rule as THB so both currencies stay aligned.
+const formatMMK = (amount) => {
+  const value = Number(amount);
+  if (!Number.isFinite(value)) return "-";
+  const formatted = new Intl.NumberFormat("th-TH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+  return `MMK ${formatted}`;
 };
 
 const getStoreField = (store, camelKey, snakeKey) =>
@@ -262,12 +275,12 @@ function LocationPicker({ coordinates, address, onCoordinatesChange, onAddressCh
 }
 
 export { LocationPicker };
-export default function Checkout({ orderSummary } = {}) {
+export default function Checkout({ orderSummary, initialStep = 1, initialPaymentMethod = "cod", kbzpaySettings } = {}) {
   const { user, isAuthenticated } = useAuth();
   const { items, totalPrice, totalCount, clear } = useCart();
   const navigate = useNavigate();
   
-  const [step, setStep] = useState(1); // 1: address, 2: payment, 3: confirm
+  const [step, setStep] = useState(initialStep); // 1: address, 2: payment, 3: confirm
   const [coordinates, setCoordinates] = useState(null);
   const [deliveryAddress, setDeliveryAddress] = useState({
     name: user?.name || "",
@@ -277,7 +290,7 @@ export default function Checkout({ orderSummary } = {}) {
     province: "",
     postalCode: ""
   });
-  const [paymentMethod, setPaymentMethod] = useState("cod");
+  const [paymentMethod, setPaymentMethod] = useState(initialPaymentMethod);
   const [exchangeRate, setExchangeRate] = useState(null);
   const [rateUpdatedAt, setRateUpdatedAt] = useState(null);
   const [rateSource, setRateSource] = useState(null); // 'admin' or 'api'
@@ -296,6 +309,9 @@ export default function Checkout({ orderSummary } = {}) {
   const initialAddressAppliedRef = useRef(false);
   const submitLockRef = useRef(false);
   const summaryRef = useRef(null);
+  const [kbzpayPopupOpen, setKbzpayPopupOpen] = useState(false);
+  const [kbzpayPayload, setKbzpayPayload] = useState(null);
+  const [kbzpayLoading, setKbzpayLoading] = useState(false);
 
   const applySavedAddress = useCallback((address) => {
     const nextCoordinates = coordinatesFromAddress(address);
@@ -366,18 +382,22 @@ export default function Checkout({ orderSummary } = {}) {
 
   // Load store info for delivery fees
   useEffect(() => {
+    let cancelled = false;
     const loadStoreInfo = async () => {
-      const storeIds = [...new Set(items.map(item => item.storeId).filter(Boolean))];
+      const storeIds = [...new Set(items.map((item) => item.storeId).filter(Boolean))];
+      const byId = {};
       for (const storeId of storeIds) {
         try {
           const store = await storeAPI.getById(storeId);
-          setStores(prev => [...prev, store.data]);
+          if (!cancelled && store?.data) byId[store.data.id] = store.data;
         } catch (error) {
           console.error("Failed to load store:", error);
         }
       }
+      if (!cancelled) setStores(Object.values(byId));
     };
     loadStoreInfo();
+    return () => { cancelled = true; };
   }, [items]);
 
   const handleAddressSubmit = (e) => {
@@ -483,64 +503,85 @@ export default function Checkout({ orderSummary } = {}) {
 
   const handleConfirmOrder = async () => {
     if (submitLockRef.current) return;
-    
-    // Validate KBZPay exchange rate before submission
+
+    // Validate KBZPay exchange rate before proceeding
     if (paymentMethod === "kbzpay") {
       if (rateLoading) {
         setError("กำลังดึงอัตราแลกเปลี่ยน กรุณารอสักครู่");
         return;
       }
       if (rateError || !exchangeRate) {
-        setError("ไม่สามารถดึงอัตราแลกเปลี่ยนได้ กรุณากลับไปขั้นตอนชำระเงินและลองใหม่");
+        setError("ไม่สามารถดึงอัตราแลกเปลี่ยนได้ กรุณาลองใหม่หรือเลือกวิธีชำระเงินอื่น");
         return;
       }
     }
-    
+
+    // Validate that the logged-in profile has name and phone before submitting the order
+    if (!user?.name || !user?.phone) {
+      setError("ยังไม่พบชื่อและเบอร์โทรศัพท์ในโปรไฟล์ของคุณ กรุณาแก้ไขโปรไฟล์ให้ครบถ้วนก่อนสั่งซื้อ");
+      return;
+    }
+
+    // Prepare order items with store info (shared by KBZPay and other methods)
+    const orderItems = items.map((item) => ({
+      productId: item.id,
+      quantity: item.quantity,
+    }));
+
+    // Format delivery address
+    const selectedAddress = savedAddresses.find((address) => address.id === selectedAddressId) || null;
+    const formattedAddress = {
+      name: deliveryAddress.name,
+      phone: deliveryAddress.phone,
+      address: deliveryAddress.address,
+      district: deliveryAddress.district,
+      province: deliveryAddress.province,
+      postalCode: deliveryAddress.postalCode,
+      ...(selectedAddress
+        ? {
+            label: selectedAddress.label || "",
+            place_name: selectedAddress.label || selectedAddress.recipient_name || "",
+            address_book_id: selectedAddress.id,
+          }
+        : {}),
+    };
+
+    if (paymentMethod === "kbzpay") {
+      // KBZPay: ห้ามสร้าง Order ในขั้นตอนนี้ — เปิด Popup เพื่อแนบสลิปก่อน
+      setKbzpayPayload({
+        items: orderItems,
+        paymentMethod: "kbzpay",
+        exchangeRate,
+        exchangeRateSource: rateSource === "admin" ? "admin_settings" : "open.er-api.com",
+        exchangeRateUpdatedAt: rateUpdatedAt,
+        amountMMK: roundMoney(totalAmount * exchangeRate),
+        customerNotes,
+        deliveryAddress: formattedAddress,
+        customerCoordinates: coordinates,
+      });
+      setError("");
+      setKbzpayPopupOpen(true);
+      return;
+    }
+
     submitLockRef.current = true;
     setLoading(true);
     setError("");
     try {
-      // Validate that the logged-in profile has name and phone before submitting the order
-      if (!user?.name || !user?.phone) {
-        setError("ยังไม่พบชื่อและเบอร์โทรศัพท์ในโปรไฟล์ของคุณ กรุณาแก้ไขโปรไฟล์ให้ครบถ้วนก่อนสั่งซื้อ");
-        setLoading(false);
-        return;
-      }
-
-      // Prepare order items with store info
-      const orderItems = items.map(item => ({
-        productId: item.id,
-        quantity: item.quantity
-      }));
-      
-      // Format delivery address
-      const selectedAddress = savedAddresses.find((address) => address.id === selectedAddressId) || null;
-      const formattedAddress = {
-        name: deliveryAddress.name,
-        phone: deliveryAddress.phone,
-        address: deliveryAddress.address,
-        district: deliveryAddress.district,
-        province: deliveryAddress.province,
-        postalCode: deliveryAddress.postalCode,
-        ...(selectedAddress
-          ? {
-              label: selectedAddress.label || "",
-              place_name: selectedAddress.label || selectedAddress.recipient_name || "",
-              address_book_id: selectedAddress.id,
-            }
-          : {}),
-      };
-      
       const result = await orderAPI.create({
         items: orderItems,
         paymentMethod,
-        exchangeRate: paymentMethod === "kbzpay" ? exchangeRate : null,
-        exchangeRateSource: paymentMethod === "kbzpay" ? (rateSource === "admin" ? "admin_settings" : "open.er-api.com") : null,
-        exchangeRateUpdatedAt: paymentMethod === "kbzpay" ? rateUpdatedAt : null,
-        amountMMK: paymentMethod === "kbzpay" ? roundMoney(totalAmount * exchangeRate) : null,
+        ...(paymentMethod === "kbzpay"
+          ? {
+              exchangeRate,
+              exchangeRateSource: rateSource === "admin" ? "admin_settings" : "open.er-api.com",
+              exchangeRateUpdatedAt: rateUpdatedAt,
+              amountMMK: roundMoney(totalAmount * exchangeRate),
+            }
+          : {}),
         customerNotes,
         deliveryAddress: formattedAddress,
-        customerCoordinates: coordinates
+        customerCoordinates: coordinates,
       });
 
       // Capture summary image after successful order creation
@@ -569,12 +610,116 @@ export default function Checkout({ orderSummary } = {}) {
     }
   };
 
+  // KBZPay checkout flow: สร้าง Order แล้วค่อยผูกสลิปกับ Order ของแต่ละร้านค้า
+  // หากอัปโหลดสลิปไม่สำเร็จ ต้องยกเลิก Order ที่สร้างไว้ ไม่ให้เหลือ Order
+  // ที่สร้างสำเร็จแต่ไม่มีสลิปค้างอยู่ในระบบ
+  const handleKbzpayCheckoutSubmit = async (slipFilesByStore) => {
+    if (!kbzpayPayload) return;
+    setKbzpayLoading(true);
+    let createdOrderId = null;
+    try {
+      const result = await orderAPI.create(kbzpayPayload);
+      createdOrderId = result.data?.id;
+      if (!createdOrderId) {
+        throw new Error("สร้างคำสั่งซื้อไม่สำเร็จ: ไม่พบ Order ID ใน response");
+      }
+      // Backend stores store_orders with `id` (store_order PK) AND `parent_order_id`
+      // (FK to orders.id). The submit-slip endpoint queries `.from('orders')` by id,
+      // so orderIds must be the PARENT order id — not the store_order id.
+      // All store orders of one checkout share the same parent order id, and the
+      // backend verifies store ownership per order by joining store_orders.
+      const storeOrders = result.data?.store_orders || [];
+      const parentOrderIdsByStore = {};
+      storeOrders.forEach((so) => {
+        const sid = so.store_id || (so.store && so.store.id);
+        if (!sid) return;
+        (parentOrderIdsByStore[sid] = parentOrderIdsByStore[sid] || []).push(createdOrderId);
+      });
+
+      // อัปโหลดสลิปแยกตามร้านค้า ผูกกับ Order ของร้านค้านั้น
+      await Promise.all(
+        Object.entries(slipFilesByStore).map(async ([storeId, file]) => {
+          const orderIds = parentOrderIdsByStore[storeId] || [];
+          if (orderIds.length === 0) {
+            throw new Error(`ไม่พบคำสั่งซื้อของร้านค้า ${storeId}`);
+          }
+          return orderAPI.submitStorePaymentSlips(storeId, orderIds, file, "");
+        })
+      );
+
+      // ทำรายการสำเร็จทุกกลุ่มร้านค้า — เคลียร์ตะกร้า ปิด popup ไปหน้าติดตามออเดอร์
+      clear();
+      setKbzpayPopupOpen(false);
+      navigate(`/orders/${createdOrderId}`);
+    } catch (err) {
+      // Rollback: ยกเลิก Order ที่สร้างไว้ ไม่ให้เหลือ Order โดยไม่มีสลิป
+      if (createdOrderId) {
+        try {
+          await orderAPI.cancel(createdOrderId, "ยกเลิกคำสั่งซื้อเนื่องจากอัปโหลดสลิปไม่สำเร็จ");
+        } catch {
+          // ignore rollback errors; the surfaced error is the original failure
+        }
+      }
+      throw err;
+    } finally {
+      setKbzpayLoading(false);
+    }
+  };
+
   const computedTotals = computeOrderTotals(items, stores, vatRate);
   const totals = orderSummary || computedTotals;
   const shippingFee = totals.totalShippingFee;
   const taxAmount = totals.totalTax;
   const totalAmount = totals.totalAmount;
   const displayVatRate = orderSummary?.vatRate ?? vatRate;
+
+  // KBZPay customers see their order in MMK using the same THB→MMK rate that was
+  // fetched in step 2 (and sent to the backend for validation). Any other method
+  // keeps the original THB-only display.
+  const isKbzpay = paymentMethod === "kbzpay";
+  const hasValidRate =
+    isKbzpay && !rateLoading && !rateError && Number.isFinite(exchangeRate) && exchangeRate > 0;
+
+  // Per-store MMK amounts for the KBZPay popup (checkout mode), computed with the
+  // same per-store subtotal/shipping/VAT rules as the backend so the displayed
+  // MMK totals match what will be charged.
+  const checkoutStores = useMemo(() => {
+    if (!isKbzpay || !hasValidRate) return [];
+    return stores.map((store) => {
+      const storeItems = items.filter((item) => item.storeId === store.id);
+      const subtotal = roundMoney(storeItems.reduce((sum, item) => sum + item.price * item.quantity, 0));
+      const shippingFee = roundMoney(getStoreField(store, 'deliveryFee', 'delivery_fee') || 0);
+      const taxAmount = roundMoney(subtotal * (vatRate / 100));
+      const storeTotalThb = roundMoney(subtotal + shippingFee + taxAmount);
+      return {
+        storeId: store.id,
+        storeName: store.name,
+        amountMmk: roundMoney(storeTotalThb * exchangeRate),
+      };
+    });
+  }, [stores, items, vatRate, exchangeRate, isKbzpay, hasValidRate]);
+
+  // Formats a THB amount as "฿X / MMK Y" for KBZPay, or THB-only otherwise.
+  // Used by the grand-total row, which keeps both currencies.
+  // MMK is derived from the exact same THB value the row displays and rounded with
+  // the same roundMoney rule the backend uses, so totals always line up.
+  const displayMoney = (amount) => {
+    const thb = formatCurrency(amount);
+    if (!hasValidRate) return thb;
+    return `${thb} / ${formatMMK(roundMoney(amount * exchangeRate))}`;
+  };
+
+  // MMK-only display for KBZPay (item rows, subtotal, shipping, VAT).
+  // Any other payment method keeps the original THB-only display.
+  const displayMoneyMMKOnly = (amount) => {
+    if (!hasValidRate) return formatCurrency(amount);
+    return formatMMK(roundMoney(amount * exchangeRate));
+  };
+
+  const paymentMethodDisplay =
+    paymentMethod === "cod"
+      ? "ชำระเงินปลายทาง"
+      : "KBZPay Wallet (Myanmar)";
 
   if (!isAuthenticated) {
     return (
@@ -774,39 +919,7 @@ export default function Checkout({ orderSummary } = {}) {
                   )}
                 </div>
               )}
-                <input
-                  type="radio"
-                  name="paymentMethod"
-                  value="promptpay"
-                  checked={paymentMethod === "promptpay"}
-                  onChange={(e) => setPaymentMethod(e.target.value)}
-                />
-                <div className="payment-option-content">
-                  <span className="payment-icon">📱</span>
-                  <div>
-                    <strong>PromptPay</strong>
-                    <p>สแกน QR Code เพื่อชำระเงิน</p>
-                  </div>
-                </div>
-                </div>
-              
-              <label className={`payment-option ${paymentMethod === "transfer" ? "selected" : ""}`}>
-                <input
-                  type="radio"
-                  name="paymentMethod"
-                  value="transfer"
-                  checked={paymentMethod === "transfer"}
-                  onChange={(e) => setPaymentMethod(e.target.value)}
-                />
-                <div className="payment-option-content">
-                  <span className="payment-icon">🏦</span>
-                  <div>
-                    <strong>โอนเงินผ่านธนาคาร</strong>
-                    <p>โอนเงินและส่งสลิปยืนยัน</p>
-                  </div>
-                </div>
-              </label>
-
+            </div>
           </div>
 
           <div className="form-section">
@@ -852,7 +965,7 @@ export default function Checkout({ orderSummary } = {}) {
                       <div key={item.id} className="order-item-row">
                         <span className="item-name-cell">{item.name}</span>
                         <span className="item-qty-cell">{item.quantity} ชิ้น</span>
-                        <span className="item-price-cell">{formatCurrency(item.price * item.quantity)}</span>
+                        <span className="item-price-cell">{displayMoneyMMKOnly(item.price * item.quantity)}</span>
                       </div>
                     ))}
                   </div>
@@ -867,26 +980,47 @@ export default function Checkout({ orderSummary } = {}) {
               </div>
               <div className="summary-row">
                 <span>ราคาสินค้า</span>
-                <span>{formatCurrency(totalPrice)}</span>
+                <span>{displayMoneyMMKOnly(totalPrice)}</span>
               </div>
               <div className="summary-row">
                 <span>ค่าจัดส่ง</span>
-                <span>{formatCurrency(shippingFee)}</span>
+                <span>{displayMoneyMMKOnly(shippingFee)}</span>
               </div>
               <div className="summary-row">
                 <span>ภาษีมูลค่าเพิ่ม ({displayVatRate}%)</span>
-                <span>{formatCurrency(taxAmount)}</span>
+                <span>{displayMoneyMMKOnly(taxAmount)}</span>
               </div>
               <div className="summary-row total">
                 <span>รวมทั้งสิ้น</span>
-                <span>{formatCurrency(totalAmount)}</span>
+                <span>{displayMoney(totalAmount)}</span>
               </div>
             </div>
           </div>
 
           <div className="form-section">
             <h3>วิธีชำระเงิน</h3>
-            <p>{paymentMethod === "cod" ? "ชำระเงินปลายทาง" : paymentMethod === "promptpay" ? "PromptPay" : "โอนเงินผ่านธนาคาร"}</p>
+            <p>{paymentMethodDisplay}</p>
+            {isKbzpay && hasValidRate && (
+              <div className="kbzpay-exchange-rate">
+                <div className="rate-success">
+                  <p><strong>อัตราแลกเปลี่ยน:</strong> 1 THB = {exchangeRate.toFixed(2)} MMK</p>
+                  <p><strong>อัปเดตเมื่อ:</strong> {new Date(rateUpdatedAt).toLocaleString('th-TH')}</p>
+                  <p><strong>แหล่งข้อมูล:</strong> {rateSource === "admin" ? "การตั้งค่าของแอดมิน (Admin Settings)" : "open.er-api.com (API อัตโนมัติ)"}</p>
+                </div>
+              </div>
+            )}
+            {isKbzpay && !hasValidRate && (
+              <div className="rate-error">
+                <span>
+                  {rateLoading
+                    ? "กำลังดึงอัตราแลกเปลี่ยน..."
+                    : rateError || "ไม่พบอัตราแลกเปลี่ยน ไม่สามารถแสดงยอด MMK ได้"}
+                </span>
+                <button type="button" className="btn-secondary" onClick={() => setStep(2)}>
+                  กลับไปขั้นตอนชำระเงิน
+                </button>
+              </div>
+            )}
           </div>
           </div>
 
@@ -910,6 +1044,16 @@ export default function Checkout({ orderSummary } = {}) {
               {loading ? "กำลังดำเนินการ..." : "ยืนยันสั่งซื้อ"}
             </button>
           </div>
+
+          <KBZPayPaymentPopup
+            open={kbzpayPopupOpen}
+            checkoutMode
+            checkoutStores={checkoutStores}
+            kbzpaySettings={kbzpaySettings}
+            onClose={() => setKbzpayPopupOpen(false)}
+            onSubmitted={() => setKbzpayPopupOpen(false)}
+            onCheckoutSubmit={handleKbzpayCheckoutSubmit}
+          />
         </div>
       )}
     </div>

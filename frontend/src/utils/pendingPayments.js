@@ -3,32 +3,92 @@
 
 const EXCLUDED_ORDER_STATUSES = ["cancelled", "refunded"];
 
-const roundMoney = (value) => {
+export const roundMoney = (value) => {
   const amount = Number(value);
   if (!Number.isFinite(amount)) return 0;
   return Math.round((amount + Number.EPSILON) * 100) / 100;
 };
 
-export const isPendingPaymentOrder = (order) =>
-  Boolean(order) &&
-  order.payment_status === "pending" &&
-  !EXCLUDED_ORDER_STATUSES.includes(order.status);
+const pick = (o, ...keys) => {
+  for (const k of keys) {
+    if (o && o[k] !== undefined && o[k] !== null) return o[k];
+  }
+  return undefined;
+};
+
+export const isPendingPaymentOrder = (order) => {
+  if (!order) return false;
+  const paymentStatus = pick(order, "payment_status", "paymentStatus");
+  const status = pick(order, "status", "order_status", "orderStatus");
+  return paymentStatus === "pending" && !EXCLUDED_ORDER_STATUSES.includes(status);
+};
 
 export const getPendingPaymentOrders = (orders) =>
   (Array.isArray(orders) ? orders : []).filter(isPendingPaymentOrder);
 
+// The customer order list (GET /orders -> getCustomerOrders) returns each
+// store_order WITHOUT a flat `store_id` column. The store reference lives at
+// `store_order.store` (id, name, ...), and some other endpoints nest it under
+// `store_snapshot`. These resolvers centralise that lookup so the order modal
+// and the payment popup always agree on which store an order belongs to and
+// therefore which KBZPay settings to load.
+export const getStoreOrders = (order) =>
+  pick(order, "store_orders", "storeOrders") || [];
+
+const firstDefined = (...values) => {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return undefined;
+};
+
+export const resolveStoreOrderStoreId = (storeOrder) => {
+  if (!storeOrder) return undefined;
+  const direct = firstDefined(pick(storeOrder, "store_id", "storeId"));
+  if (direct !== undefined) return direct;
+
+  const store = pick(storeOrder, "store", "storeInfo");
+  if (store && typeof store === "object") {
+    const id = firstDefined(pick(store, "id", "store_id", "storeId"));
+    if (id !== undefined) return id;
+  }
+
+  const snapshot = pick(storeOrder, "store_snapshot", "storeSnapshot");
+  if (snapshot && typeof snapshot === "object") {
+    const id = firstDefined(pick(snapshot, "store_id", "storeId", "id"));
+    if (id !== undefined) return id;
+  }
+
+  return undefined;
+};
+
+export const resolveStoreOrderStoreName = (storeOrder) => {
+  if (!storeOrder) return "";
+  const snapshot = pick(storeOrder, "store_snapshot", "storeSnapshot");
+  const store = pick(storeOrder, "store", "storeInfo");
+  return (
+    firstDefined(
+      snapshot && typeof snapshot === "object" ? pick(snapshot, "name") : undefined,
+      store && typeof store === "object" ? pick(store, "name") : undefined
+    ) || ""
+  );
+};
+
 // KBZPay orders are charged in MMK and carry amount_mmk. Any other order
 // (including COD) is charged in THB with total_amount.
 export const getOrderPaymentCurrency = (order) => {
-  const amountMmk = Number(order?.amount_mmk);
-  if (order?.payment_method === "kbzpay" && Number.isFinite(amountMmk) && amountMmk > 0) {
+  const paymentMethod = pick(order, "payment_method", "paymentMethod");
+  const amountMmk = Number(pick(order, "amount_mmk", "amountMmk"));
+  if (paymentMethod === "kbzpay" && Number.isFinite(amountMmk) && amountMmk > 0) {
     return "MMK";
   }
   return "THB";
 };
 
 export const getOrderPaymentAmount = (order, currency = getOrderPaymentCurrency(order)) =>
-  currency === "MMK" ? roundMoney(order?.amount_mmk) : roundMoney(order?.total_amount);
+  currency === "MMK"
+    ? roundMoney(pick(order, "amount_mmk", "amountMmk"))
+    : roundMoney(pick(order, "total_amount", "totalAmount", "amount"));
 
 const CURRENCY_SORT = { THB: 0, MMK: 1 };
 

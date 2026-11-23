@@ -2261,6 +2261,7 @@ textarea.form-input {
 .modal-store-status.status-picked_up { background: #e0f2f1; color: #00695c; }
 .modal-store-status.status-in_transit { background: #e1f5fe; color: #0277bd; }
 .modal-store-status.status-delivered { background: #e8f5e9; color: #2e7d32; }
+.modal-store-status.status-verified { background: #e8f5e9; color: #2e7d32; }
 .modal-store-status.status-cancelled { background: #fce4ec; color: #c62828; }
 .modal-store-status.status-refunded { background: #fce4ec; color: #c62828; }
 

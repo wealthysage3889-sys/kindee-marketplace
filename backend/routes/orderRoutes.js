@@ -46,11 +46,31 @@ router.post('/', verifyToken, [
   }).withMessage('Both latitude and longitude are required'),
   body('customerCoordinates.lat').optional().isFloat({ min: -90, max: 90 }),
   body('customerCoordinates.lng').optional().isFloat({ min: -180, max: 180 }),
-  // KBZPay exchange rate fields (only required when paymentMethod === 'kbzpay')
-  body('exchangeRate').optional().isFloat({ min: 0.001 }).withMessage('Invalid exchange rate'),
-  body('exchangeRateSource').optional().isString().trim().withMessage('Invalid exchange rate source'),
-  body('exchangeRateUpdatedAt').optional().isISO8601().withMessage('Invalid exchange rate timestamp'),
-  body('amountMMK').optional().isFloat({ min: 0.01 }).withMessage('Invalid MMK amount')
+  // KBZPay exchange rate fields (required only when paymentMethod === 'kbzpay')
+  body('exchangeRate').custom((value, { req }) => {
+    if (req.body.paymentMethod !== 'kbzpay') return true;
+    if (value === undefined || value === null) throw new Error('Exchange rate required for KBZPay');
+    if (!Number.isFinite(Number(value)) || Number(value) < 0.001) throw new Error('Invalid exchange rate');
+    return true;
+  }),
+  body('exchangeRateSource').custom((value, { req }) => {
+    if (req.body.paymentMethod !== 'kbzpay') return true;
+    if (typeof value !== 'string' || !value.trim()) throw new Error('Exchange rate source required for KBZPay');
+    return true;
+  }),
+  body('exchangeRateUpdatedAt').custom((value, { req }) => {
+    if (req.body.paymentMethod !== 'kbzpay') return true;
+    if (!value) throw new Error('Exchange rate timestamp required for KBZPay');
+    // ISO8601 check
+    if (isNaN(Date.parse(value))) throw new Error('Invalid exchange rate timestamp');
+    return true;
+  }),
+  body('amountMMK').custom((value, { req }) => {
+    if (req.body.paymentMethod !== 'kbzpay') return true;
+    if (value === undefined || value === null) throw new Error('MMK amount required for KBZPay');
+    if (!Number.isFinite(Number(value)) || Number(value) < 0.01) throw new Error('Invalid MMK amount');
+    return true;
+  })
 ], validate, asyncHandler(async (req, res) => {
   const { items, paymentMethod, customerNotes, deliveryAddress, customerCoordinates,
     exchangeRate, exchangeRateSource, exchangeRateUpdatedAt, amountMMK } = req.body;
@@ -99,6 +119,59 @@ router.post('/:id/payment-slip', validateId(), verifyToken, uploadSingle('slip',
     message: 'Payment slip uploaded',
     data: result
   });
+}));
+
+// Submit ONE slip for one or more KBZPay orders of the same store (customer).
+// multipart/form-data: storeId, orderIds (JSON array), note, slip (file).
+router.post('/submit-slip', verifyToken, authorize('customer'), uploadSingle('slip', 'payment-slips'), asyncHandler(async (req, res) => {
+  if (!req.file) {
+    throw new AppError('No file uploaded', 400);
+  }
+  const storeId = req.body.storeId;
+  let orderIds = req.body.orderIds;
+  if (typeof orderIds === 'string') {
+    try { orderIds = JSON.parse(orderIds); } catch { orderIds = []; }
+  }
+  const result = await orderService.submitStorePaymentSlips(req.user.id, storeId, orderIds, {
+    fileBuffer: req.file.buffer,
+    fileName: req.file.originalname,
+    mimeType: req.file.mimetype,
+    note: req.body.note
+  });
+
+  res.status(201).json({
+    success: true,
+    message: 'Payment slip submitted',
+    data: result
+  });
+}));
+
+// Store owner: list payment slips for their own store.
+router.get('/store/:storeId/payment-slips', validateId('storeId'), verifyToken, authorize('seller', 'admin', 'owner'), [
+  query('slipStatus').optional().isIn(['uploaded', 'approved', 'rejected']),
+  query('page').optional().isInt({ min: 1 }),
+  query('limit').optional().isInt({ min: 1, max: 100 })
+], validate, asyncHandler(async (req, res) => {
+  const result = await orderService.getStorePaymentSlips(req.params.storeId, req.user, {
+    slip_status: req.query.slipStatus,
+    page: parseInt(req.query.page) || 1,
+    limit: parseInt(req.query.limit) || 20
+  });
+  res.json({ success: true, data: result });
+}));
+
+// Store owner: approve a slip (manual confirmation -> order paid).
+router.patch('/store/payment-slips/:slipId/approve', validateId('slipId'), verifyToken, authorize('seller', 'admin', 'owner'), asyncHandler(async (req, res) => {
+  const result = await orderService.approveStorePaymentSlip(req.user.id, req.user.role, req.params.slipId);
+  res.json({ success: true, message: 'Payment slip approved', data: result });
+}));
+
+// Store owner: reject a slip (order returns to pending).
+router.patch('/store/payment-slips/:slipId/reject', validateId('slipId'), verifyToken, authorize('seller', 'admin', 'owner'), [
+  body('reason').optional().trim()
+], validate, asyncHandler(async (req, res) => {
+  const result = await orderService.rejectStorePaymentSlip(req.user.id, req.user.role, req.params.slipId, req.body.reason);
+  res.json({ success: true, message: 'Payment slip rejected', data: result });
 }));
 
 // Get customer orders

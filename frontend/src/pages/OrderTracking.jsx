@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { MapContainer, TileLayer, Marker, Popup, Polyline } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
@@ -7,7 +7,9 @@ import { useAuth } from "../context/AuthContext";
 import { useSocket } from "../context/SocketContext";
 import { orderAPI, deliveryAPI } from "../api";
 import { formatCurrency, formatDate, formatRelativeTime, formatAddress } from "../utils/helpers";
+import { paymentStatusLabel } from "../utils/orderFilters";
 import "./OrderTracking.css";
+import KBZPayPaymentPopup from "../components/KBZPayPaymentPopup";
 
 const STATUS_LABELS = {
   pending: "รอดำเนินการ",
@@ -44,11 +46,8 @@ export default function OrderTracking() {
   const [activeTab, setActiveTab] = useState("summary");
 const [mapCenter, setMapCenter] = useState([13.7563, 100.5018]);
 const [mapZoom, setMapZoom] = useState(13);
-const [slipFile, setSlipFile] = useState(null);
-const [slipAmount, setSlipAmount] = useState("");
-const [slipNote, setSlipNote] = useState("");
-const [slipUploading, setSlipUploading] = useState(false);
-const [slipError, setSlipError] = useState("");
+const [kbzpayPopupOpen, setKbzpayPopupOpen] = useState(false);
+const [slipSubmitted, setSlipSubmitted] = useState(false);
 
   const loadOrder = useCallback(async () => {
     try {
@@ -79,25 +78,14 @@ const [slipError, setSlipError] = useState("");
     loadOrder();
   }, [loadOrder]);
 
-  const handleSlipUpload = async (e) => {
-    e.preventDefault();
-    if (!slipFile) {
-      setSlipError("กรุณาเลือกไฟล์สลิป");
-      return;
-    }
-    setSlipUploading(true);
-    setSlipError("");
-    try {
-      await orderAPI.uploadPaymentSlip(orderId, slipFile, slipAmount || null, slipNote || null);
-      setSlipFile(null);
-      setSlipAmount("");
-      setSlipNote("");
-      await loadOrder();
-    } catch (err) {
-      setSlipError(err.message || "อัปโหลดสลิปไม่สำเร็จ");
-    } finally {
-      setSlipUploading(false);
-    }
+  const handlePayNow = () => {
+    setKbzpayPopupOpen(true);
+  };
+
+  const handlePaymentSubmitted = async () => {
+    setKbzpayPopupOpen(false);
+    setSlipSubmitted(true);
+    await loadOrder();
   };
 
   // Realtime: refresh order when status changes
@@ -110,6 +98,8 @@ const [slipError, setSlipError] = useState("");
     on("orderStatusUpdate", onOrderStatusUpdate);
     return () => off("orderStatusUpdate", onOrderStatusUpdate);
   }, [on, off, orderId, loadOrder]);
+
+  const popupOrders = useMemo(() => (order ? [order] : []), [order]);
 
   const getCurrentStatusIndex = () => {
     if (!order) return 0;
@@ -243,19 +233,25 @@ const [slipError, setSlipError] = useState("");
                   <span>รวมทั้งสิ้น</span>
                   <span>{formatCurrency(order.total_amount)}</span>
                 </div>
+                {order.payment_method === "kbzpay" && order.amount_mmk != null && (
+                  <div className="summary-row">
+                    <span>ยอดรวม (MMK)</span>
+                    <span>{formatCurrency(order.amount_mmk, "MMK")}</span>
+                  </div>
+                )}
               </div>
 
               <h3 style={{ marginTop: 20 }}>วิธีชำระเงิน</h3>
               <p className="payment-method">
-                {order.payment_method === "cod" ? "ชำระเงินปลายทาง" : 
-                 order.payment_method === "promptpay" ? "PromptPay" : "โอนเงิน"}
+                {order.payment_method === "cod" ? "ชำระเงินปลายทาง" :
+                 order.payment_method === "promptpay" ? "PromptPay" :
+                 order.payment_method === "kbzpay" ? "KBZPay Wallet (Myanmar)" : "โอนเงิน"}
               </p>
               <span className={`payment-status status-${order.payment_status}`}>
-                {order.payment_status === "paid" ? "ชำระแล้ว" : 
-                 order.payment_status === "pending" ? "รอชำระ" : "ล้มเหลว"}
+                {paymentStatusLabel(order.payment_status, order.status, order.payment_method)}
               </span>
 
-              {order.payment_status === "pending" && order.payment_method !== "cod" && (
+              {order.payment_status === "pending" && (
                 <div className="slip-upload-section">
                   {order.payment_slips && order.payment_slips.length > 0 ? (
                     <div className="slip-status">
@@ -271,38 +267,17 @@ const [slipError, setSlipError] = useState("");
                         <p className="slip-reject-reason">สาเหตุ: {order.payment_slips[0].reject_reason}</p>
                       )}
                       {order.payment_slips[0].slip_status === "rejected" && (
-                        <button onClick={() => setSlipFile(null)} className="btn-secondary">
+                        <button onClick={() => setKbzpayPopupOpen(true)} className="btn-secondary">
                           อัปโหลดใหม่
                         </button>
                       )}
                     </div>
                   ) : (
-                    <div className="slip-upload-form">
-                      <h3 style={{ marginTop: 20 }}>อัปโหลดสลิปการชำระเงิน</h3>
-                      <p>อัปโหลดรูปภาพหรือไฟล์ PDF ของสลิปการโอนเงิน</p>
-                      {slipError && <div className="slip-error">{slipError}</div>}
-                      <label className="slip-file-label">
-                        <input type="file" accept="image/*,application/pdf" onChange={(e) => setSlipFile(e.target.files?.[0])} />
-                        {slipFile ? slipFile.name : "เลือกไฟล์สลิป"}
-                      </label>
-                      <div className="slip-form-row">
-                        <input
-                          type="number"
-                          placeholder="จำนวนเงิน (THB)"
-                          value={slipAmount}
-                          onChange={(e) => setSlipAmount(e.target.value)}
-                        />
-                        <input
-                          type="text"
-                          placeholder="หมายเหตุ (ถ้ามี)"
-                          value={slipNote}
-                          onChange={(e) => setSlipNote(e.target.value)}
-                        />
-                      </div>
-                      <button onClick={handleSlipUpload} disabled={slipUploading} className="btn-primary">
-                        {slipUploading ? "กำลังอัปโหลด..." : "อัปโหลดสลิป"}
+                    order.payment_method === "kbzpay" && order.status === "pending" ? (
+                      <button type="button" className="btn btn-pay-summary" onClick={handlePayNow}>
+                        ชำระเงินทันที
                       </button>
-                    </div>
+                    ) : null
                   )}
                 </div>
               )}
@@ -451,6 +426,21 @@ const [slipError, setSlipError] = useState("");
           ดูออเดอร์ทั้งหมด
         </button>
       </div>
+
+      {slipSubmitted && (
+        <div className="slip-success">
+          ส่งสลิปเรียบร้อยแล้ว รอร้านค้าตรวจสอบ
+        </div>
+      )}
+
+      {kbzpayPopupOpen && (
+        <KBZPayPaymentPopup
+          open
+          orders={popupOrders}
+          onClose={() => setKbzpayPopupOpen(false)}
+          onSubmitted={handlePaymentSubmitted}
+        />
+      )}
     </div>
   );
 }

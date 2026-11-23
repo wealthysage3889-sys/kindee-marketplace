@@ -72,7 +72,7 @@ function createFakeSupabase(handlers) {
     return builder;
   };
 
-  // Storage mock
+// Storage mock
   const storage = {
     from: (bucket) => ({
       upload: async (filePath, fileBuffer, options) => {
@@ -91,14 +91,30 @@ function createFakeSupabase(handlers) {
         }
         return handler({ op: 'getPublicUrl', bucket, filePath, calls });
       },
-remove: async (paths) => {
-  calls.push({ table: 'storage', op: 'remove', bucket, paths });
-  const handler = handlers.storage;
-  if (!handler) {
-    return { data: null, error: null };
-  }
-  return handler({ op: 'remove', bucket, paths, calls });
-},
+      exists: async (path) => {
+        calls.push({ table: 'storage', op: 'exists', bucket, path });
+        const handler = handlers.storage;
+        if (!handler) {
+          return { data: null, error: { message: `unexpected storage bucket: ${bucket}` } };
+        }
+        return handler({ op: 'exists', bucket, path, calls });
+      },
+      createSignedUrl: async (path, expiresIn) => {
+        calls.push({ table: 'storage', op: 'createSignedUrl', bucket, path, expiresIn });
+        const handler = handlers.storage;
+        if (!handler) {
+          return { data: null, error: { message: `unexpected storage bucket: ${bucket}` } };
+        }
+        return handler({ op: 'createSignedUrl', bucket, path, expiresIn, calls });
+      },
+      remove: async (paths) => {
+        calls.push({ table: 'storage', op: 'remove', bucket, paths });
+        const handler = handlers.storage;
+        if (!handler) {
+          return { data: null, error: null };
+        }
+        return handler({ op: 'remove', bucket, paths, calls });
+      },
     }),
   };
 
@@ -224,6 +240,12 @@ storage: ({ op, bucket, filePath, fileBuffer, options, paths }) => {
   }
   if (op === 'getPublicUrl') {
     return { ...publicUrlResult, data: { ...(publicUrlResult.data || {}), publicUrl: `https://example.com/${filePath}` } };
+  }
+  if (op === 'exists') {
+    return { data: true, error: null };
+  }
+  if (op === 'createSignedUrl') {
+    return { data: { signedUrl: `https://example.com/signed/${bucket}/${filePath}?token=xyz` }, error: null };
   }
   if (op === 'remove') {
     return removeResult || { data: null, error: null };

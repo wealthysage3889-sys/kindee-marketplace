@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { formatDate } from "../utils/helpers";
+import { formatDate, formatPhoneForDisplay, copyToClipboard, showToast } from "../utils/helpers";
 import { orderAPI } from "../api";
+import { paymentStatusLabel, getPaymentStatusDisplay } from "../utils/orderFilters";
 import "./OrderDetailModal.css";
 
 const STATUS_LABELS = {
@@ -23,28 +24,6 @@ const PAYMENT_METHOD_LABELS = {
   kbzpay: "KBZPay Wallet (Myanmar)",
   transfer: "โอนเงิน",
 };
-
-function paymentStatusLabel(paymentStatus, orderStatus, paymentMethod) {
-  if (orderStatus === "cancelled" || orderStatus === "refunded" || orderStatus === "failed") {
-    return "ไม่ต้องชำระ";
-  }
-  if (paymentMethod === "cod") {
-    if (orderStatus === "delivered") return "ชำระแล้ว";
-    return "รอชำระปลายทาง";
-  }
-  if (paymentMethod === "kbzpay") {
-    if (paymentStatus === "paid") return "ชำระแล้ว";
-    if (paymentStatus === "awaiting_review") return "รอตรวจสอบสลิป";
-    if (paymentStatus === "expired") return "หมดอายุ";
-    return "รอชำระ";
-  }
-  if (paymentMethod === "promptpay" || paymentMethod === "transfer") {
-    if (paymentStatus === "paid") return "ชำระแล้ว";
-    if (paymentStatus === "awaiting_review") return "รอตรวจสอบสลิป";
-    return "รอชำระ";
-  }
-  return paymentStatus || "-";
-}
 
 function formatCurrency(amount, currency = "THB") {
   const n = Number(amount);
@@ -167,8 +146,8 @@ function renderOrderDetail(o) {
           </div>
           <div className="admin-order-detail-row">
             <span className="admin-order-detail-label">สถานะการชำระเงิน</span>
-            <span className={`payment-badge payment-${o.payment_status || "pending"} admin-order-detail-value`}>
-              {paymentStatusLabel(o.payment_status, o.status, o.payment_method)}
+            <span className={`payment-badge ${getPaymentStatusDisplay(o.payment_status, o.status, o.payment_method).statusClass.replace('pay-', 'payment-')} admin-order-detail-value`}>
+              {getPaymentStatusDisplay(o.payment_status, o.status, o.payment_method).label}
             </span>
           </div>
           <div className="admin-order-detail-row">
@@ -217,9 +196,31 @@ function renderOrderDetail(o) {
             <span className="admin-order-detail-value">{customer.name || "-"}</span>
           </div>
           {customer.phone && (
-            <div className="admin-order-detail-row">
+            <div className="admin-order-detail-row admin-order-detail-phone-row">
               <span className="admin-order-detail-label">เบอร์โทรศัพท์</span>
-              <span className="admin-order-detail-value">{customer.phone}</span>
+              <div className="admin-order-detail-phone-wrapper">
+                <span className="admin-order-detail-value admin-order-detail-phone">{formatPhoneForDisplay(customer.phone)}</span>
+                <button
+                  type="button"
+                  className="admin-order-detail-copy-btn"
+                  onClick={async () => {
+                    const formattedPhone = formatPhoneForDisplay(customer.phone);
+                    const success = await copyToClipboard(formattedPhone);
+                    if (success) {
+                      showToast("คัดลอกเบอร์โทรศัพท์แล้ว", "success");
+                    } else {
+                      showToast("คัดลอกไม่สำเร็จ กรุณาลองใหม่", "error");
+                    }
+                  }}
+                  aria-label="คัดลอกเบอร์โทรศัพท์"
+                  title="คัดลอกเบอร์โทรศัพท์"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </div>
             </div>
           )}
           <h3>ร้านค้า</h3>
@@ -331,7 +332,7 @@ export default function OrderDetailModal({ isOpen, onClose, orderId, mode = "adm
       setLoading(true);
       setError("");
       try {
-        const res = await orderAPI.getById(orderId);
+        const res = await orderAPI.getById(orderId, mode);
         const data = res?.data || res || null;
         if (!cancelled) setOrder(data);
       } catch (err) {
@@ -386,7 +387,7 @@ export default function OrderDetailModal({ isOpen, onClose, orderId, mode = "adm
                 className="btn btn-outline btn-small"
                 onClick={() => {
                   if (orderId) {
-                    orderAPI.getById(orderId).then((res) => setOrder(res?.data || res)).catch(() => {});
+                    orderAPI.getById(orderId, mode).then((res) => setOrder(res?.data || res)).catch(() => {});
                   }
                 }}
                 style={{ marginTop: 8 }}

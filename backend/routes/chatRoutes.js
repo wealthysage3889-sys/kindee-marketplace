@@ -80,12 +80,14 @@ router.get('/conversations/:id', validateId(), verifyToken, asyncHandler(async (
 router.get('/conversations/:id/messages', validateId(), verifyToken, captureCustomerIp, [
   query('page').optional().isInt({ min: 1 }),
   query('limit').optional().isInt({ min: 1, max: 100 }),
-  query('beforeId').optional().isUUID()
+  query('beforeId').optional().isUUID(),
+  query('afterId').optional().isUUID()
 ], validate, asyncHandler(async (req, res) => {
   const pagination = {
     page: parseInt(req.query.page) || 1,
     limit: parseInt(req.query.limit) || 50,
-    before_id: req.query.beforeId
+    before_id: req.query.beforeId,
+    after_id: req.query.afterId
   };
   
   const messages = await chatService.getMessages(req.params.id, req.user.id, pagination);

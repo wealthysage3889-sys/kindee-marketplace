@@ -48,6 +48,26 @@ const getVatRate = async () => {
   return rate;
 };
 
+// Read the configured customer wallet toggle (boolean) from the settings table.
+// Defaults to false (disabled) when unset or invalid — safe default that does not
+// touch any existing wallet balances or transaction history.
+const getCustomerWalletEnabled = async () => {
+  const { data: setting } = await supabaseAdmin
+    .from('settings')
+    .select('value')
+    .eq('key', 'customer_wallet_enabled')
+    .maybeSingle();
+
+  if (!setting || setting.value === null || setting.value === undefined) {
+    return false;
+  }
+
+  const raw = setting.value;
+  if (typeof raw === 'boolean') return raw;
+  if (typeof raw === 'string') return raw === 'true' || raw === '1';
+  return Boolean(raw);
+};
+
 // Resolve every line from the database. Only product_id and quantity are ever
 // read from the client, so a tampered price in the request body can never lower
 // the amount charged. Used by both the checkout preview and order creation so
@@ -279,6 +299,16 @@ const createOrderInternal = async (customerId, orderData) => {
   if (delivery_address && delivery_address.phone) {
     const normalizedPhone = normalizePhoneE164(delivery_address.phone);
     if (normalizedPhone) delivery_address.phone = normalizedPhone;
+  }
+
+  // Block new wallet payments when the customer wallet system is disabled.
+  // This is enforced server-side (not just hidden in UI). Existing orders and
+  // wallet balances/history are never modified or deleted by this toggle.
+  if (payment_method === 'wallet') {
+    const walletEnabled = await getCustomerWalletEnabled();
+    if (!walletEnabled) {
+      throw new ValidationError('ระบบวอเลทลูกค้าถูกปิดใช้งาน ขณะนี้ไม่สามารถชำระเงินด้วยวอเลทได้');
+    }
   }
 
   const plan = await buildOrderPlan(items);
@@ -1133,7 +1163,8 @@ export const updateOrderStatusAdmin = async (orderId, newStatus, notes) => {
     ...(notes !== undefined && { admin_notes: notes }),
     ...(newStatus === 'delivered' && { delivered_at: new Date().toISOString() }),
     ...(newStatus === 'cancelled' && { cancelled_at: new Date().toISOString() }),
-    ...(newStatus === 'refunded' && { cancelled_at: new Date().toISOString() })
+    ...(newStatus === 'refunded' && { cancelled_at: new Date().toISOString() }),
+    ...(newStatus === 'delivered' && current.payment_method === 'cod' && { payment_status: 'paid' }),
   };
 
   const { data: order, error } = await supabaseAdmin

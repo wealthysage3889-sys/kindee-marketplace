@@ -54,7 +54,7 @@ const attachProfileContext = async (req, res, userId, token) => {
 };
 
 // Detect Supabase "bad_jwt" error (malformed token payload)
-const isBadJwtError = (error) => {
+export const isBadJwtError = (error) => {
   if (!error) return false;
   const msg = String(error.message || '').toLowerCase();
   return error.code === 'bad_jwt' ||
@@ -65,7 +65,7 @@ const isBadJwtError = (error) => {
 };
 
 // Extract user ID from JWT payload (handles malformed payloads by fixing JSON)
-const extractUserIdFromToken = (token) => {
+export const extractUserIdFromToken = (token) => {
   try {
     const parts = token.split('.');
     if (parts.length !== 3) return null;

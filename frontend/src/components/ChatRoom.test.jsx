@@ -20,6 +20,10 @@ const { getById } = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const { updateOrderStatus } = vi.hoisted(() => ({
+  updateOrderStatus: vi.fn(),
+}));
+
 const { getSignedUrl } = vi.hoisted(() => ({
   getSignedUrl: vi.fn(),
 }));
@@ -40,6 +44,9 @@ vi.mock("../api", () => ({
   },
   orderAPI: {
     getById: (...args) => getById(...args),
+  },
+  adminAPI: {
+    updateOrderStatus: (...args) => updateOrderStatus(...args),
   },
   normalizeAttachment: vi.fn((a) => a),
 }));
@@ -183,7 +190,7 @@ describe("ChatRoom - Order Detail Popup", () => {
       fireEvent.click(screen.getByText("ดูรายละเอียดคำสั่งซื้อ →"));
     });
     
-    await waitFor(() => expect(getById).toHaveBeenCalledWith("order-1"), { timeout: 5000 });
+    await waitFor(() => expect(getById).toHaveBeenCalledWith("order-1", "customer"), { timeout: 5000 });
   }, 10000);
 
   it("closes modal when close button is clicked", async () => {
@@ -266,17 +273,152 @@ describe("ChatRoom - Order Detail Popup", () => {
 
   it("shows error state when API fails", async () => {
     getById.mockRejectedValue(new Error("Not found"));
-    
+
     renderChatRoom();
     await waitFor(() => expect(screen.getByText("ดูรายละเอียดคำสั่งซื้อ →")).toBeTruthy(), { timeout: 5000 });
-    
+
     await act(async () => {
       fireEvent.click(screen.getByText("ดูรายละเอียดคำสั่งซื้อ →"));
     });
-    
+
     await waitFor(() => expect(screen.getByText("Not found")).toBeTruthy(), { timeout: 5000 });
   }, 10000);
 });
+
+// ---------------------------------------------------------------------------
+// ChatRoom - Order status change (ส่งเสร็จ) in selladmin mode
+// ---------------------------------------------------------------------------
+describe("ChatRoom - ส่งเสร็จออเดอร์ (สถานะชำระเงิน COD)", () => {
+  const codInTransitMessage = {
+    id: "msg-2",
+    type: "order_update",
+    content: "อัปเดตสถานะคำสั่งซื้อ",
+    created_at: "2026-01-15T10:30:00Z",
+    sender_id: "customer-1",
+    sender: { id: "customer-1", name: "ลูกค้า ทดสอบ", avatar_url: null },
+    metadata: {
+      kind: "order_chat",
+      order_id: "order-1",
+      store_order_number: "SO-1001",
+      headline: "อัปเดตสถานะคำสั่งซื้อ",
+      items: [{ product_name: "สินค้าทดสอบ", quantity: 2 }],
+      total_amount: 500,
+      shipping_fee: 50,
+      payment_method: "cod",
+      payment_method_label: "ชำระเงินปลายทาง",
+      order_status: "in_transit",
+      order_status_label: "กำลังจัดส่ง",
+      payment_status: "pending",
+      payment_status_label: "รอชำระปลายทาง",
+      ordered_at: "2026-01-15T10:30:00Z",
+    },
+  };
+
+  const kbzpayInTransitMessage = {
+    ...codInTransitMessage,
+    id: "msg-3",
+    payment_method: "kbzpay",
+    payment_method_label: "KBZPay",
+    payment_status: "awaiting_review",
+    payment_status_label: "รอตรวจสอบสลิป",
+  };
+
+  beforeEach(() => {
+    getConversation.mockReset();
+    getMessages.mockReset();
+    markAsRead.mockReset();
+    sendMessage.mockReset();
+    getById.mockReset();
+    updateOrderStatus.mockReset();
+    getConversation.mockResolvedValue({ data: mockConversation });
+    markAsRead.mockResolvedValue({});
+    getById.mockResolvedValue({ data: {
+      id: "order-1",
+      order_number: "ORD-1001",
+      status: "in_transit",
+      payment_status: "pending",
+      payment_method: "cod",
+      total_amount: 500,
+      created_at: "2026-01-15T10:30:00Z",
+      customer: { name: "ลูกค้า ทดสอบ", phone: "0812345678" },
+      store_orders: [],
+    }});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const renderAdminChat = (message) => {
+    getMessages.mockResolvedValue({ data: [message] });
+    return render(
+      <BrowserRouter>
+        <ChatRoom conversationId="conv-1" mode="admin" />
+      </BrowserRouter>
+    );
+  };
+
+  it("COD ส่งเสร็จสำเร็จ การ์ดทุกใบของ Order ID เดียวกันแสดง เก็บเงินแล้ว (pay-paid)", async () => {
+    updateOrderStatus.mockResolvedValue({ data: {
+      id: "order-1",
+      status: "delivered",
+      payment_status: "paid",
+      payment_method: "cod",
+    }});
+    renderAdminChat(codInTransitMessage);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /ส่งเสร็จ/ })).toBeTruthy(), { timeout: 5000 });
+    // ก่อนส่งยังคงแสดง รอชำระปลายทาง
+    expect(screen.getByText("รอชำระปลายทาง")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /ส่งเสร็จ/ }));
+    });
+
+    await waitFor(() => expect(updateOrderStatus).toHaveBeenCalledWith("order-1", "delivered", ""), { timeout: 5000 });
+    await waitFor(() => expect(screen.getByText("เก็บเงินแล้ว")).toBeTruthy(), { timeout: 5000 });
+    const badge = screen.getByText("เก็บเงินแล้ว");
+    expect(badge.closest(".order-card-status")?.classList.contains("pay-paid")).toBe(true);
+    // ยังแสดงสถานะคำสั่งซื้อเป็นจัดส่งสำเร็จด้วย
+    expect(screen.getByText("ส่งสำเร็จ")).toBeTruthy();
+  }, 15000);
+
+  it("KBZPay กดส่งเสร็จแล้วสถานะชำระเงินต้องคงเดิม (ตรวจสอบแล้ว), ไม่เปลี่ยนเป็น ชำระแล้ว", async () => {
+    updateOrderStatus.mockResolvedValue({ data: {
+      id: "order-1",
+      status: "delivered",
+      payment_status: "awaiting_review",
+      payment_method: "kbzpay",
+    }});
+    renderAdminChat(kbzpayInTransitMessage);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /ส่งเสร็จ/ })).toBeTruthy(), { timeout: 5000 });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /ส่งเสร็จ/ }));
+    });
+
+    await waitFor(() => expect(updateOrderStatus).toHaveBeenCalledWith("order-1", "delivered", ""), { timeout: 5000 });
+    await waitFor(() => expect(screen.getByText("ตรวจสอบแล้ว")).toBeTruthy(), { timeout: 5000 });
+    expect(screen.queryByText("ชำระแล้ว")).toBeNull();
+  }, 15000);
+
+  it("API ผิดพลาด ไม่อ้างว่ารับเงินแล้ว และยังแสดง รอชำระปลายทาง", async () => {
+    updateOrderStatus.mockRejectedValue(new Error("ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์"));
+    renderAdminChat(codInTransitMessage);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /ส่งเสร็จ/ })).toBeTruthy(), { timeout: 5000 });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /ส่งเสร็จ/ }));
+    });
+
+    await waitFor(() => expect(screen.getByText(/ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์|เปลี่ยนสถานะไม่สำเร็จ/)).toBeTruthy(), { timeout: 5000 });
+    expect(screen.queryByText("เก็บเงินแล้ว")).toBeNull();
+    expect(screen.getByText("รอชำระปลายทาง")).toBeTruthy();
+  }, 15000);
+});
+
 
 // ---------------------------------------------------------------------------
 // Chat image attachments (regression)
@@ -285,12 +427,16 @@ describe("ChatRoom - Order Detail Popup", () => {
 // old message persists an expired URL; when it fails to load the client must
 // re-sign it from the embedded { bucket, path } so old AND new images render.
 describe("ChatRoom - chat image attachments", () => {
-  const expiredUrl =
-    "https://test.supabase.co/storage/v1/object/sign/chat-attachments/chat-attachments/conv-1/2026/11/shot.png?token=expired";
-  const freshUrl =
-    "https://test.supabase.co/storage/v1/object/sign/chat-attachments/chat-attachments/conv-1/2026/11/shot.png?token=fresh";
+  // Build a signed URL with a real JWT-style token so the client can read `exp`
+  // and decide proactively whether it is already expired. `objectPath` may carry
+  // a duplicated bucket prefix (legacy rows written before the prefix fix).
+  const signedUrl = (exp, objectPath) => {
+    const payload = Buffer.from(JSON.stringify({ exp })).toString("base64url");
+    return `https://test.supabase.co/storage/v1/object/sign/chat-attachments/${objectPath}?token=header.${payload}.signature`;
+  };
+  const nowSeconds = () => Math.floor(Date.now() / 1000);
 
-  const imageMessage = {
+  const makeImageMessage = (fileUrl) => ({
     id: "msg-img",
     type: "image",
     content: "",
@@ -300,13 +446,13 @@ describe("ChatRoom - chat image attachments", () => {
     attachments: [
       {
         id: "att-1",
-        file_url: expiredUrl,
+        file_url: fileUrl,
         file_name: "shot.png",
         file_size: 2048,
         mime_type: "image/png",
       },
     ],
-  };
+  });
 
   beforeEach(() => {
     getConversation.mockReset();
@@ -316,7 +462,6 @@ describe("ChatRoom - chat image attachments", () => {
     getById.mockReset();
     getSignedUrl.mockReset();
     getConversation.mockResolvedValue({ data: mockConversation });
-    getMessages.mockResolvedValue({ data: [imageMessage] });
     markAsRead.mockResolvedValue({});
   });
 
@@ -324,7 +469,11 @@ describe("ChatRoom - chat image attachments", () => {
     vi.restoreAllMocks();
   });
 
-  it("re-signs an expired chat image URL on load error", async () => {
+  it("re-signs an expired chat image URL (legacy double bucket prefix) before rendering", async () => {
+    // Legacy shape: bucket name appears twice in the object path AND token expired.
+    const expiredUrl = signedUrl(nowSeconds() - 3600, "chat-attachments/conv-1/2026/11/shot.png");
+    const freshUrl = signedUrl(nowSeconds() + 3600, "chat-attachments/conv-1/2026/11/shot.png");
+    getMessages.mockResolvedValue({ data: [makeImageMessage(expiredUrl)] });
     getSignedUrl.mockResolvedValue({ data: { signedUrl: freshUrl } });
 
     render(
@@ -334,22 +483,21 @@ describe("ChatRoom - chat image attachments", () => {
     );
 
     const img = await screen.findByAltText("shot.png");
-    expect(img.getAttribute("src")).toBe(expiredUrl);
-
-    await act(async () => {
-      fireEvent.error(img);
-    });
-
     await waitFor(() => expect(img.getAttribute("src")).toBe(freshUrl));
+    // The path handed to the backend is the single normalised key (bucket prefix
+    // stripped exactly once), never `chat-attachments/chat-attachments/...`.
     expect(getSignedUrl).toHaveBeenCalledWith(
       "chat-attachments",
-      "chat-attachments/conv-1/2026/11/shot.png",
+      "conv-1/2026/11/shot.png",
       3600,
       "customer"
     );
   }, 10000);
 
-  it("keeps a working image URL untouched (no re-sign on success)", async () => {
+  it("keeps a fresh, correctly-prefixed image URL untouched (no re-sign)", async () => {
+    const workingUrl = signedUrl(nowSeconds() + 3600, "conv-1/2026/11/shot.png");
+    getMessages.mockResolvedValue({ data: [makeImageMessage(workingUrl)] });
+
     render(
       <BrowserRouter>
         <ChatRoom conversationId="conv-1" mode="customer" />
@@ -357,8 +505,7 @@ describe("ChatRoom - chat image attachments", () => {
     );
 
     const img = await screen.findByAltText("shot.png");
-    // No error event fired -> no refresh attempted.
+    expect(img.getAttribute("src")).toBe(workingUrl);
     expect(getSignedUrl).not.toHaveBeenCalled();
-    expect(img.getAttribute("src")).toBe(expiredUrl);
   }, 10000);
 });

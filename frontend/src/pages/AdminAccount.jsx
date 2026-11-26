@@ -1,8 +1,10 @@
-﻿import { useEffect, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { adminAPI } from "../api/admin";
 import { storeAPI } from "../api/product";
+import { walletAPI } from "../api";
+import { extractList } from "../utils/helpers";
 import StoreProfileEditModal from "../components/StoreProfileEditModal";
 
 const MODAL_TITLES = {
@@ -12,6 +14,9 @@ const MODAL_TITLES = {
   socialLogin: "ตั้งค่า Google / Social Login",
   exchangeRate: "ตั้งค่าอัตราแลกเปลี่ยน THB → MMK",
   vat: "ตั้งค่าภาษีมูลค่าเพิ่ม",
+  wallet: "ตั้งค่าวอเลทลูกค้า",
+  meeCardApprovals: "อนุมัติสมัครวอเลท Mee Card",
+  security: "ความปลอดภัย / บัญชีที่เชื่อมต่อ",
 };
 
 const MoreVerticalIcon = () => (
@@ -69,6 +74,64 @@ const VatIcon = () => (
     <circle cx="12" cy="8" r="7" />
   </svg>
 );
+const WalletIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="2" y="6" width="20" height="12" rx="2" ry="2" />
+    <path d="M3 12h18" />
+    <line x1="12" y1="6" x2="12" y2="12" />
+    <line x1="12" y1="18" x2="12" y2="12" />
+  </svg>
+);
+
+const MeeCardApprovalIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="2.5" y="5" width="19" height="14" rx="2.5" />
+    <path d="M2.5 10h19" />
+    <path d="M7 13h10" />
+    <path d="M12 10v10" />
+    <path d="M9 12l2 2 4-4" />
+  </svg>
+);
+
+const ShieldIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 2l4 9v6a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2v-6l4-9" />
+  </svg>
+);
+const DeviceIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+    <line x1="8" y1="21" x2="16" y2="21" />
+    <line x1="12" y1="17" x2="12" y2="21" />
+  </svg>
+);
+const HistoryIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="10" />
+    <polyline points="12 6 12 12 16 14" />
+  </svg>
+);
+const AlertIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M10 29v-6l2-2 2 2v6" />
+    <polyline points="10 14 12 14 14 14" />
+    <path d="M7 23h10" />
+  </svg>
+);
+const LogoutAllIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <path d="m16 17 5-5-5-5" />
+    <path d="M21 12H9" />
+    <circle cx="12" cy="12" r="1" />
+  </svg>
+);
+const UnlinkIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M15 15l-4-4 4-4" />
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+  </svg>
+);
 const StoreProductsIcon = () => (
   <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z" /><line x1="3" y1="6" x2="21" y2="6" /><path d="M16 10a4 4 0 0 1-8 0" />
@@ -120,6 +183,18 @@ export default function AdminAccount() {
   const [socialForm, setSocialForm] = useState(emptySocial());
   const [exchangeRateForm, setExchangeRateForm] = useState({ rate: "", updatedAt: "" });
   const [vatForm, setVatForm] = useState({ rate: "", updatedAt: "" });
+  const [walletForm, setWalletForm] = useState({ enabled: false });
+  const [walletLoading, setWalletLoading] = useState(false);
+
+  // ================ Mee Card Approvals state ================
+  const [meeCardApprovals, setMeeCardApprovals] = useState([]);
+  const [meeCardApprovalsLoading, setMeeCardApprovalsLoading] = useState(false);
+  const [meeCardApprovalsError, setMeeCardApprovalsError] = useState("");
+  const [meeCardApprovalsPage, setMeeCardApprovalsPage] = useState(1);
+  const [meeCardApprovalsStatus, setMeeCardApprovalsStatus] = useState('pending');
+  const [meeCardApprovalsCounts, setMeeCardApprovalsCounts] = useState({ pending: 0, approved: 0, rejected: 0, expired: 0, total: 0 });
+  const [meeCardReviewLoading, setMeeCardReviewLoading] = useState(null);
+
   const [store, setStore] = useState(null);
   const [storeLoading, setStoreLoading] = useState(true);
   const [storeLoadError, setStoreLoadError] = useState(false);
@@ -133,6 +208,27 @@ export default function AdminAccount() {
   const [kbzpaySuccess, setKbzpaySuccess] = useState("");
   const [kbzpaySettings, setKbzpaySettings] = useState(null);
   const menuRef = useRef(null);
+
+  // ================ Security state ================
+  const [securityTab, setSecurityTab] = useState("overview");
+  const [sessions, setSessions] = useState([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionsError, setSessionsError] = useState("");
+  const [loginHistory, setLoginHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+  const [securityAlerts, setSecurityAlerts] = useState([]);
+  const [alertsLoading, setAlertsLoading] = useState(false);
+  const [alertsError, setAlertsError] = useState("");
+  const [connectedAccounts, setConnectedAccounts] = useState([]);
+  const [accountsLoading, setAccountsLoading] = useState(false);
+  const [accountsError, setAccountsError] = useState("");
+  const [securityActionId, setSecurityActionId] = useState(null);
+  const [logoutAllLoading, setLogoutAllLoading] = useState(false);
+  const [cpForm, setCpForm] = useState({ newPassword: "", confirmPassword: "" });
+  const [cpError, setCpError] = useState("");
+  const [cpSuccess, setCpSuccess] = useState("");
+  const [cpSaving, setCpSaving] = useState(false);
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
 
@@ -199,6 +295,77 @@ export default function AdminAccount() {
     return () => { active = false; };
   }, [kbzpayOpen, store]);
 
+  // ================ Security loaders (admin namespace) ================
+  const loadSessions = useCallback(async () => {
+    setSessionsLoading(true);
+    setSessionsError("");
+    try {
+      const result = await adminAPI.getSessions();
+      const list = extractList(result, "sessions") || extractList(result, "data") || [];
+      setSessions(Array.isArray(list) ? list : []);
+    } catch (err) {
+      setSessionsError(err.message || "โหลดเซสชันไม่สำเร็จ");
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, []);
+
+  const loadLoginHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    setHistoryError("");
+    try {
+      const result = await adminAPI.getLoginHistory();
+      const list = extractList(result, "login_history") || extractList(result, "data") || [];
+      setLoginHistory(Array.isArray(list) ? list : []);
+    } catch (err) {
+      setHistoryError(err.message || "โหลดประวัติการเข้าสู่ระบบไม่สำเร็จ");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  const loadSecurityAlerts = useCallback(async () => {
+    setAlertsLoading(true);
+    setAlertsError("");
+    try {
+      const result = await adminAPI.getSecurityAlerts();
+      const list = extractList(result, "security_alerts") || extractList(result, "data") || [];
+      setSecurityAlerts(Array.isArray(list) ? list : []);
+    } catch (err) {
+      setAlertsError(err.message || "โหลดการแจ้งเตือนไม่สำเร็จ");
+    } finally {
+      setAlertsLoading(false);
+    }
+  }, []);
+
+  const loadConnectedAccounts = useCallback(async () => {
+    setAccountsLoading(true);
+    setAccountsError("");
+    try {
+      const result = await adminAPI.getProfile();
+      const profile = extractList(result, "profiles")?.[0] || result?.data || result || {};
+      const providers = [];
+      if (profile.google_id) providers.push({ provider: "google", label: "Google", id: profile.google_id });
+      if (profile.facebook_id) providers.push({ provider: "facebook", label: "Facebook", id: profile.facebook_id });
+      if (profile.line_id) providers.push({ provider: "line", label: "LINE", id: profile.line_id });
+      setConnectedAccounts(providers);
+    } catch (err) {
+      setAccountsError(err.message || "โหลดบัญชีที่เชื่อมต่อไม่สำเร็จ");
+    } finally {
+      setAccountsLoading(false);
+    }
+  }, []);
+
+  // Load security data when security modal opens
+  useEffect(() => {
+    if (modal === "security") {
+      loadSessions();
+      loadLoginHistory();
+      loadSecurityAlerts();
+      loadConnectedAccounts();
+    }
+  }, [modal, loadSessions, loadLoginHistory, loadSecurityAlerts, loadConnectedAccounts]);
+
   useEffect(() => {
     if (!menuOpen) return undefined;
     const handleClickOutside = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); };
@@ -261,6 +428,14 @@ export default function AdminAccount() {
     setModal("socialLogin");
   };
 
+  const openSecurity = () => {
+    setMenuOpen(false); setFormError(""); setFormSuccess("");
+    setCpForm({ newPassword: "", confirmPassword: "" });
+    setCpError(""); setCpSuccess("");
+    setSecurityTab("overview");
+    setModal("security");
+  };
+
   const openExchangeRate = async () => {
     setMenuOpen(false); setFormError(""); setFormSuccess("");
     try {
@@ -293,6 +468,102 @@ export default function AdminAccount() {
       setVatForm({ rate: "7", updatedAt: "" });
     }
     setModal("vat");
+  };
+
+  const openCustomerWalletSettings = async () => {
+    setMenuOpen(false); setFormError(""); setFormSuccess("");
+    setWalletLoading(true);
+    try {
+      const response = await adminAPI.getSetting("customer_wallet_enabled");
+      const data = response?.data || response || null;
+      const raw = data ? data.value : null;
+      let enabled = false;
+      if (raw !== null && raw !== undefined) {
+        if (typeof raw === "boolean") enabled = raw;
+        else if (typeof raw === "string") enabled = raw === "true" || raw === "1";
+        else enabled = Boolean(raw);
+      }
+      setWalletForm({ enabled });
+    } catch {
+      setWalletForm({ enabled: false });
+    } finally {
+      setWalletLoading(false);
+    }
+    setModal("wallet");
+  };
+
+  const handleCustomerWalletSubmit = async (e) => {
+    e.preventDefault(); setFormError(""); setFormSuccess("");
+    setSaving(true);
+    try {
+      const settings = [
+        {
+          key: "customer_wallet_enabled",
+          value: String(!!walletForm.enabled),
+          category: "wallet",
+          isPublic: false,
+          description: "เปิด/ปิดระบบวอเลทสำหรับลูกค้าทั้งระบบ (ค่าเริ่มต้นปิดใช้งาน)"
+        }
+      ];
+      await adminAPI.bulkUpdateSettings(settings);
+      setFormSuccess("บันทึกการตั้งค่าวอเลทลูกค้าเรียบร้อยแล้ว");
+      setTimeout(() => setModal(null), 800);
+    } catch (err) {
+      setFormError(err.message || "บันทึกการตั้งค่าวอเลทลูกค้าไม่สำเร็จ");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openMeeCardApprovals = async () => {
+    setMenuOpen(false); setFormError(""); setFormSuccess("");
+    setMeeCardApprovalsPage(1);
+    setMeeCardApprovalsStatus('pending');
+    await loadMeeCardApprovals();
+    await loadMeeCardApprovalsCounts();
+    setModal("meeCardApprovals");
+  };
+
+  const loadMeeCardApprovals = async () => {
+    setMeeCardApprovalsLoading(true);
+    setMeeCardApprovalsError("");
+    try {
+      const result = await walletAPI.getPendingMeeCardRegistrations({
+        page: meeCardApprovalsPage,
+        limit: 20,
+        status: meeCardApprovalsStatus
+      });
+      setMeeCardApprovals(result?.data?.registrations || []);
+    } catch (err) {
+      setMeeCardApprovalsError(err.message || "โหลดรายการรออนุมัติไม่สำเร็จ");
+    } finally {
+      setMeeCardApprovalsLoading(false);
+    }
+  };
+
+  const loadMeeCardApprovalsCounts = async () => {
+    try {
+      const result = await walletAPI.getMeeCardRegistrationCounts();
+      setMeeCardApprovalsCounts(result?.data || { pending: 0, approved: 0, rejected: 0, expired: 0, total: 0 });
+    } catch (err) {
+      console.error("Failed to load Mee card approval counts:", err);
+    }
+  };
+
+  const handleMeeCardReview = async (registrationId, action, rejectionReason = null) => {
+    setMeeCardReviewLoading(registrationId);
+    setFormError("");
+    setFormSuccess("");
+    try {
+      await walletAPI.reviewMeeCardRegistration(registrationId, action, rejectionReason);
+      setFormSuccess(action === 'approve' ? "อนุมัติการสมัครเรียบร้อยแล้ว" : "ปฏิเสธการสมัครเรียบร้อยแล้ว");
+      await loadMeeCardApprovals();
+      await loadMeeCardApprovalsCounts();
+    } catch (err) {
+      setFormError(err.message || (action === 'approve' ? "อนุมัติไม่สำเร็จ" : "ปฏิเสธไม่สำเร็จ"));
+    } finally {
+      setMeeCardReviewLoading(null);
+    }
   };
 
   const closeModal = () => { if (saving) return; setModal(null); setFormError(""); setFormSuccess(""); };
@@ -396,7 +667,14 @@ export default function AdminAccount() {
   };
 
   const handleSocialSubmit = async (e) => {
-    e.preventDefault(); setFormError(""); setFormSuccess("");
+    if (e && typeof e.preventDefault === "function") e.preventDefault();
+    setFormError(""); setFormSuccess("");
+    // Preserve scroll position of the modal
+    const scrollEl = document.querySelector(".account-modal");
+    const savedScrollTop = scrollEl ? scrollEl.scrollTop : 0;
+    const restoreScroll = () => {
+      if (scrollEl) scrollEl.scrollTop = savedScrollTop;
+    };
     setSaving(true);
     try {
       const settings = [
@@ -408,7 +686,6 @@ export default function AdminAccount() {
         { key: "line_enabled", value: String(!!socialForm.line.enabled), category: "oauth", isPublic: false },
       ];
 
-      // Only include secret if user entered a new value (non-empty)
       if (socialForm.google.clientSecret.trim() !== "") {
         settings.push({ key: "google_client_secret", value: socialForm.google.clientSecret.trim(), category: "oauth", isPublic: false });
       }
@@ -421,9 +698,12 @@ export default function AdminAccount() {
 
       await adminAPI.bulkUpdateSettings(settings);
       setFormSuccess("บันทึกการตั้งค่า Social Login เรียบร้อยแล้ว");
-      setTimeout(() => setModal(null), 800);
+      // Keep modal open; do not close or reload
     } catch (err) { setFormError(err.message || "บันทึกการตั้งค่าไม่สำเร็จ"); }
-    finally { setSaving(false); }
+    finally {
+      setSaving(false);
+      requestAnimationFrame(restoreScroll);
+    }
   };
 
   const handleExchangeRateSubmit = async (e) => {
@@ -473,6 +753,81 @@ export default function AdminAccount() {
       setFormError(err.message || "บันทึกอัตราภาษีไม่สำเร็จ");
     } finally {
       setSaving(false);
+    }
+  };
+
+  // ================ Security handlers ================
+  const handleChangePasswordSecurity = async (e) => {
+    e.preventDefault(); setCpError(""); setCpSuccess("");
+    if (!cpForm.newPassword || cpForm.newPassword.length < 6) { setCpError("รหัสผ่านใหม่ต้องมีอย่างน้อย 6 ตัวอักษร"); return; }
+    if (cpForm.newPassword !== cpForm.confirmPassword) { setCpError("ยืนยันรหัสผ่านใหม่ไม่ตรงกัน"); return; }
+    setCpSaving(true);
+    try {
+      await adminAPI.changePassword(cpForm.newPassword);
+      setCpSuccess("เปลี่ยนรหัสผ่านเรียบร้อยแล้ว");
+      setCpForm({ newPassword: "", confirmPassword: "" });
+      setTimeout(() => setModal(null), 700);
+    } catch (err) { setCpError(err.message || "เปลี่ยนรหัสผ่านไม่สำเร็จ"); }
+    finally { setCpSaving(false); }
+  };
+
+  const handleRevokeSession = async (sessionId) => {
+    const confirmed = window.confirm("ต้องการยกเลิกเซสชันนี้หรือไม่?");
+    if (!confirmed) return;
+    setSecurityActionId(sessionId);
+    setSessionsError("");
+    try {
+      await adminAPI.revokeSession(sessionId);
+      setSessions(sessions.filter((s) => s.id !== sessionId));
+      setCpSuccess("ยกเลิกเซสชันเรียบร้อยแล้ว");
+    } catch (err) {
+      setSessionsError(err.message || "ยกเลิกเซสชันไม่สำเร็จ");
+    } finally {
+      setSecurityActionId(null);
+    }
+  };
+
+  const handleLogoutAllDevices = async () => {
+    const confirmed = window.confirm("ต้องการออกจากระบบทุกอุปกรณ์หรือไม่? คุณจะต้องเข้าสู่ระบบใหม่บนอุปกรณ์ทั้งหมด");
+    if (!confirmed) return;
+    setLogoutAllLoading(true);
+    try {
+      await adminAPI.revokeAllSessions();
+      await logout("admin", { revokeAllSessions: true, scope: "global" });
+      setModal(null);
+    } catch (err) {
+      setSessionsError(err.message || "ออกจากระบบทุกอุปกรณ์ไม่สำเร็จ");
+    } finally {
+      setLogoutAllLoading(false);
+    }
+  };
+
+  const handleUnlinkSocial = async (provider) => {
+    setSecurityActionId(provider);
+    setAccountsError("");
+    try {
+      await adminAPI.unlinkSocial(provider);
+      setConnectedAccounts(connectedAccounts.filter((a) => a.provider !== provider));
+      setCpSuccess(`ยกเลิกการเชื่อมต่อ ${provider} เรียบร้อยแล้ว`);
+      loadConnectedAccounts();
+    } catch (err) {
+      setAccountsError(err.message || `ยกเลิกการเชื่อมต่อ ${provider} ไม่สำเร็จ`);
+    } finally {
+      setSecurityActionId(null);
+    }
+  };
+
+  const handleMarkAlertRead = async (alertId) => {
+    setSecurityActionId(alertId);
+    setAlertsError("");
+    try {
+      await adminAPI.markAlertRead(alertId);
+      setSecurityAlerts(securityAlerts.map((a) => (a.id === alertId ? { ...a, is_read: true, read_at: new Date().toISOString() } : a)));
+      setCpSuccess("ทำเครื่องหมายอ่านเรียบร้อยแล้ว");
+    } catch (err) {
+      setAlertsError(err.message || "ทำเครื่องหมายอ่านไม่สำเร็จ");
+    } finally {
+      setSecurityActionId(null);
     }
   };
 
@@ -565,13 +920,15 @@ export default function AdminAccount() {
           {menuOpen && (
             <div className="account-menu-dropdown" role="menu">
               {menuItem("แก้ไขข้อมูลส่วนตัว", EditIcon, openProfile)}
-              {menuItem("เปลี่ยนรหัสผ่าน", KeyIcon, openPassword)}
               {!storeLoading && menuItem(store ? "แก้ไขโปรไฟล์ร้านค้า" : "สร้างร้านค้าของคุณ", StoreIcon, openStoreProfile)}
               {menuItem("ตั้งค่าระบบ", SettingsIcon, openSettings)}
               {menuItem("เพิ่มแอดมิน", PlusIcon, openAddAdmin)}
               {menuItem("ตั้งค่า Google / Social Login", SocialIcon, openSocialLogin)}
+              {menuItem("ความปลอดภัย / บัญชีที่เชื่อมต่อ", ShieldIcon, openSecurity)}
               {menuItem("ตั้งค่าอัตราแลกเปลี่ยน THB → MMK", ExchangeRateIcon, openExchangeRate)}
               {menuItem("ภาษีมูลค่าเพิ่ม", VatIcon, openVatSettings)}
+              {menuItem("ตั้งค่าวอเลทลูกค้า", WalletIcon, openCustomerWalletSettings)}
+              {menuItem("อนุมัติสมัครวอเลท Mee Card", MeeCardApprovalIcon, openMeeCardApprovals)}
               <div className="account-menu-divider" />
               {menuItem("ออกจากระบบ", LogoutIcon, handleLogout, true)}
             </div>
@@ -784,6 +1141,484 @@ export default function AdminAccount() {
                   <button type="submit" className="btn" disabled={saving}>{saving ? "กำลังบันทึก..." : "บันทึกอัตราภาษี"}</button>
                 </div>
               </form>
+            )}
+            {modal === "wallet" && (
+              <form onSubmit={handleCustomerWalletSubmit} className="account-modal-form">
+                <div className="account-modal-body">
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="customer-wallet-enabled">สวิตช์ระบบวอเลทลูกค้า *</label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <input
+                        id="customer-wallet-enabled"
+                        type="checkbox"
+                        checked={walletForm.enabled}
+                        onChange={(e) => setWalletForm((p) => ({ ...p, enabled: e.target.checked }))}
+                        disabled={walletLoading || saving}
+                      />
+                      <span className="toggle-label" style={{ fontSize: 15, fontWeight: 600 }}>
+                        {walletForm.enabled ? "เปิดใช้งาน" : "ปิดใช้งาน"}
+                      </span>
+                    </div>
+                  </div>
+                  <p className="form-hint">
+                    เมื่อเปิดใช้งาน ลูกค้าจะชำระเงินผ่านวอเลทได้ตามปกติ เมื่อปิดใช้งาน ระบบจะป้องกันไม่ให้ลูกค้าทำรายการวอเลทใหม่จากฝั่งเซิร์ฟเวอร์ ยอดเงินและประวัติธุรกรรมวอเลทเดิมของลูกค้าจะยังคงอยู่ทั้งหมด ไม่ถูกลบหรือแก้ไข
+                  </p>
+                  <p className="form-hint" style={{ color: "#6b7280", fontSize: 12 }}>
+                    ค่าเริ่มต้น (ยังไม่ได้ตั้งค่า) คือ ปิดใช้งาน การเปลี่ยนแปลงนี้จะถูกบันทึกลงฐานข้อมูลระบบกลาง
+                  </p>
+                </div>
+                <div className="account-modal-actions">
+                  <button type="button" className="btn-outline" onClick={closeModal} disabled={saving || walletLoading}>ยกเลิก</button>
+                  <button type="submit" className="btn" disabled={saving || walletLoading}>{saving ? "กำลังบันทึก..." : walletForm.enabled ? "เปิดระบบวอเลท" : "ปิดระบบวอเลท"}</button>
+                </div>
+              </form>
+            )}
+            {modal === "meeCardApprovals" && (
+              <div className="account-modal-body mee-card-approvals-modal">
+                <div className="mee-card-approvals-header">
+                  <div className="mee-card-approvals-tabs">
+                    {['pending', 'approved', 'rejected', 'expired'].map((status) => (
+                      <button
+                        key={status}
+                        type="button"
+                        className={`mee-card-tab-btn${meeCardApprovalsStatus === status ? " active" : ""}`}
+                        onClick={() => {
+                          setMeeCardApprovalsStatus(status);
+                          setMeeCardApprovalsPage(1);
+                          loadMeeCardApprovals();
+                        }}
+                        disabled={meeCardApprovalsLoading}
+                      >
+                        {status === 'pending' && 'รออนุมัติ'}
+                        {status === 'approved' && 'อนุมัติแล้ว'}
+                        {status === 'rejected' && 'ถูกปฏิเสธ'}
+                        {status === 'expired' && 'หมดอายุ'}
+                        {meeCardApprovalsCounts[status] > 0 && (
+                          <span className="mee-card-tab-badge">{meeCardApprovalsCounts[status]}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {formError && <div className="alert alert-error" style={{ marginBottom: 16 }}>{formError}</div>}
+                {formSuccess && <div className="alert alert-success" style={{ marginBottom: 16 }}>{formSuccess}</div>}
+
+                {meeCardApprovalsLoading ? (
+                  <div className="mee-card-loading">
+                    <div className="loading-spinner" />
+                    <p>กำลังโหลดรายการ...</p>
+                  </div>
+                ) : meeCardApprovalsError ? (
+                  <div className="mee-card-error">
+                    <p className="form-hint-error">{meeCardApprovalsError}</p>
+                    <button type="button" className="btn btn-sm" onClick={loadMeeCardApprovals}>ลองใหม่</button>
+                  </div>
+                ) : meeCardApprovals.length === 0 ? (
+                  <div className="mee-card-empty">
+                    <p>ไม่มีรายการ{meeCardApprovalsStatus === 'pending' ? 'ที่รออนุมัติ' : ''}</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="mee-card-list">
+                      {meeCardApprovals.map((reg) => (
+                        <div key={reg.id} className="mee-card-item">
+                          <div className="mee-card-item-main">
+                            <div className="mee-card-item-info">
+                              <div className="mee-card-customer">
+                                <strong>{reg.customer_name || 'ไม่ระบุชื่อ'}</strong>
+                                <span className="mee-card-customer-meta">
+                                  {reg.customer_email && <span>{reg.customer_email}</span>}
+                                  {reg.customer_phone && <span>{reg.customer_phone}</span>}
+                                </span>
+                              </div>
+                              <div className="mee-card-details">
+                                <div className="mee-card-detail-row">
+                                  <span className="mee-card-detail-label">บัตร:</span>
+                                  <span className="mee-card-detail-value">•••• {reg.mee_card_number?.slice(-4) || '****'}</span>
+                                </div>
+                                <div className="mee-card-detail-row">
+                                  <span className="mee-card-detail-label">ชื่อผู้ถือ:</span>
+                                  <span className="mee-card-detail-value">{reg.mee_card_holder_name}</span>
+                                </div>
+                                <div className="mee-card-detail-row">
+                                  <span className="mee-card-detail-label">หมดอายุ:</span>
+                                  <span className="mee-card-detail-value">{reg.mee_card_exp_month?.toString().padStart(2, '0')}/{String(reg.mee_card_exp_year).slice(-2)}</span>
+                                </div>
+                                <div className="mee-card-detail-row">
+                                  <span className="mee-card-detail-label">ประเภท:</span>
+                                  <span className="mee-card-detail-value">{reg.mee_card_type === 'debit' ? 'เดบิต' : reg.mee_card_type === 'credit' ? 'เครดิต' : 'เติมเงิน'}</span>
+                                </div>
+                                {reg.phone_number && (
+                                  <div className="mee-card-detail-row">
+                                    <span className="mee-card-detail-label">โทรศัพท์:</span>
+                                    <span className="mee-card-detail-value">{reg.phone_number}</span>
+                                  </div>
+                                )}
+                                {reg.email && (
+                                  <div className="mee-card-detail-row">
+                                    <span className="mee-card-detail-label">อีเมล:</span>
+                                    <span className="mee-card-detail-value">{reg.email}</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="mee-card-item-actions">
+                            <div className="mee-card-status-badge mee-card-status-{reg.status}">
+                              {reg.status === 'pending' && 'รออนุมัติ'}
+                              {reg.status === 'approved' && 'อนุมัติแล้ว'}
+                              {reg.status === 'rejected' && 'ถูกปฏิเสธ'}
+                              {reg.status === 'expired' && 'หมดอายุ'}
+                            </div>
+                            {reg.status === 'pending' && (
+                              <div className="mee-card-action-buttons">
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-success"
+                                  onClick={() => handleMeeCardReview(reg.id, 'approve')}
+                                  disabled={meeCardReviewLoading === reg.id}
+                                >
+                                  {meeCardReviewLoading === reg.id ? 'กำลังอนุมัติ...' : 'อนุมัติ'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-danger"
+                                  onClick={() => {
+                                    const reason = window.confirm("ต้องการปฏิเสธคำขอนี้หรือไม่?");
+                                    if (reason) {
+                                      const rejectionReason = prompt("กรุณาระบุเหตุผลในการปฏิเสธ:");
+                                      if (rejectionReason) {
+                                        handleMeeCardReview(reg.id, 'reject', rejectionReason);
+                                      }
+                                    }
+                                  }}
+                                  disabled={meeCardReviewLoading === reg.id}
+                                >
+                                  {meeCardReviewLoading === reg.id ? 'กำลังปฏิเสธ...' : 'ปฏิเสธ'}
+                                </button>
+                              </div>
+                            )}
+                            {reg.status === 'rejected' && reg.rejection_reason && (
+                              <div className="mee-card-rejection-reason">
+                                <strong>เหตุผล:</strong> {reg.rejection_reason}
+                              </div>
+                            )}
+                            <div className="mee-card-meta">
+                              <span>ส่งคำขอ: {new Date(reg.created_at).toLocaleString('th-TH')}</span>
+                              {reg.reviewed_at && <span>ดำเนินการ: {new Date(reg.reviewed_at).toLocaleString('th-TH')}</span>}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {meeCardApprovals.length === 20 && (
+                      <div className="mee-card-pagination">
+                        <button
+                          type="button"
+                          className="btn-outline btn-sm"
+                          onClick={() => {
+                            setMeeCardApprovalsPage((p) => Math.max(1, p - 1));
+                            loadMeeCardApprovals();
+                          }}
+                          disabled={meeCardApprovalsPage <= 1 || meeCardApprovalsLoading}
+                        >
+                          ก่อนหน้า
+                        </button>
+                        <span className="mee-card-page-info">หน้า {meeCardApprovalsPage}</span>
+                        <button
+                          type="button"
+                          className="btn-outline btn-sm"
+                          onClick={() => {
+                            setMeeCardApprovalsPage((p) => p + 1);
+                            loadMeeCardApprovals();
+                          }}
+                          disabled={meeCardApprovalsLoading}
+                        >
+                          ถัดไป
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+            {modal === "security" && (
+              <div className="account-modal-body security-modal-body">
+                <div className="security-tabs">
+                  <button
+                    type="button"
+                    className={`security-tab-btn${securityTab === "overview" ? " security-tab-btn-active" : ""}`}
+                    onClick={() => setSecurityTab("overview")}
+                    aria-pressed={securityTab === "overview"}
+                  >
+                    <span className="security-tab-icon"><ShieldIcon size={16} /></span>
+                    ภาพรวม
+                  </button>
+                  <button
+                    type="button"
+                    className={`security-tab-btn${securityTab === "sessions" ? " security-tab-btn-active" : ""}`}
+                    onClick={() => setSecurityTab("sessions")}
+                    aria-pressed={securityTab === "sessions"}
+                  >
+                    <span className="security-tab-icon"><DeviceIcon size={16} /></span>
+                    อุปกรณ์และเซสชัน
+                  </button>
+                  <button
+                    type="button"
+                    className={`security-tab-btn${securityTab === "history" ? " security-tab-btn-active" : ""}`}
+                    onClick={() => setSecurityTab("history")}
+                    aria-pressed={securityTab === "history"}
+                  >
+                    <span className="security-tab-icon"><HistoryIcon size={16} /></span>
+                    ประวัติการเข้าสู่ระบบ
+                  </button>
+                  <button
+                    type="button"
+                    className={`security-tab-btn${securityTab === "alerts" ? " security-tab-btn-active" : ""}`}
+                    onClick={() => setSecurityTab("alerts")}
+                    aria-pressed={securityTab === "alerts"}
+                  >
+                    <span className="security-tab-icon"><AlertIcon size={16} /></span>
+                    การแจ้งเตือนความปลอดภัย
+                    {securityAlerts.filter((a) => !a.is_read).length > 0 && (
+                      <span className="security-tab-badge">{securityAlerts.filter((a) => !a.is_read).length}</span>
+                    )}
+                  </button>
+                </div>
+
+                {/* Overview tab */}
+                {securityTab === "overview" && (
+                  <div className="security-section">
+                    <div className="security-section-head">
+                      <h4 className="security-section-title"><ShieldIcon size={16} /> เปลี่ยนรหัสผ่าน</h4>
+                    </div>
+                    <p className="security-section-desc">เปลี่ยนรหัสผ่านบัญชีแอดมิน กรอกและยืนยันรหัสผ่านใหม่</p>
+                    {cpError && <p className="form-hint-error">{cpError}</p>}
+                    {cpSuccess && <p className="security-hint-success">{cpSuccess}</p>}
+                    <form onSubmit={handleChangePasswordSecurity} className="modal-form">
+                      <div className="form-group">
+                        <label className="form-label" htmlFor="security-cp-new">รหัสผ่านใหม่ *</label>
+                        <input id="security-cp-new" type="password" className="form-input" value={cpForm.newPassword} onChange={(e) => setCpForm((p) => ({ ...p, newPassword: e.target.value }))} minLength={6} disabled={cpSaving} />
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label" htmlFor="security-cp-confirm">ยืนยันรหัสผ่านใหม่ *</label>
+                        <input id="security-cp-confirm" type="password" className="form-input" value={cpForm.confirmPassword} onChange={(e) => setCpForm((p) => ({ ...p, confirmPassword: e.target.value }))} minLength={6} disabled={cpSaving} />
+                      </div>
+                      <div className="account-modal-actions">
+                        <button type="button" className="btn-outline" onClick={() => { setCpForm({ newPassword: "", confirmPassword: "" }); setCpError(""); setCpSuccess(""); }} disabled={cpSaving}>ยกเลิก</button>
+                        <button type="submit" className="btn" disabled={cpSaving}>{cpSaving ? "กำลังเปลี่ยน..." : "เปลี่ยนรหัสผ่าน"}</button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+
+                {securityTab === "overview" && (
+                  <div className="security-section">
+                    <div className="security-section-head">
+                      <h4 className="security-section-title"><ShieldIcon size={16} /> บัญชีที่เชื่อมต่อ</h4>
+                    </div>
+                    <p className="security-section-desc">ผู้ให้บริการเข้าสู่ระบบภายนอกที่เชื่อมต่อกับบัญชีแอดมินนี้ ถอนการเชื่อมต่อได้เมื่อยังเหลือช่องทางเข้าสู่ระบบอย่างน้อยหนึ่งช่องทาง</p>
+                    {accountsError && <p className="form-hint-error">{accountsError}</p>}
+                    <div className="security-account-list">
+                      {accountsLoading ? (
+                        <p>กำลังโหลดบัญชีที่เชื่อมต่อ...</p>
+                      ) : connectedAccounts.length === 0 ? (
+                        <p className="security-empty">ยังไม่ได้เชื่อมต่อบัญชีโซเชียลใด ๆ</p>
+                      ) : (
+                        connectedAccounts.map((acct) => (
+                          <div key={acct.provider} className="security-account-card">
+                            <div className="security-account-head">
+                              <div className="security-account-info">
+                                <span className="security-account-icon">{acct.provider === "google" && <span>G</span>}{acct.provider === "facebook" && <span>f</span>}{acct.provider === "line" && <span>L</span>}</span>
+                                <span className="security-account-name">{acct.label}</span>
+                                <span className="security-account-id">…{String(acct.id || "").slice(-4)}</span>
+                              </div>
+                              <button
+                                type="button"
+                                className="btn-outline security-unlink-btn"
+                                onClick={() => handleUnlinkSocial(acct.provider)}
+                                disabled={securityActionId === acct.provider}
+                                aria-label={`ยกเลิกเชื่อมต่อ ${acct.label}`}
+                              >
+                                {securityActionId === acct.provider ? "กำลังถอน..." : "ถอนการเชื่อมต่อ"}
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {securityTab === "overview" && (
+                  <div className="security-section security-section-logoutall">
+                    <div className="security-section-head">
+                      <h4 className="security-section-title"><LogoutAllIcon size={16} /> ออกจากระบบทุกอุปกรณ์</h4>
+                    </div>
+                    <p className="security-section-desc">เพิกถอนเซสชันทั้งหมดและออกจากระบบบนทุกอุปกรณ์ คุณจะต้องเข้าสู่ระบบใหม่บนทุกเครื่อง (รวมถึงเครื่องนี้)</p>
+                    <div className="security-logoutall-actions">
+                      <button type="button" className="btn btn-danger security-logoutall-btn" onClick={handleLogoutAllDevices} disabled={logoutAllLoading}>
+                        {logoutAllLoading ? "กำลังออกจากระบบทุกอุปกรณ์..." : "ออกจากระบบทุกอุปกรณ์"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Sessions tab */}
+            {securityTab === "sessions" && (
+              <div className="account-modal-body security-modal-body">
+                <div className="security-section">
+                  <div className="security-section-head">
+                    <h4 className="security-section-title"><DeviceIcon size={16} /> อุปกรณ์และเซสชันที่เข้าสู่ระบบ</h4>
+                  </div>
+                  <p className="security-section-desc">เซสชันที่ยังใช้งานอยู่ของบัญชีแอดมินนี้ การถอนเซสชันเป็นการปิดใช้งานตัวชี้วัด (soft revoke) ใช้ ออกจากระบบทุกอุปกรณ์ ด้านบนเพื่อเพิกถอนโทเค็นทั้งหมดทันที</p>
+                  {sessionsError && <p className="form-hint-error">{sessionsError}</p>}
+                  <div className="security-session-list">
+                    {sessionsLoading ? (
+                      <p>กำลังโหลดเซสชัน...</p>
+                    ) : sessions.length === 0 ? (
+                      <p className="security-empty">ยังไม่มีข้อมูลเซสชันที่ใช้งานอยู่</p>
+                    ) : (
+                      sessions.map((s) => (
+                        <article key={s.id} className="security-session-card">
+                          <div className="security-session-head">
+                            <div className="security-session-info">
+                              <span className="security-session-device">{[s.device_name, s.browser, s.os].filter(Boolean).join(" · ") || "อุปกรณ์ไม่ระบุ"}</span>
+                              <span className="security-session-location">{s.country ? `(${s.country}${s.city ? `, ${s.city}` : ""})` : ""}</span>
+                            </div>
+                            <div className="security-session-time">
+                              <span className="security-session-label">ล่าสุด</span>
+                              <span className="security-session-value">{s.last_activity_at ? new Date(s.last_activity_at).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" }) : "—"}</span>
+                            </div>
+                          </div>
+                          <div className="security-session-foot">
+                            <span className="security-session-ip">{s.ip_address || "—"}</span>
+                            <span className="security-session-user-agent">{s.user_agent ? s.user_agent.slice(0, 60) : "—"}</span>
+                            <button
+                              type="button"
+                              className="btn-outline security-revoke-btn"
+                              onClick={() => handleRevokeSession(s.id)}
+                              disabled={securityActionId === s.id}
+                              aria-label={`ยกเลิกเซสชัน ${s.device_name || s.id}`}
+                            >
+                              {securityActionId === s.id ? "กำลังยกเลิก..." : "ยกเลิกเซสชัน"}
+                            </button>
+                          </div>
+                        </article>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* History tab */}
+            {securityTab === "history" && (
+              <div className="account-modal-body security-modal-body">
+                <div className="security-section">
+                  <div className="security-section-head">
+                    <h4 className="security-section-title"><HistoryIcon size={16} /> ประวัติการเข้าสู่ระบบ</h4>
+                  </div>
+                  <p className="security-section-desc">บันทึกเหตุการณ์การยืนยันตัวตนของบัญชีแอดมิน (เข้าสู่ระบบสำเร็จ/ล้มเหลว ออกจากระบบ เปลี่ยนรหัสผ่าน ถอนการเชื่อมต่อสังคม) พร้อมบริบทคำขอ</p>
+                  {historyError && <p className="form-hint-error">{historyError}</p>}
+                  <div className="security-history-list">
+                    {historyLoading ? (
+                      <p>กำลังโหลดประวัติ...</p>
+                    ) : loginHistory.length === 0 ? (
+                      <p className="security-empty">ยังไม่มีประวัติการเข้าสู่ระบบ</p>
+                    ) : (
+                      <table className="security-history-table">
+                        <thead>
+                          <tr>
+                            <th>เหตุการณ์</th>
+                            <th className="security-history-col-status">สถานะ</th>
+                            <th className="security-history-col-device">อุปกรณ์ / เบราว์เซอร์</th>
+                            <th className="security-history-col-loc">ตำแหน่ง (โดยประมาณ)</th>
+                            <th className="security-history-col-time">เวลา</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {loginHistory.map((h) => (
+                            <tr key={h.id} className={`security-history-row ${!h.success ? "security-history-fail" : ""}`}>
+                              <td className="security-history-event">
+                                {h.event_type === "login_success" ? "เข้าสู่ระบบสำเร็จ" : h.event_type === "login_failure" ? "เข้าสู่ระบบล้มเหลว" : h.event_type === "logout" ? "ออกจากระบบ" : h.event_type === "password_change" ? "เปลี่ยนรหัสผ่าน" : h.event_type === "social_unlink" ? "ถอนการเชื่อมต่อโซเชียล" : h.event_type === "session_revoked" ? "ยกเลิกเซสชัน" : h.event_type}
+                              </td>
+                              <td className="security-history-status">
+                                <span className={`security-history-badge ${h.success ? "security-history-success" : "security-history-fail-badge"}`}>
+                                  {h.success ? "สำเร็จ" : "ล้มเหลว"}
+                                </span>
+                                {!h.success && h.failure_reason && <span className="security-history-reason">{h.failure_reason}</span>}
+                              </td>
+                              <td className="security-history-device">
+                                {(h.device_name || h.browser || h.os) ? [h.device_name, h.browser, h.os].filter(Boolean).join(" · ") : "—"}
+                              </td>
+                              <td className="security-history-loc">{h.country ? `${h.country}${h.city ? `, ${h.city}` : ""}` : "—"}</td>
+                              <td className="security-history-time">{h.created_at ? new Date(h.created_at).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" }) : "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Alerts tab */}
+            {securityTab === "alerts" && (
+              <div className="account-modal-body security-modal-body">
+                <div className="security-section">
+                  <div className="security-section-head">
+                    <h4 className="security-section-title"><AlertIcon size={16} /> การแจ้งเตือนความปลอดภัย</h4>
+                    {securityAlerts.filter((a) => !a.is_read).length > 0 && <span className="security-alerts-unread">{securityAlerts.filter((a) => !a.is_read).length} รายการยังไม่อ่าน</span>}
+                  </div>
+                  <p className="security-section-desc">แจ้งเตือนเมื่อมีการเข้าสู่ระบบจากอุปกรณ์ใหม่ ประเทศใหม่ หรือพยายามเข้าสู่ระบบล้มเหลวหลายครั้ง คลิกเพื่อทำเครื่องหมายอ่านแล้ว</p>
+                  {alertsError && <p className="form-hint-error">{alertsError}</p>}
+                  <div className="security-alert-list">
+                    {alertsLoading ? (
+                      <p>กำลังโหลดการแจ้งเตือน...</p>
+                    ) : securityAlerts.length === 0 ? (
+                      <p className="security-empty">ไม่มีการแจ้งเตือนความปลอดภัย</p>
+                    ) : (
+                      securityAlerts.map((a) => (
+                        <div key={a.id} className={`security-alert-card ${!a.is_read ? "security-alert-unread" : ""}`}>
+                          <div className="security-alert-head">
+                            <span className={`security-alert-type ${a.severity === "high" ? "security-alert-high" : ""}`}>{a.alert_type}</span>
+                            <span className="security-alert-severity">{a.severity}</span>
+                            {!a.is_read && <span className="security-alert-dot" /> }
+                          </div>
+                          <div className="security-alert-body">
+                            <div className="security-alert-title">{a.title}</div>
+                            {a.description && <div className="security-alert-desc">{a.description}</div>}
+                            <div className="security-alert-meta">
+                              {a.ip_address && <span>IP: {a.ip_address}</span>}
+                              {a.country && <span>ประเทศ: {a.country}</span>}
+                              {a.device_id && <span>อุปกรณ์: {a.device_id.slice(-8)}</span>}
+                            </div>
+                          </div>
+                          <div className="security-alert-foot">
+                            <span className="security-alert-time">{a.created_at ? new Date(a.created_at).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" }) : "—"}</span>
+                            {!a.is_read && (
+                              <button
+                                type="button"
+                                className="btn-outline security-alert-read-btn"
+                                onClick={() => handleMarkAlertRead(a.id)}
+                                disabled={securityActionId === a.id}
+                              >
+                                {securityActionId === a.id ? "กำลังอ่าน..." : "ทำเครื่องหมายอ่านแล้ว"}
+                              </button>
+                            )}
+                            {a.is_read && <span className="security-alert-read-badge">อ่านแล้ว</span>}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
             )}
           </div>
         </div>

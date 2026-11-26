@@ -84,7 +84,7 @@ router.post('/chat/:conversationId', validateId('conversationId'), verifyToken, 
 
 // Get signed URL for private file
 router.get('/signed-url', verifyToken, [
-  query('bucket').isIn(['avatars', 'store-logos', 'store-covers', 'product-images', 'chat-attachments', 'voice-recordings']).withMessage('Invalid bucket'),
+  query('bucket').isIn(['avatars', 'store-logos', 'store-covers', 'product-images', 'chat-attachments', 'voice-recordings', 'payment-slips']).withMessage('Invalid bucket'),
   query('path').notEmpty().withMessage('File path required'),
   query('expiresIn').optional().isInt({ min: 60, max: 86400 }).withMessage('Invalid expiry')
 ], validate, asyncHandler(async (req, res) => {
@@ -107,6 +107,33 @@ router.get('/signed-url', verifyToken, [
       .is('left_at', null)
       .single();
     hasAccess = !!member;
+  } else if (bucket === 'payment-slips') {
+    // Slips are scoped by order_id. The first path segment is the order UUID.
+    // Store owners may only sign slips for orders in their store; admins/owners
+    // bypass the store check (same rule as /orders/store/:storeId/payment-slips).
+    const orderId = path.split('/')[0];
+    const { data: slip } = await supabaseAdmin
+      .from('payment_slips')
+      .select('id, order_id, store_id, customer_id')
+      .eq('order_id', orderId)
+      .maybeSingle();
+    if (!slip) {
+      hasAccess = false;
+    } else if (['admin', 'owner'].includes(req.user.role)) {
+      hasAccess = true;
+    } else if (slip.customer_id === req.user.id) {
+      hasAccess = true;
+    } else if (slip.store_id) {
+      const { data: store } = await supabaseAdmin
+        .from('stores')
+        .select('owner_id')
+        .eq('id', slip.store_id)
+        .maybeSingle();
+      hasAccess = store?.owner_id === req.user.id;
+    } else {
+      // Legacy slip without store_id: allow only admins/owners (already handled above)
+      hasAccess = false;
+    }
   } else if (['store-logos', 'store-covers', 'product-images'].includes(bucket)) {
     // Check store ownership
     const resourceId = path.split('/')[1];

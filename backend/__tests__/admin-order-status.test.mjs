@@ -198,3 +198,42 @@ test('updateOrderStatusAdmin: an illegal transition is still rejected after the 
     fake.restore();
   }
 });
+
+test('updateOrderStatusAdmin: COD in_transit -> delivered sets payment_status=paid in one atomic update', async () => {
+  const fake = installOrdersFake([{ id: 'o1', status: 'in_transit', payment_status: 'pending', payment_method: 'cod' }]);
+  try {
+    const updated = await updateOrderStatusAdmin('o1', 'delivered');
+    assert.equal(updated.status, 'delivered');
+    assert.equal(updated.payment_status, 'paid', 'COD delivered order must be marked paid');
+    assert.equal(fake.updates(), 1, 'status and payment_status updated in a single atomic query');
+    assert.equal(fake.get('o1').payment_status, 'paid');
+  } finally {
+    fake.restore();
+  }
+});
+
+test('updateOrderStatusAdmin: non-COD (KBZPay/transfer) delivered does NOT change payment_status', async () => {
+  for (const method of ['kbzpay', 'transfer']) {
+    const fake = installOrdersFake([{ id: 'o1', status: 'in_transit', payment_status: 'awaiting_review', payment_method: method }]);
+    try {
+      const updated = await updateOrderStatusAdmin('o1', 'delivered');
+      assert.equal(updated.status, 'delivered');
+      assert.equal(updated.payment_status, 'awaiting_review', `${method}: payment_status must stay unchanged on delivery`);
+      assert.equal(fake.updates(), 1, 'only status written, one atomic query');
+    } finally {
+      fake.restore();
+    }
+  }
+});
+
+test('updateOrderStatusAdmin: same-status delivered -> delivered is a no-op, old pending payment left untouched', async () => {
+  const fake = installOrdersFake([{ id: 'o1', status: 'delivered', payment_status: 'pending', payment_method: 'cod' }]);
+  try {
+    const result = await updateOrderStatusAdmin('o1', 'delivered');
+    assert.equal(result.status, 'delivered');
+    assert.equal(result.payment_status, 'pending', 'already-delivered COD order not auto-fixed');
+    assert.equal(fake.updates(), 0, 'no DB write for same-status request');
+  } finally {
+    fake.restore();
+  }
+});

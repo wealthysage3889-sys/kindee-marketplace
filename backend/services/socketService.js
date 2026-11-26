@@ -1,7 +1,7 @@
 import { Server } from 'socket.io';
 import jwt from 'jsonwebtoken';
-import { supabaseAdmin, createUserClient } from '../config/supabase.js';
-import { JWT_SECRET } from '../middleware/auth.js';
+import { supabaseAdmin, supabaseAuth, createUserClient } from '../config/supabase.js';
+import { JWT_SECRET, isBadJwtError, extractUserIdFromToken } from '../middleware/auth.js';
 import { heartbeatCall, expireStaleAcceptedCalls } from './callService.js';
 
 let io = null;
@@ -54,12 +54,36 @@ const initialize = (server) => {
         return next(new Error('Authentication required'));
       }
       
-      // Verify token: Supabase first (primary), then legacy custom JWT.
+      // Verify the token the SAME way the HTTP middleware (verifyToken) does.
+      // If the socket auth is stricter than the REST auth, a token that can send
+      // messages over HTTP is still rejected at the socket handshake. The user
+      // then never joins their user_<id> room and never receives realtime events
+      // (e.g. a store owner not seeing incoming customer messages), even though
+      // every REST call succeeds. Keep both paths in lockstep.
       let decoded;
-      const { data: { user }, error: sbError } = await supabaseAdmin.auth.getUser(token);
-      if (!sbError && user) {
-        decoded = { id: user.id };
-      } else {
+      try {
+        const result = await supabaseAuth.auth.getUser(token);
+        const user = result?.data?.user ?? null;
+        const sbError = result?.error ?? null;
+        if (!sbError && user) {
+          decoded = { id: user.id };
+        } else if (isBadJwtError(sbError)) {
+          // Supabase intermittently issues access tokens whose payload is not
+          // valid JSON. The REST layer recovers by reading the user id from the
+          // token payload; the socket layer must do the same or those users
+          // silently lose realtime.
+          const userId = extractUserIdFromToken(token);
+          if (userId) decoded = { id: userId };
+        }
+      } catch (getUserErr) {
+        if (isBadJwtError(getUserErr)) {
+          const userId = extractUserIdFromToken(token);
+          if (userId) decoded = { id: userId };
+        }
+      }
+
+      // Fallback: legacy custom JWT (accounts not yet migrated to Supabase Auth).
+      if (!decoded) {
         try {
           decoded = jwt.verify(token, JWT_SECRET);
           if (!decoded || !decoded.id) {
@@ -411,9 +435,13 @@ const emitNewMessage = (message) => {
 };
 
 // Emit message read
+// Broadcast to the conversation room (participants inside the room) and to the
+// reader's own user room so chat lists elsewhere (and other tabs) can update
+// their unread badges in real time.
 const emitMessageRead = (conversationId, userId, count) => {
   if (!io) return;
   io.to(`conversation_${conversationId}`).emit('messagesRead', { conversationId, userId, count });
+  io.to(`user_${userId}`).emit('messagesRead', { conversationId, userId, count });
 };
 
 // Emit order status update
@@ -463,6 +491,16 @@ const emitNotification = (userId, notification) => {
   io.to(`user_${userId}`).emit('notification', notification);
 };
 
+// Emit conversation metadata update (spam / restore / hide / show). Sent to
+// the actor and every other member's user room so both sides of a conversation
+// refresh their chat lists immediately according to their own permissions.
+const emitConversationUpdate = (userIds, payload) => {
+  if (!io) return;
+  for (const userId of (Array.isArray(userIds) ? userIds : [userIds]).filter(Boolean)) {
+    io.to(`user_${userId}`).emit('conversationUpdated', payload);
+  }
+};
+
 // Get online users
 const getOnlineUsers = () => {
   return Array.from(userSockets.keys());
@@ -490,6 +528,7 @@ export {
   emitIncomingCall,
   emitCallEnded,
   emitNotification,
+  emitConversationUpdate,
   getOnlineUsers,
   isUserOnline,
   getIO

@@ -191,6 +191,28 @@ test('store owner can reply and the customer receives it', () =>
     assert.ok(customerView.some((m) => m.id === message.id));
   }));
 
+test('sendMessage with the same client_message_id is idempotent (no duplicate message)', () =>
+  withFake(makeSeed(), async (fake) => {
+    const clientMessageId = 'client-msg-123';
+    const first = await sendMessage(conversationId, customerId, {
+      content: 'ส่งครั้งแรก',
+      type: 'text',
+      metadata: {},
+      client_message_id: clientMessageId,
+    });
+    const second = await sendMessage(conversationId, customerId, {
+      content: 'ส่งครั้งที่สอง (client_message_id ซ้ำ)',
+      type: 'text',
+      metadata: {},
+      client_message_id: clientMessageId,
+    });
+
+    assert.equal(second.id, first.id, 'retry returns the already-stored message');
+    assert.equal(second.content, 'ส่งครั้งแรก', 'content is not overwritten by the retry');
+    const inserts = fake.calls.filter((c) => c.table === 'messages' && c.op === 'insert');
+    assert.equal(inserts.length, 1, 'only one message row is inserted');
+  }));
+
 test('sendMessage rejects outsider with 403 and writes nothing', () =>
   withFake(makeSeed(), async (fake) => {
     await assert.rejects(

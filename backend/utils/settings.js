@@ -27,7 +27,11 @@ export const VAT_RATE_SETTING_KEYS = [
   'vat_rate'
 ];
 
-export const ALLOWED_SETTING_KEYS = new Set([...OAUTH_SETTING_KEYS, ...EXCHANGE_RATE_SETTING_KEYS, ...VAT_RATE_SETTING_KEYS]);
+export const WALLET_SETTING_KEYS = [
+  'customer_wallet_enabled'
+];
+
+export const ALLOWED_SETTING_KEYS = new Set([...OAUTH_SETTING_KEYS, ...EXCHANGE_RATE_SETTING_KEYS, ...VAT_RATE_SETTING_KEYS, ...WALLET_SETTING_KEYS]);
 
 export const SECRET_SETTING_KEYS = new Set([
   'google_client_secret',
@@ -42,7 +46,8 @@ export const SETTING_COLUMNS = 'key, value, description, is_public';
 const CATEGORY_KEY_FILTERS = {
   oauth: OAUTH_SETTING_KEYS,
   exchange_rate: EXCHANGE_RATE_SETTING_KEYS,
-  vat: VAT_RATE_SETTING_KEYS
+  vat: VAT_RATE_SETTING_KEYS,
+  wallet: WALLET_SETTING_KEYS
 };
 
 export const toSnakeKey = (key) => String(key || '')

@@ -4,11 +4,16 @@ import { useAuth } from "../context/AuthContext";
 import { useSocket } from "../context/SocketContext";
 import { chatAPI, callAPI, uploadAPI, normalizeAttachment, adminAPI } from "../api";
 import { formatDate } from "../utils/helpers";
-import { extractStorageObjectPath } from "../utils/storageUrl";
+import { paymentStatusLabel, getPaymentStatusDisplay } from "../utils/orderFilters";
+import { extractStorageObjectPath, isSupabaseStorageUrl, isSignedUrlExpired, hasDuplicatedBucketPrefix } from "../utils/storageUrl";
 import VoiceCallUI from "./VoiceCallUI";
 import ChatRoutePanel from "./ChatRoutePanel";
 import OrderDetailModal from "./OrderDetailModal";
+import OrderRouteMapModal from "./OrderRouteMapModal";
+import PaymentSlipModal from "./PaymentSlipModal";
 import "./ChatRoom.css";
+import mapLocationIcon from "../assets/map-location-icon.webp";
+import kindeeLogo from "../assets/kindee-logo.jpg";
 
 const MESSAGE_TYPES = {
   text: "text",
@@ -85,48 +90,129 @@ function attachmentSize(att) {
 }
 
 // Chat attachments live in a private Supabase bucket and are persisted as
-// signed URLs that expire (default 1h). A stored URL that has since expired
-// returns 400/403 and the image breaks. This component renders the image and,
-// on load failure, derives the { bucket, path } from the stored URL and fetches
-// a fresh signed URL — so both old and new attachments display without changing
-// where or how files are stored.
-function AttachmentImage({ src, alt, onOpen, mode = "customer" }) {
-  const [resolvedSrc, setResolvedSrc] = useState(src);
-  const [error, setError] = useState(false);
+// signed URLs that expire (default 1h). A stored URL that is expired — or that
+// carries a duplicated bucket prefix in its object path (legacy rows written
+// before the prefix fix) — returns 400/403 and the file breaks. This hook
+// derives the canonical { bucket, path } from the stored URL and fetches a
+// fresh signed URL WITHOUT changing where or how files are stored.
+//
+// The object path handed to the backend is always the single normalised key
+// (see extractStorageObjectPath), so the Storage SDK is never called with
+// `chat-attachments/chat-attachments/...`.
+//
+// Refresh happens proactively when the URL is already expired or carries a
+// duplicated bucket prefix (both guaranteed to fail on render), and reactively
+// via onError as a fallback for images that still fail to load. Images and file
+// download links share this exact same standard.
+// Opening a conversation renders every message at once, so many expired/
+// duplicated attachments can trigger a burst of signed-URL refreshes. Cap how
+// many run concurrently and coalesce identical in-flight requests (same bucket,
+// path and session mode) so the same object is only re-signed once.
+const MAX_CONCURRENT_REFRESHES = 4;
+let activeRefreshes = 0;
+const refreshQueue = [];
+const inFlightRefreshes = new Map();
+
+function acquireRefreshSlot() {
+  if (activeRefreshes < MAX_CONCURRENT_REFRESHES) {
+    activeRefreshes += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => refreshQueue.push(resolve));
+}
+
+function releaseRefreshSlot() {
+  activeRefreshes -= 1;
+  const next = refreshQueue.shift();
+  if (next) {
+    activeRefreshes += 1;
+    next();
+  }
+}
+
+function requestFreshSignedUrl(src, mode) {
+  const parsed = extractStorageObjectPath(src);
+  if (!parsed) return Promise.resolve(null);
+
+  const key = `${parsed.bucket}:${parsed.path}:${mode}`;
+  const existing = inFlightRefreshes.get(key);
+  if (existing) return existing;
+
+  const promise = acquireRefreshSlot()
+    .then(() => uploadAPI.getSignedUrl(parsed.bucket, parsed.path, 3600, mode))
+    .then((res) => res?.data?.signedUrl || null)
+    .finally(() => {
+      releaseRefreshSlot();
+      inFlightRefreshes.delete(key);
+    });
+
+  inFlightRefreshes.set(key, promise);
+  return promise;
+}
+
+function useResolvedAttachmentUrl(src, mode = "customer") {
+  const [resolvedSrc, setResolvedSrc] = useState(null);
+  const [failed, setFailed] = useState(false);
   const retriedRef = useRef(false);
 
-  useEffect(() => {
-    setResolvedSrc(src);
-    setError(false);
-    retriedRef.current = false;
-  }, [src]);
+  const refresh = useCallback(() => requestFreshSignedUrl(src, mode), [src, mode]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setFailed(false);
+    retriedRef.current = false;
+
+    const needsRefresh =
+      isSupabaseStorageUrl(src) &&
+      (isSignedUrlExpired(src) || hasDuplicatedBucketPrefix(src));
+
+    if (needsRefresh) {
+      setResolvedSrc(null);
+      refresh()
+        .then((fresh) => {
+          if (cancelled) return;
+          if (fresh) setResolvedSrc(fresh);
+          else setFailed(true);
+        })
+        .catch(() => {
+          if (!cancelled) setFailed(true);
+        });
+    } else {
+      setResolvedSrc(src);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [src, refresh]);
+
+  // Reactive fallback: attempt a single refresh when the element fails to load
+  // (e.g. a duplicated-prefix URL whose token was not flagged as expired).
   const handleError = useCallback(async () => {
     if (retriedRef.current) {
-      setError(true);
-      return;
-    }
-    const parsed = extractStorageObjectPath(src);
-    if (!parsed) {
-      setError(true);
+      setFailed(true);
       return;
     }
     retriedRef.current = true;
     try {
-      const res = await uploadAPI.getSignedUrl(parsed.bucket, parsed.path, 3600, mode);
-      const fresh = res?.data?.signedUrl;
+      const fresh = await refresh();
       if (fresh) {
         setResolvedSrc(fresh);
-        setError(false);
+        setFailed(false);
       } else {
-        setError(true);
+        setFailed(true);
       }
     } catch {
-      setError(true);
+      setFailed(true);
     }
-  }, [src, mode]);
+  }, [refresh]);
 
-  if (error) {
+  return { resolvedSrc, failed, handleError };
+}
+
+function AttachmentImage({ src, alt, onOpen, mode = "customer" }) {
+  const { resolvedSrc, failed, handleError } = useResolvedAttachmentUrl(src, mode);
+
+  if (failed || !resolvedSrc) {
     return (
       <div className="attachment-image-error" role="button" tabIndex={0} onClick={() => onOpen?.(src)}>
         <span>โหลดรูปภาพไม่สำเร็จ</span>
@@ -142,6 +228,54 @@ function AttachmentImage({ src, alt, onOpen, mode = "customer" }) {
       onClick={() => onOpen?.(resolvedSrc)}
     />
   );
+}
+
+// Non-image attachments download from the same private bucket. They have no
+// onError event, so the same hook proactively resolves an expired/duplicated
+// signed URL to keep the download link from 400ing.
+function AttachmentFileLink({ src, name, mode = "customer", className, children }) {
+  const { resolvedSrc } = useResolvedAttachmentUrl(src, mode);
+  return (
+    <a href={resolvedSrc || src} target="_blank" rel="noopener noreferrer" className={className}>
+      {children || (
+        <>
+          <span className="file-icon">📄</span>
+          <span className="file-name">{name}</span>
+        </>
+      )}
+    </a>
+  );
+}
+
+function syncOrderCardPaymentStatus(messages) {
+  const byOrder = new Map();
+  for (const m of messages || []) {
+    const meta = m?.metadata || {};
+    if (meta.kind !== "order_chat") continue;
+    const id = meta.order_id ?? meta.orderId;
+    if (!id) continue;
+    const key = String(id);
+    const cur = byOrder.get(key) || { payment_status: meta.payment_status, payment_method: meta.payment_method };
+    if (meta.payment_status === "paid") cur.payment_status = "paid";
+    if (meta.payment_method) cur.payment_method = meta.payment_method;
+    byOrder.set(key, cur);
+  }
+  return (messages || []).map((m) => {
+    const meta = m?.metadata || {};
+    if (meta.kind !== "order_chat") return m;
+    const id = meta.order_id ?? meta.orderId;
+    if (!id) return m;
+    const info = byOrder.get(String(id));
+    if (!info) return m;
+    return {
+      ...m,
+      metadata: {
+        ...meta,
+        ...(info.payment_status !== undefined && { payment_status: info.payment_status }),
+        ...(info.payment_method !== undefined && { payment_method: info.payment_method }),
+      },
+    };
+  });
 }
 
 export default function ChatRoom({ conversationId: conversationIdProp, mode: modeProp, initialMessages }) {
@@ -182,10 +316,16 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
   const [routePanelOpen, setRoutePanelOpen] = useState(false);
   const [orderDetailOpen, setOrderDetailOpen] = useState(false);
   const [orderDetailId, setOrderDetailId] = useState(null);
+  const [orderRouteModalOpen, setOrderRouteModalOpen] = useState(false);
+  const [orderRouteModalOrderId, setOrderRouteModalOrderId] = useState(null);
+  const [orderRouteModalOrderNumber, setOrderRouteModalOrderNumber] = useState(null);
   const [orderActionLoading, setOrderActionLoading] = useState({});
   const [orderActionError, setOrderActionError] = useState({});
+  const [slipModalOpen, setSlipModalOpen] = useState(false);
+  const [slipModalOrderId, setSlipModalOrderId] = useState(null);
 
   const messagesEndRef = useRef(null);
+  const messagesContainerRef = useRef(null);
   const messageInputRef = useRef(null);
   const fileInputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
@@ -193,10 +333,21 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
   // Last message id already reported as read for this room (prevents duplicate POSTs).
   const lastMarkedReadRef = useRef(null);
   const visibleRef = useRef(true);
+  // Id of the newest message currently in state (used for reconnect catch-up).
+  const lastMessageIdRef = useRef(null);
+  // Whether the user is scrolled near the bottom of the message list.
+  const userAtBottomRef = useRef(true);
+  // Whether the very first render for this conversation has scrolled to bottom.
+  const initialScrollDoneRef = useRef(false);
+  // Set while loading older messages (load more) so we do not yank the reader.
+  const isLoadMoreRef = useRef(false);
+  // Previous socket connection state, to detect reconnect.
+  const wasConnectedRef = useRef(connected);
 
   useEffect(() => {
     lastMarkedReadRef.current = null;
     setRoutePanelOpen(false);
+    setOrderRouteModalOpen(false);
   }, [conversationId, mode]);
 
   // Load conversation info
@@ -227,11 +378,12 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
       const result = await chatAPI.getMessages(conversationId, { page: pageNum, limit: 50 }, mode);
       const newMessages = Array.isArray(result?.data) ? result.data : [];
 
-      if (append) {
-        setMessages(prev => [...newMessages, ...prev]);
-      } else {
-        setMessages(newMessages);
-      }
+        const synced = syncOrderCardPaymentStatus(newMessages);
+        if (append) {
+          setMessages(prev => syncOrderCardPaymentStatus([...synced, ...prev]));
+        } else {
+          setMessages(synced);
+        }
 
       setHasMore(newMessages.length === 50);
       setPage(pageNum);
@@ -241,6 +393,39 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
       setLoading(false);
     }
   }, [conversationId, mode]);
+
+  // Fetch messages newer than `afterId` (reconnect catch-up) and merge them in
+  // without disturbing the current scroll position.
+  const loadMessagesAfter = useCallback(async (afterId) => {
+    if (!conversationId || !afterId) return;
+    try {
+      const result = await chatAPI.getMessages(conversationId, { afterId, limit: 50 }, mode);
+      const newer = Array.isArray(result?.data) ? result.data : [];
+      if (!newer.length) return;
+      const synced = syncOrderCardPaymentStatus(newer);
+      setMessages(prev => {
+        const existingIds = new Set(prev.map(m => String(m.id ?? m._id)));
+        const toAdd = synced.filter(m => !existingIds.has(String(m.id ?? m._id)));
+        if (!toAdd.length) return prev;
+        return [...prev, ...toAdd];
+      });
+    } catch {
+      // Catch-up is best-effort; surface nothing to avoid spamming errors.
+    }
+  }, [conversationId, mode]);
+
+  // Keep lastMessageIdRef in sync with the newest message we have (by created_at).
+  useEffect(() => {
+    if (messages.length) {
+      let newest = messages[0];
+      for (const m of messages) {
+        const a = new Date(m.created_at ?? m.createdAt ?? 0).getTime();
+        const b = new Date(newest.created_at ?? newest.createdAt ?? 0).getTime();
+        if (a > b) newest = m;
+      }
+      lastMessageIdRef.current = newest.id ?? newest._id;
+    }
+  }, [messages]);
 
   useEffect(() => {
     loadMessages(1, false);
@@ -315,7 +500,8 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
          refunded: "คืนเงิน",
        };
        const finalLabel = statusLabels[finalStatus] || finalStatus;
-       // Update the order card in chat from the real backend response
+       const persistedPaymentStatus = lastOrder?.payment_status;
+       const persistedPaymentMethod = lastOrder?.payment_method;
        setMessages((prev) =>
          prev.map((m) => {
            const meta = m.metadata || {};
@@ -326,6 +512,8 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
                ...meta,
                order_status: finalStatus,
                order_status_label: finalLabel,
+               ...(persistedPaymentStatus !== undefined && { payment_status: persistedPaymentStatus }),
+               ...(persistedPaymentMethod !== undefined && { payment_method: persistedPaymentMethod }),
              },
            };
          })
@@ -374,15 +562,38 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
     markAsRead(lastInboundId);
   }, [messages, currentUserId, serverLastReadId, markAsRead]);
 
-  // Scroll to bottom
+  // Scroll to bottom, only when appropriate (see smart-scroll effect below).
   const scrollToBottom = useCallback(() => {
     if (messagesEndRef.current?.scrollIntoView) {
       messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
   }, []);
 
+  // Track whether the user is scrolled near the bottom of the message list so we
+  // don't yank them away from older messages they are reading.
   useEffect(() => {
-    scrollToBottom();
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    const updateAtBottom = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      userAtBottomRef.current = scrollHeight - scrollTop - clientHeight <= 100;
+    };
+    updateAtBottom();
+    container.addEventListener("scroll", updateAtBottom, { passive: true });
+    return () => container.removeEventListener("scroll", updateAtBottom, { passive: true });
+  }, []);
+
+  // Smart scroll: auto-scroll to bottom on initial load / conversation change,
+  // or whenever a new message arrives while the user is already at the bottom.
+  useEffect(() => {
+    if (!initialScrollDoneRef.current) {
+      initialScrollDoneRef.current = true;
+      scrollToBottom();
+      return;
+    }
+    if (userAtBottomRef.current) {
+      scrollToBottom();
+    }
   }, [messages, scrollToBottom]);
 
   // Socket event handlers (stable callbacks so on()/off() can match references
@@ -402,23 +613,29 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
       const incomingOrderId = incomingMeta.order_id ?? incomingMeta.orderId;
       const incomingStatus = incomingMeta.order_status ?? incomingMeta.orderStatus;
       let next = prev;
-      if (incomingMeta.kind === "order_chat" && incomingOrderId && incomingStatus) {
-        next = prev.map((m) => {
-          const meta = m.metadata || {};
-          if (meta.kind !== "order_chat") return m;
-          const mid = meta.order_id ?? meta.orderId;
-          if (String(mid) !== String(incomingOrderId)) return m;
-          return {
-            ...m,
-            metadata: {
-              ...meta,
-              order_status: incomingStatus,
-              order_status_label: incomingMeta.order_status_label ?? incomingMeta.orderStatusLabel ?? meta.order_status_label,
-            },
-          };
-        });
-      }
-      return [...next, message];
+      if (incomingMeta.kind === "order_chat" && incomingOrderId) {
+          const incomingPaymentStatus = incomingMeta.payment_status ?? incomingMeta.paymentStatus;
+          const incomingPaymentMethod = incomingMeta.payment_method ?? incomingMeta.paymentMethod;
+          next = prev.map((m) => {
+            const meta = m.metadata || {};
+            if (meta.kind !== "order_chat") return m;
+            const mid = meta.order_id ?? meta.orderId;
+            if (String(mid) !== String(incomingOrderId)) return m;
+            return {
+              ...m,
+              metadata: {
+                ...meta,
+                ...(incomingStatus && { order_status: incomingStatus }),
+                ...(incomingMeta.order_status_label || incomingMeta.orderStatusLabel
+                  ? { order_status_label: incomingMeta.order_status_label ?? incomingMeta.orderStatusLabel }
+                  : {}),
+                ...(incomingPaymentStatus !== undefined && { payment_status: incomingPaymentStatus }),
+                ...(incomingPaymentMethod !== undefined && { payment_method: incomingPaymentMethod }),
+              },
+            };
+          });
+        }
+        return syncOrderCardPaymentStatus([...next, message]);
     });
 
     // User is in the room and can see the message -> mark read now.
@@ -478,6 +695,17 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
       off("callStatusUpdate", handleCallStatusUpdate);
     };
   }, [connected, on, off, handleNewMessage, handleCallStatusUpdate]);
+
+  // Reconnect catch-up: when the socket re-establishes (connected false->true),
+  // fetch any messages we missed while offline, using our newest message id as
+  // the cursor. Best-effort and deduplicated against existing state.
+  useEffect(() => {
+    const wasConnected = wasConnectedRef.current;
+    wasConnectedRef.current = connected;
+    if (!wasConnected && connected && conversationId && lastMessageIdRef.current) {
+      loadMessagesAfter(lastMessageIdRef.current);
+    }
+  }, [connected, conversationId, lastMessageIdRef.current, loadMessagesAfter]);
 
   // Send message
   const handleSendMessage = async (e) => {
@@ -623,6 +851,20 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
       if (!Number.isFinite(n)) return "฿0.00";
       return `฿${n.toFixed(2)}`;
     };
+    const formatMMK = (amount) => {
+      const n = Number(amount);
+      if (!Number.isFinite(n)) return "Ks0";
+      return `Ks${n.toLocaleString()}`;
+    };
+
+    const paymentMethod = meta.payment_method;
+    const isKBZPay = paymentMethod === "kbzpay";
+    const hasSlip = isKBZPay && (meta.payment_status === "awaiting_review" || meta.payment_status === "paid" || meta.payment_slips?.length > 0);
+    const amountMMK = meta.amount_mmk;
+    const exchangeRate = meta.exchange_rate;
+    const isEstimatedMMK = isKBZPay && amountMMK != null && !exchangeRate;
+
+    const paymentDisplay = getPaymentStatusDisplay(meta.payment_status, meta.order_status, meta.payment_method);
 
     return (
       <div className="message-order-card">
@@ -642,6 +884,36 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
             ))}
           </ul>
         )}
+        <div className="order-card-map-row">
+          <button
+            type="button"
+            className="order-card-map-icon"
+            onClick={() => {
+              setOrderRouteModalOrderId(meta.order_id);
+              setOrderRouteModalOrderNumber(meta.store_order_number || meta.order_number || meta.order_id || "");
+              setOrderRouteModalOpen(true);
+            }}
+            aria-label={`เปิดแผนที่เส้นทางคำสั่งซื้อ ${meta.store_order_number || meta.order_id || ""}`}
+          >
+            <img src={mapLocationIcon} alt="map location" className="order-card-map-img" />
+          </button>
+{hasSlip && (
+            <button
+              type="button"
+              className="order-card-kindee-logo-btn"
+              onClick={() => {
+                if (meta.order_id) {
+                  setSlipModalOrderId(meta.order_id);
+                  setSlipModalOpen(true);
+                }
+              }}
+              aria-label="ดูสลิปการชำระเงิน"
+              title="ดูสลิปการชำระเงิน"
+            >
+              <img src={kindeeLogo} alt="Kindee" className="order-card-kindee-logo" />
+            </button>
+          )}
+        </div>
         <div className="order-card-totals">
           <div className="order-card-row">
             <span>ยอดรวม</span>
@@ -651,6 +923,13 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
             <span>ค่าจัดส่ง</span>
             <span>{formatTHB(meta.shipping_fee)}</span>
           </div>
+          {isKBZPay && amountMMK != null && (
+            <div className="order-card-row order-card-row-mmk">
+              <span>ยอดเงินเมียนมา (MMK)</span>
+              <span className="order-card-total">{formatMMK(amountMMK)}</span>
+              {isEstimatedMMK && <span className="order-card-estimate-badge">ประมาณการ</span>}
+            </div>
+          )}
         </div>
         <div className="order-card-meta">
           <div className="order-card-row">
@@ -665,8 +944,8 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
           </div>
           <div className="order-card-row">
             <span>สถานะชำระเงิน</span>
-            <span className={`order-card-status pay-${meta.payment_status || ""}`}>
-              {meta.payment_status_label || meta.payment_status || "-"}
+            <span className={`order-card-status ${paymentDisplay.statusClass}`}>
+              {paymentDisplay.label}
             </span>
           </div>
           {meta.ordered_at && (
@@ -742,11 +1021,15 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
       case "file":
         return (
           <div className="message-file">
-            <a href={attachmentUrl(firstAttachment)} target="_blank" rel="noopener noreferrer">
+            <AttachmentFileLink
+              src={attachmentUrl(firstAttachment)}
+              name={attachmentName(firstAttachment)}
+              mode={mode}
+            >
               <span className="file-icon">📄</span>
               <span className="file-name">{attachmentName(firstAttachment)}</span>
               <span className="file-size">{attachmentSize(firstAttachment)}</span>
-            </a>
+            </AttachmentFileLink>
           </div>
         );
       case "location":
@@ -784,10 +1067,14 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
                         onOpen={(url) => window.open(url, "_blank")}
                       />
                     ) : (
-                      <a href={attachmentUrl(att)} target="_blank" rel="noopener noreferrer">
+                      <AttachmentFileLink
+                        src={attachmentUrl(att)}
+                        name={attachmentName(att)}
+                        mode={mode}
+                      >
                         <span className="file-icon">📄</span>
                         <span>{attachmentName(att)}</span>
-                      </a>
+                      </AttachmentFileLink>
                     )}
                   </div>
                 ))}
@@ -895,7 +1182,7 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
         </div>
       </div>
 
-      <div className="chat-messages">
+      <div className="chat-messages" ref={messagesContainerRef}>
         {hasMore && (
           <button className="load-more-btn" type="button" onClick={handleLoadMore} disabled={loading}>
             {loading ? "กำลังโหลด..." : "โหลดข้อความก่อนหน้า"}
@@ -1026,6 +1313,28 @@ export default function ChatRoom({ conversationId: conversationIdProp, mode: mod
         orderId={orderDetailId}
         mode={mode}
       />
+      {orderRouteModalOpen && (
+        <OrderRouteMapModal
+          open={orderRouteModalOpen}
+          onClose={() => setOrderRouteModalOpen(false)}
+          conversationId={conversationId}
+          mode={mode}
+          orderId={orderRouteModalOrderId}
+          storeName={conversation?.store?.name}
+          orderNumber={orderRouteModalOrderNumber}
+        />
+      )}
+      {slipModalOpen && (
+        <PaymentSlipModal
+          isOpen={slipModalOpen}
+          onClose={() => {
+            setSlipModalOpen(false);
+            setSlipModalOrderId(null);
+          }}
+          orderId={slipModalOrderId}
+          mode={mode}
+        />
+      )}
     </div>
   );
 }

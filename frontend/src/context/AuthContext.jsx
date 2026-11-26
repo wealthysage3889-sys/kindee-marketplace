@@ -128,13 +128,13 @@ export function AuthProvider({ children }) {
   );
 
   const logout = useCallback(
-    async (mode = MODE_CUSTOMER) => {
+    async (mode = MODE_CUSTOMER, options = {}) => {
       const session = mode === MODE_ADMIN ? adminSession : customerSession;
       // Start the server-side revocation first so the request still carries the
       // access token from storage, then clear locally without waiting on the
       // network. A stalled logout must not trap the user on a protected page.
       const revocation = session.refreshToken
-        ? authAPI.logout(session.refreshToken, mode)
+        ? authAPI.logout({ refreshToken: session.refreshToken, ...options }, mode)
         : null;
       if (revocation) {
         revocation.catch((error) => console.error("Logout error:", error));

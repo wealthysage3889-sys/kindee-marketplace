@@ -40,6 +40,12 @@ const missingConversationId = '00000000-0000-4000-8000-000000000000';
 const msg1Id = 'aaaaaaaa-0000-4000-8000-000000000001';
 const msg2Id = 'aaaaaaaa-0000-4000-8000-000000000002';
 const otherMsgId = 'bbbbbbbb-0000-4000-8000-000000000001';
+// Order-chat messages whose metadata holds a STALE snapshot (payment pending)
+// while the order row in the DB has already advanced to delivered / paid.
+const codOrderId = 'aaaaaaaa-0000-4000-8000-000000000101';
+const kbzOrderId = 'aaaaaaaa-0000-4000-8000-000000000102';
+const codMsgId = 'aaaaaaaa-0000-4000-8000-000000000201';
+const kbzMsgId = 'aaaaaaaa-0000-4000-8000-000000000202';
 
 const TOKENS = {
   [customerId]: 'customer-session-token',
@@ -67,6 +73,10 @@ function makeSeed() {
       [conversationId, { id: conversationId, type: 'store_customer', store_id: storeId, store_order_id: null, last_message_at: iso(-50000) }],
       [otherConversationId, { id: otherConversationId, type: 'store_customer', store_id: storeId, store_order_id: null, last_message_at: iso(-10000) }],
     ],
+    orders: [
+      [codOrderId, { id: codOrderId, order_number: 'ORD-TEST-COD', status: 'delivered', payment_status: 'paid', payment_method: 'cod', customer_id: customerId }],
+      [kbzOrderId, { id: kbzOrderId, order_number: 'ORD-TEST-KBZ', status: 'delivered', payment_status: 'awaiting_review', payment_method: 'kbzpay', customer_id: customerId }],
+    ],
     conversation_members: [
       ['cm-1', { id: 'cm-1', conversation_id: conversationId, profile_id: customerId, role: 'member', left_at: null, unread_count: 0, last_read_at: null }],
       ['cm-2', { id: 'cm-2', conversation_id: conversationId, profile_id: ownerId, role: 'admin', left_at: null, unread_count: 1, last_read_at: null }],
@@ -75,6 +85,8 @@ function makeSeed() {
     messages: [
       [msg1Id, { id: msg1Id, conversation_id: conversationId, sender_id: customerId, type: 'text', content: 'สวัสดีค่ะ', is_deleted: false, created_at: iso(-100000) }],
       [msg2Id, { id: msg2Id, conversation_id: conversationId, sender_id: ownerId, type: 'text', content: 'สวัสดีครับ', is_deleted: false, created_at: iso(-50000) }],
+      [codMsgId, { id: codMsgId, conversation_id: conversationId, sender_id: customerId, type: 'order_update', content: 'คำสั่งซื้อ #ORD-TEST-COD ... สถานะ: รอร้านค้ายืนยัน • รอชำระเงิน', is_deleted: false, created_at: iso(-30000), metadata: { kind: 'order_chat', order_id: codOrderId, order_number: 'ORD-TEST-COD', order_status: 'pending', order_status_label: 'รอร้านค้ายืนยัน', payment_status: 'pending', payment_status_label: 'รอชำระเงิน', payment_method: 'cod', payment_method_label: 'เก็บเงินปลายทาง (COD)' } }],
+      [kbzMsgId, { id: kbzMsgId, conversation_id: conversationId, sender_id: customerId, type: 'order_update', content: 'คำสั่งซื้อ #ORD-TEST-KBZ ... สถานะ: รอร้านค้ายืนยัน • รอตรวจสอบสลิป', is_deleted: false, created_at: iso(-25000), metadata: { kind: 'order_chat', order_id: kbzOrderId, order_number: 'ORD-TEST-KBZ', order_status: 'pending', order_status_label: 'รอร้านค้ายืนยัน', payment_status: 'awaiting_review', payment_status_label: 'รอตรวจสอบสลิป', payment_method: 'kbzpay', payment_method_label: 'KBZPay' } }],
       [otherMsgId, { id: otherMsgId, conversation_id: otherConversationId, sender_id: ownerId, type: 'text', content: 'ห้องอื่น', is_deleted: false, created_at: iso(-20000) }],
     ],
     message_attachments: [],
@@ -268,6 +280,35 @@ test('both roles can attach files and the attachment reaches the message', async
   assert.equal(fromOwner.attachments[0].file_name, 'price.pdf');
   assert.equal(fromOwner.attachments[0].file_size, 5678);
   assert.equal(fromOwner.attachments[0].mime_type, 'application/pdf');
+});
+
+// ---------------------------------------------------------------------------
+// Order-chat enrichment: stale chat snapshots are overwritten by the latest
+// order data (orders table is the source of truth for payment status too).
+// ---------------------------------------------------------------------------
+
+test('GET messages refreshes order_chat payment_status from the orders table', async () => {
+  const { status, data } = await api(`/conversations/${conversationId}/messages`, { token: customerToken });
+  assert.equal(status, 200);
+
+  const codMsg = data.data.find((m) => m.metadata?.order_id === codOrderId);
+  assert.ok(codMsg, 'COD order-chat message should be returned');
+  assert.equal(codMsg.metadata.order_status, 'delivered', 'order_status refreshed from orders table');
+  assert.equal(codMsg.metadata.payment_status, 'paid', 'COD payment_status refreshed to paid');
+  assert.equal(codMsg.metadata.payment_method, 'cod');
+  assert.equal(codMsg.metadata.payment_status_label, 'ชำระแล้ว');
+  assert.equal(codMsg.metadata.payment_method_label, 'เก็บเงินปลายทาง (COD)');
+
+  const kbzMsg = data.data.find((m) => m.metadata?.order_id === kbzOrderId);
+  assert.ok(kbzMsg, 'KBZPay order-chat message should be returned');
+  assert.equal(kbzMsg.metadata.payment_status, 'awaiting_review', 'KBZPay payment_status kept as awaiting_review');
+  assert.equal(kbzMsg.metadata.payment_method, 'kbzpay');
+  assert.equal(kbzMsg.metadata.payment_status_label, 'รอตรวจสอบสลิป');
+  assert.equal(kbzMsg.metadata.payment_method_label, 'KBZPay');
+
+  // Non-order messages are untouched.
+  const textMsg = data.data.find((m) => m.id === msg1Id);
+  assert.equal(textMsg.metadata?.order_id, undefined);
 });
 
 test('an attachment without a url is rejected with 400', async () => {

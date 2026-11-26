@@ -470,8 +470,8 @@ test('Delivered status does NOT auto-set payment_status=paid for KBZPay', async 
   }
 });
 
-test('Regression: promptpay/transfer/card/wallet still create payment record', async () => {
-  for (const method of ['promptpay', 'transfer', 'card', 'wallet']) {
+test('Regression: promptpay/transfer/card still create payment record; wallet blocked by default', async () => {
+  for (const method of ['promptpay', 'transfer', 'card']) {
     const { handlers, created } = buildOrderHandlers({
       products: { 'prod-1': product({ price: 100 }) },
       stores: { 'store-1': store },
@@ -488,6 +488,24 @@ test('Regression: promptpay/transfer/card/wallet still create payment record', a
     } finally {
       restore();
     }
+  }
+
+  // customer_wallet_enabled defaults to OFF (safe default), so new wallet orders
+  // must be rejected server-side without touching any existing wallet data.
+  const { handlers, created } = buildOrderHandlers({
+    products: { 'prod-1': product({ price: 100 }) },
+    stores: { 'store-1': store },
+  });
+  const { restore } = installFakeSupabase(handlers);
+
+  try {
+    await assert.rejects(
+      () => createOrder('cust-1', orderInput([{ product_id: 'prod-1', quantity: 1 }], 'wallet')),
+      /ระบบวอเลทลูกค้าถูกปิดใช้งาน/
+    );
+    assert.equal(created.payments.length, 0, 'No payment record should be created when wallet is disabled');
+  } finally {
+    restore();
   }
 });
 

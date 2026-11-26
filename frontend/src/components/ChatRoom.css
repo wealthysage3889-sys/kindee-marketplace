@@ -366,6 +366,23 @@
   font-weight: 600;
 }
 
+.order-card-row-mmk {
+  background: #f5f5f5;
+  border-radius: 4px;
+  padding: 4px 8px;
+  margin-top: 4px;
+}
+
+.order-card-estimate-badge {
+  font-size: 11px;
+  color: #ef6c00;
+  background: #fff3e0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 8px;
+  font-weight: 500;
+}
+
 .order-card-status {
   font-weight: 500;
 }
@@ -380,6 +397,22 @@
 
 .order-card-status.pay-pending {
   color: #ef6c00;
+}
+
+.order-card-status.pay-verified {
+  color: #2e7d32;
+}
+
+.order-card-status.pay-failed {
+  color: #c62828;
+}
+
+.order-card-status.pay-refunded {
+  color: #1565c0;
+}
+
+.order-card-status.pay-partially_refunded {
+  color: #1565c0;
 }
 
 .order-card-status.status-cancelled {
@@ -1009,4 +1042,326 @@
   .chat-route-map {
     height: 200px;
   }
+}
+
+.order-card-map-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0;
+}
+
+.order-card-map-icon {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+}
+
+.order-card-map-img {
+  width: 48px;
+  height: auto;
+  aspect-ratio: auto;
+  object-fit: contain;
+}
+
+.order-card-kindee-logo {
+  width: auto;
+  height: 40px;
+  max-width: 110px;
+  object-fit: contain;
+}
+
+.order-card-kindee-logo-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.order-card-kindee-logo-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (max-width: 768px) {
+  .order-card-map-row {
+    gap: 10px;
+  }
+
+  .order-card-map-img {
+    width: 36px;
+  }
+
+  .order-card-kindee-logo {
+    height: 32px;
+    max-width: 90px;
+  }
+}
+
+.order-route-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.55);
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.order-route-panel {
+  background: #fff;
+  border-radius: 10px;
+  width: 100%;
+  max-width: 720px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+
+.order-route-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.order-route-header h3 {
+  margin: 0 0 4px 0;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.order-route-header p {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.order-route-close {
+  background: none;
+  border: none;
+  font-size: 24px;
+  line-height: 1;
+  color: #64748b;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.order-route-close:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.order-route-body {
+  padding: 16px 20px 20px;
+  overflow: auto;
+  flex: 1;
+}
+
+.order-route-map {
+  height: 340px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  margin: 12px 0;
+  background: #eef2f7;
+}
+
+.order-route-state {
+  padding: 16px;
+  text-align: center;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.order-route-error {
+  color: #991b1b;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  margin: 12px 0;
+  padding: 14px;
+  font-size: 14px;
+}
+
+.order-route-summary {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.order-route-card {
+  flex: 1;
+  min-width: 200px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.order-route-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.order-route-role {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #475569;
+}
+
+.order-route-role-store {
+  color: #166534;
+}
+
+.order-route-role-customer {
+  color: #1d4ed8;
+}
+
+.order-route-addr {
+  font-size: 13px;
+  color: #64748b;
+  display: block;
+  margin: 2px 0 4px 0;
+}
+
+.order-route-coords {
+  font-size: 12px;
+  color: #94a3b8;
+  display: block;
+}
+
+.order-route-source {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 6px;
+  display: block;
+}
+
+.order-route-stat {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.order-route-stat span {
+  color: #64748b;
+}
+
+.order-route-stat strong {
+  color: #0f172a;
+}
+
+.order-route-note {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .order-route-overlay {
+    padding: 12px;
+  }
+  .order-route-panel {
+    border-radius: 0;
+    max-height: 95vh;
+  }
+  .order-route-map {
+    height: 240px;
+  }
+}
+
+.order-route-warning {
+  padding: 12px 14px;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  background: #fffbeb;
+  color: #78350f;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 12px 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.order-route-mode {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 6px;
+  font-size: 13px;
+  color: #475569;
+}
+
+.order-route-mode-label {
+  color: #64748b;
+}
+
+.order-route-mode-value {
+  color: #0f172a;
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.order-route-source-verified {
+  font-size: 11px;
+  color: #166534;
+  font-weight: 700;
+  margin-top: 6px;
+  display: block;
+}
+
+.order-route-instructions {
+  margin-top: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.order-route-instructions-head {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.order-route-instructions-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.order-route-instruction-item {
+  padding: 8px 14px;
+  font-size: 13px;
+  color: #334155;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.order-route-instruction-item:last-child {
+  border-bottom: none;
 }

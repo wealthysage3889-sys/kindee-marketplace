@@ -192,10 +192,48 @@ export const authAPI = {
       body: JSON.stringify({ refreshToken }),
     }, mode),
 
-  logout: (refreshToken, mode = "customer") =>
-    request("/auth/logout", {
+  logout: (options = {}, mode = "customer") => {
+    const { refreshToken, revokeAllSessions, scope } = options;
+    return request("/auth/logout", {
       method: "POST",
-      body: JSON.stringify({ refreshToken }),
+      body: JSON.stringify({ refreshToken, revokeAllSessions, scope }),
+    }, mode);
+  },
+
+  // Sessions (Migration 025)
+  getSessions: (mode = "customer") =>
+    request("/auth/sessions", undefined, mode),
+
+  revokeSession: (sessionId, mode = "customer") =>
+    request("/auth/sessions/revoke", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId }),
+    }, mode),
+
+  revokeAllSessions: (mode = "customer") =>
+    request("/auth/sessions/revoke", {
+      method: "POST",
+      body: JSON.stringify({ all: true }),
+    }, mode),
+
+  // Login History (Migration 026)
+  getLoginHistory: (mode = "customer") =>
+    request("/auth/login-history", undefined, mode),
+
+  // Security Alerts (Migration 027)
+  getSecurityAlerts: (mode = "customer") =>
+    request("/auth/security-alerts", undefined, mode),
+
+  markAlertRead: (alertId, mode = "customer") =>
+    request(`/auth/security-alerts/${alertId}/read`, {
+      method: "PATCH",
+    }, mode),
+
+  // Social unlink (Migration 006 columns)
+  unlinkSocial: (provider, mode = "customer") =>
+    request("/auth/social/unlink", {
+      method: "POST",
+      body: JSON.stringify({ provider }),
     }, mode),
 
   deactivateAccount: (mode = "customer") =>
@@ -333,8 +371,11 @@ export const orderAPI = {
     return request(`/orders?${query}`);
   },
 
-  getById: (id) =>
-    request(`/orders/${id}`),
+  getById: (id, mode = "customer") =>
+    request(`/orders/${id}`, {}, mode),
+
+  getRoute: (id, mode = "customer") =>
+    request(`/orders/${id}/route`, {}, mode),
 
   cancel: (id, reason) =>
     request(`/orders/${id}/cancel`, {
@@ -437,6 +478,100 @@ export const addressAPI = {
     request(`/addresses/${id}/default`, {
       method: "POST",
     }),
+};
+
+// Wallet API
+export const walletAPI = {
+  getSummary: () =>
+    request("/wallet/summary"),
+
+  getTransactions: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/wallet/transactions?${query}`);
+  },
+
+  getHistory: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/wallet/history?${query}`);
+  },
+
+  getVouchers: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/wallet/vouchers?${query}`);
+  },
+
+  getCards: () =>
+    request("/wallet/cards"),
+
+  addCard: (data) =>
+    request("/wallet/cards", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  updateCard: (id, data) =>
+    request(`/wallet/cards/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
+  deleteCard: (id) =>
+    request(`/wallet/cards/${id}`, {
+      method: "DELETE",
+    }),
+
+  getBankAccounts: () =>
+    request("/wallet/bank-accounts"),
+
+  addBankAccount: (data) =>
+    request("/wallet/bank-accounts", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  updateBankAccount: (id, data) =>
+    request(`/wallet/bank-accounts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
+  deleteBankAccount: (id) =>
+    request(`/wallet/bank-accounts/${id}`, {
+      method: "DELETE",
+    }),
+
+  verifyBankAccount: (id) =>
+    request(`/wallet/bank-accounts/${id}/verify`, {
+      method: "POST",
+    }),
+
+  getSettings: () =>
+    request("/wallet/settings"),
+
+  // Mee Card Wallet Registration (Customer)
+  createMeeCardRegistration: (data) =>
+    request("/wallet/mee-card-registration", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  getMyMeeCardRegistration: () =>
+    request("/wallet/mee-card-registration"),
+
+  // Mee Card Wallet Registration (Admin)
+  getPendingMeeCardRegistrations: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/wallet/admin/mee-card-registrations?${query}`, {}, "admin");
+  },
+
+  getMeeCardRegistrationCounts: () =>
+    request("/wallet/admin/mee-card-registrations/counts", {}, "admin"),
+
+  reviewMeeCardRegistration: (id, action, rejectionReason = null) =>
+    request(`/wallet/admin/mee-card-registrations/${id}/review`, {
+      method: "PATCH",
+      body: JSON.stringify({ action, rejection_reason: rejectionReason }),
+    }, "admin"),
 };
 
 // Chat API
@@ -911,4 +1046,5 @@ export default {
   settings: settingsAPI,
   upload: uploadAPI,
   admin: adminAPI,
+  wallet: walletAPI,
 };

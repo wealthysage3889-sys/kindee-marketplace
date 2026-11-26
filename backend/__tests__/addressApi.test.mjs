@@ -157,7 +157,7 @@ test('customer can create an address with a normalized Thai phone', async () => 
 
   assert.equal(status, 201);
   assert.equal(data.data.profile_id, customerId);
-  assert.equal(data.data.phone, '0812345678');
+  assert.equal(data.data.phone, '+66812345678');
   assert.equal(data.data.is_default, false);
 });
 

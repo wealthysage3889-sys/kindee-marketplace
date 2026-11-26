@@ -2,6 +2,12 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { productAPI, storeAPI } from "../api/product";
 
+// Resolve the store logo URL from the same fields used by the admin profile
+// and the store detail page. The backend stores the path under `logo_url`
+// (snake_case); some endpoints also mirror it as `logo` (camelCase).
+const resolveStoreLogo = (store) =>
+  store?.logo || store?.logoUrl || store?.logo_url || null;
+
 export default function Stores() {
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -17,7 +23,7 @@ export default function Stores() {
           setStores(Array.isArray(storesList) ? storesList : []);
         }
       } catch (err) {
-        if (!cancelled) setError(err.message || "ไม่สามารถโหลดร้านค้าได้");
+        if (!cancelled) setError(err.message || "ไม่สามารถ loading ร้านค้าได้");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -32,17 +38,37 @@ export default function Stores() {
         <h1>ร้านค้า</h1>
         <p>ค้นพบร้านค้าและสินค้าทั้งหมดใน Kindee</p>
       </div>
-      {loading && <div className="home-loading">กำลังโหลดร้านค้า...</div>}
+      {loading && <div className="home-loading">กำลัง loading ร้านค้า...</div>}
       {error && <div className="home-error">{error}</div>}
       {!loading && !error && (
         <div className="store-grid">
-          {stores.length === 0 ? <p className="product-empty">ยังไม่มีร้านค้า</p> : stores.map((store) => (
-            <Link to={`/stores/${store._id}`} className="store-card" key={store._id}>
-              <span className="store-avatar">{(store.name || "?")[0]}</span>
-              <strong className="store-name">{store.name || "ร้านค้า"}</strong>
-              <small>ดูสินค้าในร้าน</small>
-            </Link>
-          ))}
+          {stores.length === 0 ? <p className="product-empty">ยังไม่มีร้านค้า</p> : stores.map((store) => {
+            const logoUrl = resolveStoreLogo(store);
+            const storeId = store._id || store.id;
+            const storeName = store.name || "ร้านค้า";
+            return (
+              <Link to={`/stores/${storeId}`} className="store-card" key={storeId}>
+                <span className="store-avatar">
+                  {logoUrl ? (
+                    <img
+                      src={logoUrl}
+                      alt={storeName}
+                      loading="lazy"
+                      onError={(e) => {
+                        // Image failed to load: hide it so the fallback shows
+                        e.currentTarget.style.display = "none";
+                      }}
+                    />
+                  ) : null}
+                  <span className="store-avatar-fallback">
+                    {storeName.charAt(0).toUpperCase()}
+                  </span>
+                </span>
+                <strong className="store-name">{storeName}</strong>
+                <small>ดูสินค้าในร้าน</small>
+              </Link>
+            );
+          })}
         </div>
       )}
     </div>

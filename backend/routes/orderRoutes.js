@@ -3,6 +3,7 @@ import { body, query, param } from 'express-validator';
 import { validate, validateId } from '../middleware/validate.js';
 import { verifyToken, authorize, verifyAdmin } from '../middleware/auth.js';
 import * as orderService from '../services/orderService.js';
+import { getOrderRoute } from '../services/routeService.js';
 import { asyncHandler, AppError, NotFoundError } from '../middleware/errorHandler.js';
 import { validatePhone } from '../utils/phone.js';
 import { supabaseAdmin } from '../config/supabase.js';
@@ -204,6 +205,16 @@ router.get('/:id', validateId(), verifyToken, asyncHandler(async (req, res) => {
   res.json({
     success: true,
     data: order
+  });
+}));
+
+// Get order route (map/navigation) by order ID
+router.get('/:id/route', validateId(), verifyToken, asyncHandler(async (req, res) => {
+  const route = await getOrderRoute(req.params.id, req.user.id, req.user.role);
+  
+  res.json({
+    success: true,
+    data: route
   });
 }));
 

@@ -378,6 +378,34 @@ router.get('/users', verifyToken, verifyAdmin, [
   });
 }));
 
+// Create a new user account (admin only).
+// Creates the Supabase Auth user via the service-role Admin API, then writes
+// the profiles row with the requested role. Only an owner may grant the
+// owner role; admins may create customer/seller/admin/courier accounts.
+router.post('/users', verifyToken, verifyAdmin, [
+  body('name').trim().notEmpty().withMessage('Name is required'),
+  body('email').isEmail().normalizeEmail().withMessage('Invalid email'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  body('role').isIn(['customer', 'seller', 'admin', 'owner', 'courier']).withMessage('Invalid role')
+], validate, asyncHandler(async (req, res) => {
+  const { name, email, password, role } = req.body;
+
+  if (role === 'owner' && req.user.role !== 'owner') {
+    throw new AppError('เฉพาะเจ้าของระบบเท่านั้นที่สามารถมอบสิทธิ์ owner ได้', 403);
+  }
+
+  const result = await authService.registerUser({ email, password, name, role });
+
+  const safeUser = { ...result.user };
+  delete safeUser.password;
+
+  res.status(201).json({
+    success: true,
+    message: 'สร้างบัญชีผู้ใช้เรียบร้อยแล้ว',
+    data: safeUser
+  });
+}));
+
 // Update user role
 router.patch('/users/:id/role', validateId(), verifyToken, verifyAdmin, [
   body('role').isIn(['customer', 'seller', 'admin', 'owner', 'courier']).withMessage('Invalid role')

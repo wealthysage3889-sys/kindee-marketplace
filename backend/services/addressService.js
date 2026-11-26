@@ -1,14 +1,17 @@
 import { supabaseAdmin } from '../config/supabase.js';
 import { AppError, ConflictError, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
-import { normalizeThaiPhone } from '../utils/phone.js';
+import { normalizePhoneE164 } from '../utils/phone.js';
 
 const ADDRESS_COLUMNS =
-  'id,profile_id,label,recipient_name,phone,street,district,province,postal_code,lat,lng,is_default,created_at,updated_at';
+  'id,profile_id,label,recipient_name,phone,street,subdistrict,district,province,postal_code,country,additional_details,lat,lng,is_default,created_at,updated_at';
 
 const MAX_ADDRESSES_PER_PROFILE = 20;
 const MAX_LABEL_LENGTH = 50;
 const MAX_RECIPIENT_LENGTH = 120;
 const MAX_STREET_LENGTH = 500;
+const MAX_SUBDISTRICT_LENGTH = 120;
+const MAX_COUNTRY_LENGTH = 2;
+const MAX_ADDITIONAL_DETAILS_LENGTH = 500;
 
 const toTrimmedString = (value) => {
   if (value === undefined || value === null) return '';
@@ -78,8 +81,8 @@ const normalizeAddressPayload = (input = {}, { partial = false } = {}) => {
 
   const rawPhone = toTrimmedString(get('phone'));
   if (rawPhone || !partial) {
-    const phone = normalizeThaiPhone(rawPhone);
-    if (!phone) throw new ValidationError('A valid Thai phone number is required');
+    const phone = normalizePhoneE164(rawPhone);
+    if (!phone) throw new ValidationError('A valid Thai or Myanmar phone number is required');
     payload.phone = phone;
   }
 
@@ -104,6 +107,30 @@ const normalizeAddressPayload = (input = {}, { partial = false } = {}) => {
     payload.province = province;
   }
 
+  const subdistrict = toTrimmedString(get('subdistrict'));
+  if (subdistrict || !partial) {
+    if (subdistrict.length > MAX_SUBDISTRICT_LENGTH) {
+      throw new ValidationError(`Subdistrict must be at most ${MAX_SUBDISTRICT_LENGTH} characters`);
+    }
+    payload.subdistrict = subdistrict || null;
+  }
+
+  const country = toTrimmedString(get('country')).toUpperCase();
+  if (country || !partial) {
+    if (country && country.length > MAX_COUNTRY_LENGTH) {
+      throw new ValidationError(`Country code must be at most ${MAX_COUNTRY_LENGTH} characters`);
+    }
+    payload.country = country || 'TH';
+  }
+
+  const additionalDetails = toTrimmedString(get('additional_details', 'additionalDetails'));
+  if (additionalDetails || !partial) {
+    if (additionalDetails.length > MAX_ADDITIONAL_DETAILS_LENGTH) {
+      throw new ValidationError(`Additional details must be at most ${MAX_ADDITIONAL_DETAILS_LENGTH} characters`);
+    }
+    payload.additional_details = additionalDetails || null;
+  }
+
   const postalCode = toTrimmedString(get('postal_code', 'postalCode'));
   if (postalCode || !partial) {
     if (!postalCode) throw new ValidationError('Postal code is required');
@@ -125,10 +152,16 @@ const isDuplicateDefaultError = (error) =>
     /single default|profile_addresses_single_default/i.test(error?.message || ''));
 
 const raiseAddressDatabaseError = (action, error) => {
+  console.error(`[addressService] ${action} failed`, {
+    code: error?.code,
+    message: error?.message,
+    details: error?.details,
+    hint: error?.hint,
+  });
   if (isDuplicateDefaultError(error)) {
     throw new ConflictError('Another address is already being set as the default. Please retry.');
   }
-  throw new AppError(`${action} failed: ${error.message}`, 500);
+  throw new AppError(`${action} failed: ${error?.message || 'database error'}`, 500);
 };
 
 export const getAddresses = async (profileId) => {

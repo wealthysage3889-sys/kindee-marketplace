@@ -52,8 +52,8 @@ export const registerUser = async (userData) => {
   const { email, phone, password, name, role = 'customer' } = userData;
 
   // Validate role
-  if (!['customer', 'seller'].includes(role)) {
-    throw new AppError('Invalid role. Must be customer or seller', 400);
+  if (!['customer', 'seller', 'admin', 'owner', 'courier'].includes(role)) {
+    throw new AppError('Invalid role. Must be customer, seller, admin, owner, or courier', 400);
   }
 
   // Convert phone to E.164 format for Supabase Auth (if provided)
@@ -888,6 +888,206 @@ export const deactivateAccount = async (userId) => {
   }
 
   return profile;
+};
+
+// ---------------------------------------------------------------------------
+// Session / Login History / Security Alerts / Social Unlink (Migration 025-027)
+// ---------------------------------------------------------------------------
+
+// Helper (service_role): append an append-only login_history row. Best-effort.
+const appendLoginHistory = async (profileId, eventType, success, metadata = {}) => {
+  await supabaseAdmin.from('login_history').insert({
+    profile_id: profileId,
+    event_type: eventType,
+    success,
+    metadata,
+    created_at: new Date().toISOString()
+  });
+};
+
+// List active (non-revoked) sessions for the current profile. No tokens returned.
+export const getUserSessions = async (userId) => {
+  const { data, error } = await supabaseAdmin
+    .from('user_sessions')
+    .select('id, device_id, device_name, ip_address, user_agent, browser, os, country, city, last_activity_at, created_at, expires_at, is_revoked')
+    .eq('profile_id', userId)
+    .eq('is_revoked', false)
+    .order('last_activity_at', { ascending: false });
+
+  if (error) throw new AppError(`โหลดเซสชันไม่สำเร็จ: ${error.message}`, 500);
+  return data || [];
+};
+
+// Soft-revoke a single tracked session (owner only). Does NOT revoke another
+// device's Supabase refresh token unless we hold that device's access token.
+// Use scope='global' logout for full token revocation.
+export const revokeUserSession = async (userId, sessionId, reason = 'user_initiated') => {
+  const { data: session, error: fetchError } = await supabaseAdmin
+    .from('user_sessions')
+    .select('id, profile_id, is_revoked')
+    .eq('id', sessionId)
+    .eq('profile_id', userId)
+    .single();
+
+  if (fetchError || !session) {
+    throw new AppError('ไม่พบเซสชันนี้ หรือคุณไม่ใช่เจ้าของ', 404);
+  }
+  if (session.is_revoked) {
+    throw new AppError('เซสชันนี้ถูกยกเลิกไปแล้ว', 409);
+  }
+
+  const { error } = await supabaseAdmin
+    .from('user_sessions')
+    .update({ is_revoked: true, revoked_at: new Date().toISOString(), revoked_reason: reason })
+    .eq('id', sessionId)
+    .eq('profile_id', userId);
+
+  if (error) throw new AppError(`ยกเลิกเซสชันไม่สำเร็จ: ${error.message}`, 500);
+
+  try {
+    await appendLoginHistory(userId, 'session_revoked', true, { reason, session_id: sessionId });
+  } catch {
+    // best-effort audit log
+  }
+
+  return { success: true };
+};
+
+// Soft-revoke all tracked sessions for the profile.
+export const revokeAllUserSessions = async (userId, reason = 'user_initiated_global') => {
+  const { error } = await supabaseAdmin
+    .from('user_sessions')
+    .update({ is_revoked: true, revoked_at: new Date().toISOString(), revoked_reason: reason })
+    .eq('profile_id', userId)
+    .eq('is_revoked', false);
+
+  if (error) throw new AppError(`ยกเลิกเซสชันทั้งหมดไม่สำเร็จ: ${error.message}`, 500);
+
+  try {
+    await appendLoginHistory(userId, 'session_revoked_all', true, { reason });
+  } catch {
+    // best-effort audit log
+  }
+
+  return { success: true };
+};
+
+// List login history (append-only audit log) for the profile.
+export const getLoginHistory = async (userId) => {
+  const { data, error } = await supabaseAdmin
+    .from('login_history')
+    .select('id, event_type, success, failure_reason, ip_address, device_name, browser, os, country, city, created_at')
+    .eq('profile_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(100);
+
+  if (error) throw new AppError(`โหลดประวัติการเข้าสู่ระบบไม่สำเร็จ: ${error.message}`, 500);
+  return data || [];
+};
+
+// List security alerts for the profile.
+export const getSecurityAlerts = async (profileId) => {
+  const { data, error } = await supabaseAdmin
+    .from('security_alerts')
+    .select('id, alert_type, severity, title, description, ip_address, country, device_id, is_read, read_at, resolved_at, created_at')
+    .eq('profile_id', profileId)
+    .order('created_at', { ascending: false });
+
+  if (error) throw new AppError(`โหลดการแจ้งเตือนไม่สำเร็จ: ${error.message}`, 500);
+  return data || [];
+};
+
+// Mark a security alert as read (owner only).
+export const markSecurityAlertRead = async (alertId, profileId) => {
+  const { data: alert, error: fetchError } = await supabaseAdmin
+    .from('security_alerts')
+    .select('id, profile_id, is_read')
+    .eq('id', alertId)
+    .eq('profile_id', profileId)
+    .single();
+
+  if (fetchError || !alert) {
+    throw new AppError('ไม่พบการแจ้งเตือนนี้ หรือคุณไม่ใช่เจ้าของ', 404);
+  }
+  if (alert.is_read) {
+    throw new AppError('การแจ้งเตือนนี้ถูกอ่านแล้ว', 409);
+  }
+
+  const { error } = await supabaseAdmin
+    .from('security_alerts')
+    .update({ is_read: true, read_at: new Date().toISOString() })
+    .eq('id', alertId)
+    .eq('profile_id', profileId);
+
+  if (error) throw new AppError(`ทำเครื่องหมายอ่านไม่สำเร็จ: ${error.message}`, 500);
+
+  return { success: true };
+};
+
+// Unlink a social provider with a login-channel guard (never leave the user
+// with zero remaining login channels).
+export const unlinkSocialProvider = async (userId, provider) => {
+  const validProviders = ['google', 'facebook', 'line'];
+  if (!validProviders.includes(provider)) {
+    throw new AppError('Provider ไม่ถูกต้อง', 400);
+  }
+
+  const providerColumn = `${provider}_id`;
+
+  const { data: profile, error } = await supabaseAdmin
+    .from('profiles')
+    .select('id, email, phone, google_id, facebook_id, line_id')
+    .eq('id', userId)
+    .single();
+
+  if (error || !profile) {
+    throw new AppError('ไม่พบโปรไฟล์ผู้ใช้', 404);
+  }
+
+  if (!profile[providerColumn]) {
+    throw new AppError(`ยังไม่ได้เชื่อมต่อ ${provider}`, 409);
+  }
+
+  // Count remaining login channels AFTER unlinking this provider.
+  let remainingChannels = 0;
+  const channelDetails = [];
+
+  if (profile.email) {
+    remainingChannels++;
+    channelDetails.push('อีเมล/รหัสผ่าน');
+  }
+  for (const p of validProviders) {
+    if (p !== provider && profile[`${p}_id`]) {
+      remainingChannels++;
+      channelDetails.push(p);
+    }
+  }
+  if (profile.phone) {
+    remainingChannels++;
+    channelDetails.push('เบอร์โทรศัพท์/OTP');
+  }
+
+  if (remainingChannels <= 0) {
+    throw new AppError(
+      `ไม่สามารถยกเลิก ${provider} ได้ เนื่องจากจะทำให้ไม่เหลือช่องทางเข้าสู่ระบบเลย กรุณาเพิ่มช่องทางอื่นก่อน (เช่น ตั้งรหัสผ่านหรือเพิ่มเบอร์โทร)`,
+      409
+    );
+  }
+
+  const { error: updateError } = await supabaseAdmin
+    .from('profiles')
+    .update({ [providerColumn]: null })
+    .eq('id', userId);
+
+  if (updateError) throw new AppError(`ยกเลิกการเชื่อมต่อไม่สำเร็จ: ${updateError.message}`, 500);
+
+  try {
+    await appendLoginHistory(userId, 'social_unlink', true, { provider });
+  } catch {
+    // best-effort audit log
+  }
+
+  return { success: true, provider, remainingChannels, channelDetails };
 };
 
 // Admin: Get all users (fetches all matching rows; batches to avoid PostgREST row caps)

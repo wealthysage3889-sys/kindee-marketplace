@@ -200,7 +200,7 @@ export default function AdminOrders() {
     try {
       const results = await Promise.all(
         group.orders.map(order =>
-          orderAPI.getById(order.id)
+          orderAPI.getById(order.id, "admin")
             .then(r => r?.data || r)
             .catch(() => order)
         )

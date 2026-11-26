@@ -121,6 +121,8 @@ export default function SellAdminMessages() {
   const seenMessageIdsRef = useRef(new Set());
   // Wrapper of the currently open per-chat menu, used for outside clicks.
   const menuRef = useRef(null);
+  // Previous socket connection state, to detect reconnect (false -> true).
+  const wasConnectedRef = useRef(false);
 
   const rememberSeen = useCallback((id) => {
     if (id == null) return;
@@ -311,6 +313,13 @@ export default function SellAdminMessages() {
     return () => clearTimeout(timer);
   }, [notice]);
 
+  // Handle backend conversationUpdated events (spam / restore / hide) by
+  // refreshing the list so visibility and ordering stay in sync.
+  const handleConversationUpdated = useCallback(() => {
+    loadChats();
+    loadSpam();
+  }, [loadChats, loadSpam]);
+
   // Realtime: update the chat list the moment the backend emits a new message,
   // so the unread badge, preview, timestamp and ordering change without a
   // manual refresh. Events arrive on the socket's user_<id> room (joined on
@@ -380,13 +389,26 @@ export default function SellAdminMessages() {
     console.log("[ChatList] registered newMessage listener");
     on("newMessage", handleNewMessage);
     on("messagesRead", handleMessagesRead);
+    on("conversationUpdated", handleConversationUpdated);
 
     return () => {
       console.log("[ChatList] cleanup: removing newMessage listener");
       off("newMessage", handleNewMessage);
       off("messagesRead", handleMessagesRead);
+      off("conversationUpdated", handleConversationUpdated);
     };
-  }, [connected, currentUserId, on, off, loadChats, rememberSeen]);
+  }, [connected, currentUserId, on, off, loadChats, loadSpam, rememberSeen, handleConversationUpdated]);
+
+  // Reconnect refetch: when the socket re-establishes (connected false -> true),
+  // refresh the chat list so unread badges and previews caught up while offline.
+  useEffect(() => {
+    const wasConnected = wasConnectedRef.current;
+    wasConnectedRef.current = connected;
+    if (!wasConnected && connected) {
+      loadChats();
+      loadSpam();
+    }
+  }, [connected, loadChats, loadSpam]);
 
   const handleChatClick = (conversationId) => {
     navigate(`/selladmin/messages/${conversationId}`);

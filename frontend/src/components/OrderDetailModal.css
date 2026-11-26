@@ -125,6 +125,53 @@
   white-space: pre-wrap;
 }
 
+.admin-order-detail-phone-row {
+  align-items: center;
+}
+
+.admin-order-detail-phone-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-order-detail-phone {
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
+  letter-spacing: 0.5px;
+}
+
+.admin-order-detail-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.admin-order-detail-copy-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+  border-color: #cbd5e1;
+}
+
+.admin-order-detail-copy-btn:active {
+  background: #cbd5e1;
+  transform: scale(0.98);
+}
+
+.admin-order-detail-copy-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
 .admin-order-detail-section {
   margin-top: 20px;
 }
@@ -334,6 +381,10 @@
 .payment-awaiting_review { background: #fef3c7; color: #92400e; }
 .payment-paid { background: #dcfce7; color: #166534; }
 .payment-expired { background: #fee2e2; color: #991b1b; }
+.payment-verified { background: #dcfce7; color: #166534; }
+.payment-failed { background: #fee2e2; color: #991b1b; }
+.payment-refunded { background: #dbeafe; color: #1d4ed8; }
+.payment-partially_refunded { background: #dbeafe; color: #1d4ed8; }
 
 .slip-badge {
   display: inline-flex;
@@ -358,6 +409,15 @@
   }
   .admin-order-detail-grid {
     grid-template-columns: 1fr;
+  }
+  .admin-order-detail-phone-wrapper {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .admin-order-detail-phone {
+    word-break: break-all;
+    flex: 1;
+    text-align: right;
   }
 }
 

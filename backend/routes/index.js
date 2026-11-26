@@ -13,6 +13,7 @@ import categoryRoutes from './categoryRoutes.js';
 import adminRoutes from './adminRoutes.js';
 import settingRoutes from './settingRoutes.js';
 import uploadRoutes from './uploadRoutes.js';
+import walletRoutes from './walletRoutes.js';
 
 const router = express.Router();
 
@@ -30,5 +31,6 @@ router.use('/categories', categoryRoutes);
 router.use('/admin', adminRoutes);
 router.use('/settings', settingRoutes);
 router.use('/upload', uploadRoutes);
+router.use('/wallet', walletRoutes);
 
 export default router;

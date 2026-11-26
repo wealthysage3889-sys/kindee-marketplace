@@ -94,4 +94,44 @@ export const adminAPI = {
       method: "POST",
       body: JSON.stringify({ settings }),
     }),
+
+  // Change password — Admin namespace (ส่งรหัสผ่านใหม่เท่านั้น ไม่ต้องยืนยันรหัสผ่านปัจจุบัน)
+  changePassword: (newPassword) =>
+    adminRequest("/auth/password", {
+      method: "PUT",
+      body: JSON.stringify({ newPassword }),
+    }),
+
+  // Get profile (for connected social accounts) — Admin namespace
+  getProfile: () => adminRequest("/auth/profile", undefined),
+
+  // Security / Sessions (Migration 025) — Admin namespace
+  getSessions: () => adminRequest("/auth/sessions", undefined),
+  revokeSession: (sessionId) =>
+    adminRequest("/auth/sessions/revoke", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId }),
+    }),
+  revokeAllSessions: () =>
+    adminRequest("/auth/sessions/revoke", {
+      method: "POST",
+      body: JSON.stringify({ all: true }),
+    }),
+
+  // Login History (Migration 026) — Admin namespace
+  getLoginHistory: () => adminRequest("/auth/login-history", undefined),
+
+  // Security Alerts (Migration 027) — Admin namespace
+  getSecurityAlerts: () => adminRequest("/auth/security-alerts", undefined),
+  markAlertRead: (alertId) =>
+    adminRequest(`/auth/security-alerts/${alertId}/read`, {
+      method: "PATCH",
+    }),
+
+  // Social unlink — Admin namespace
+  unlinkSocial: (provider) =>
+    adminRequest("/auth/social/unlink", {
+      method: "POST",
+      body: JSON.stringify({ provider }),
+    }),
 };

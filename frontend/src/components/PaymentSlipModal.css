@@ -1,0 +1,197 @@
+.payment-slip-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.6);
+  padding: 24px;
+  box-sizing: border-box;
+  animation: paymentSlipFadeIn 0.2s ease;
+}
+
+.payment-slip-modal-panel {
+  background: #fff;
+  border-radius: 10px;
+  width: 100%;
+  max-width: 720px;
+  max-height: 90vh;
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  animation: paymentSlipSlideUp 0.2s ease;
+}
+
+.payment-slip-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: none;
+  border: none;
+  font-size: 26px;
+  line-height: 1;
+  color: #64748b;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.payment-slip-modal-close:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.payment-slip-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #f1f5f9;
+  position: relative;
+}
+
+.payment-slip-modal-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.payment-slip-modal-order-no {
+  font-size: 15px;
+  font-weight: 700;
+  color: #2563eb;
+}
+
+.payment-slip-modal-body {
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.payment-slip-modal-loading,
+.payment-slip-modal-empty {
+  padding: 32px 20px;
+  text-align: center;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.payment-slip-modal-error {
+  padding: 16px 20px;
+  margin: 16px 0;
+  color: #991b1b;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  font-size: 14px;
+  text-align: center;
+}
+
+.payment-slip-modal-image-wrap {
+  text-align: center;
+}
+
+.payment-slip-modal-img {
+  max-width: 100%;
+  max-height: 56vh;
+  object-fit: contain;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  display: block;
+  margin: 0 auto;
+}
+
+.payment-slip-modal-file-name {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #64748b;
+  text-align: center;
+  word-break: break-all;
+}
+
+.payment-slip-modal-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0;
+  font-size: 14px;
+  flex-wrap: wrap;
+}
+
+.payment-slip-modal-label {
+  color: #64748b;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.payment-slip-modal-value {
+  font-weight: 500;
+  text-align: right;
+  white-space: pre-wrap;
+}
+
+.payment-slip-modal-status {
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.payment-slip-modal-status.slip-uploaded { background: #fef3c7; color: #92400e; }
+.payment-slip-modal-status.slip-approved { background: #dcfce7; color: #166534; }
+.payment-slip-modal-status.slip-rejected { background: #fee2e2; color: #991b1b; }
+
+.payment-slip-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 20px;
+  border-top: 1px solid #f1f5f9;
+  background: #f8fafc;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.payment-slip-modal-btn-close {
+  background: #ef4444;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.payment-slip-modal-btn-close:hover {
+  background: #dc2626;
+}
+
+@media (max-width: 640px) {
+  .payment-slip-modal-overlay {
+    padding: 12px;
+  }
+  .payment-slip-modal-panel {
+    max-height: 95vh;
+    border-radius: 0;
+  }
+  .payment-slip-modal-img {
+    max-height: 50vh;
+  }
+}
+
+@keyframes paymentSlipFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes paymentSlipSlideUp {
+  from { transform: translateY(12px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}

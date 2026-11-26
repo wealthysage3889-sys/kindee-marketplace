@@ -1,4 +1,8 @@
 import { NavLink, useLocation } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useSocket } from "../context/SocketContext";
+import { useAuth } from "../context/AuthContext";
+import { notificationAPI } from "../api";
 
 const DashboardIcon = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -59,32 +63,62 @@ const MENU_ITEMS = [
   { to: "/selladmin/users", label: "จัดการผู้ใช้", Icon: UsersIcon },
   { to: "/selladmin/products", label: "จัดการสินค้า", Icon: ProductsIcon },
   { to: "/selladmin/orders", label: "จัดการออเดอร์", Icon: OrdersIcon },
-  { to: "/selladmin/reports", label: "รายงาน", Icon: ReportsIcon },
   { to: "/selladmin/messages", label: "ข้อความ", Icon: MessagesIcon },
   { to: "/selladmin/account", label: "บัญชี", Icon: AccountIcon },
 ];
 
 export default function AdminNavbar() {
   const location = useLocation();
+  const { admin } = useAuth();
+  const { on, off } = useSocket();
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (!admin) return;
+      try {
+        const res = await notificationAPI.getUnreadCount();
+        const data = res?.data || res || {};
+        const count = Number(data.unreadCount ?? data.count ?? data.total ?? 0);
+        if (!cancelled) setUnreadCount(count);
+      } catch {}
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [admin]);
+
+  useEffect(() => {
+    const handleNotification = () => {
+      setUnreadCount((prev) => prev + 1);
+    };
+    on("notification", handleNotification);
+    return () => off("notification", handleNotification);
+  }, [on, off]);
+
   const isChatRoom = location.pathname.startsWith("/selladmin/messages/") && location.pathname !== "/selladmin/messages";
 
-  if (isChatRoom) {
-    return null;
-  }
+  if (isChatRoom) return null;
 
   return (
     <nav className="admin-bottom-nav">
       <div className="bottom-nav-menu">
         {MENU_ITEMS.map((item) => {
           const Icon = item.Icon;
+          const isChat = item.to === "/selladmin/messages";
           return (
             <NavLink
               key={item.to}
               to={item.to}
-              className={({ isActive }) => `bottom-nav-item${isActive ? " active" : ""}`}
+              className={({ isActive }) => `bottom-nav-item${isActive ? " active" : ""}${isChat ? " bottom-nav-item-chat" : ""}`}
             >
               <Icon />
               <span className="bottom-nav-label">{item.label}</span>
+              {isChat && unreadCount > 0 && (
+                <span className="nav-badge" aria-label={`การแจ้งเตือนใหม่ ${unreadCount} รายการ`}>
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </span>
+              )}
             </NavLink>
           );
         })}

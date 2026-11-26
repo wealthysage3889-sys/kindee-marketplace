@@ -1,6 +1,6 @@
 import { supabaseAdmin } from '../config/supabase.js';
 import { AppError, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
-import { emitNewMessage, emitToUser, emitMessageRead, emitToConversation } from './socketService.js';
+import { emitNewMessage, emitToUser, emitMessageRead, emitToConversation, emitConversationUpdate } from './socketService.js';
 import { parseCoordinates } from './routeService.js';
 
 // Attachments may arrive as the message_attachments column names (file_url, ...)
@@ -385,32 +385,64 @@ export const getMessages = async (conversationId, userId, pagination = {}) => {
     throw new AppError(`Failed to fetch messages: ${error.message}`, 500);
   }
   
-   // Enrich order_chat messages with the latest order status from backend so
+   // Enrich order_chat messages with the latest order data from backend so
    // stale snapshots in old chat cards never disagree with the order page.
+   // Both fulfilment status and payment status are refreshed from the orders
+   // table (the source of truth), never inferred from the chat snapshot.
    const orderIds = [...new Set((data || [])
      .map((m) => (m.metadata && (m.metadata.order_id || m.metadata.orderId)) || null)
      .filter(Boolean))];
    let statusByOrder = {};
+   let paymentByOrder = {};
    if (orderIds.length) {
      const { data: orders } = await supabaseAdmin
        .from('orders')
-       .select('id, status')
+       .select('id, status, payment_status, payment_method')
        .in('id', orderIds);
-     for (const o of orders || []) statusByOrder[String(o.id)] = o.status;
+     for (const o of orders || []) {
+       const key = String(o.id);
+       statusByOrder[key] = o.status;
+       paymentByOrder[key] = { payment_status: o.payment_status, payment_method: o.payment_method };
+     }
    }
+   const labels = {
+     pending: 'รอร้านค้ายืนยัน', confirmed: 'ร้านค้ายืนยันแล้ว',
+     preparing: 'กำลังเตรียม', ready_for_pickup: 'พร้อมรับ',
+     picked_up: 'รับแล้ว', in_transit: 'กำลังจัดส่ง',
+     delivered: 'ส่งสำเร็จ', cancelled: 'ยกเลิก', refunded: 'คืนเงิน',
+   };
+   const paymentLabels = {
+     pending: 'รอชำระเงิน', awaiting_review: 'รอตรวจสอบสลิป',
+     paid: 'ชำระแล้ว', failed: 'ชำระเงินไม่สำเร็จ',
+     refunded: 'คืนเงินแล้ว', partially_refunded: 'คืนเงินบางส่วน',
+   };
+   const paymentMethodLabels = {
+     cod: 'เก็บเงินปลายทาง (COD)', kbzpay: 'KBZPay',
+     transfer: 'โอนเงิน', promptpay: 'พร้อมเพย์', card: 'บัตรเครดิต/เดบิต', wallet: 'กระเป๋าเงิน',
+   };
    const enriched = (data || []).map((m) => {
      const meta = m.metadata;
      if (!meta || meta.kind !== 'order_chat') return m;
      const oid = meta.order_id || meta.orderId;
-     const latest = oid ? statusByOrder[String(oid)] : null;
-     if (!latest || latest === (meta.order_status || meta.orderStatus)) return m;
-     const labels = {
-       pending: 'รอร้านค้ายืนยัน', confirmed: 'ร้านค้ายืนยันแล้ว',
-       preparing: 'กำลังเตรียม', ready_for_pickup: 'พร้อมรับ',
-       picked_up: 'รับแล้ว', in_transit: 'กำลังจัดส่ง',
-       delivered: 'ส่งสำเร็จ', cancelled: 'ยกเลิก', refunded: 'คืนเงิน',
-     };
-     return { ...m, metadata: { ...meta, order_status: latest, order_status_label: labels[latest] || latest } };
+     const latestStatus = oid ? statusByOrder[String(oid)] : null;
+     const latestPayment = oid ? paymentByOrder[String(oid)] : null;
+     if (!latestStatus && !latestPayment) return m;
+     const next = { ...meta };
+     if (latestStatus && latestStatus !== (meta.order_status || meta.orderStatus)) {
+       next.order_status = latestStatus;
+       next.order_status_label = labels[latestStatus] || latestStatus;
+     }
+     if (latestPayment) {
+       if (latestPayment.payment_status !== undefined && latestPayment.payment_status !== (meta.payment_status || meta.paymentStatus)) {
+         next.payment_status = latestPayment.payment_status;
+         next.payment_status_label = paymentLabels[latestPayment.payment_status] || latestPayment.payment_status;
+       }
+       if (latestPayment.payment_method !== undefined && latestPayment.payment_method !== (meta.payment_method || meta.paymentMethod)) {
+         next.payment_method = latestPayment.payment_method;
+         next.payment_method_label = paymentMethodLabels[latestPayment.payment_method] || latestPayment.payment_method;
+       }
+     }
+     return { ...m, metadata: next };
    });
 
    // Reverse to show oldest first
@@ -921,6 +953,16 @@ export const markConversationSpam = async (conversationId, userId) => {
   if (error) {
     throw new AppError(`Failed to mark spam: ${error.message}`, 500);
   }
+
+  // Notify both sides so chat lists refresh immediately (actor + other member).
+  const memberIds = (conversation.members || []).map((m) => m.profile_id).filter(Boolean);
+  emitConversationUpdate(memberIds, {
+    conversationId,
+    action: 'spam',
+    isSpam: true,
+    spamMarkedAt: updated.spam_marked_at,
+    spamMarkedBy: userId,
+  });
   
   return updated;
 };
@@ -953,6 +995,15 @@ export const restoreConversationFromSpam = async (conversationId, userId) => {
   if (error) {
     throw new AppError(`Failed to restore from spam: ${error.message}`, 500);
   }
+
+  const memberIds = (conversation.members || []).map((m) => m.profile_id).filter(Boolean);
+  emitConversationUpdate(memberIds, {
+    conversationId,
+    action: 'restore',
+    isSpam: false,
+    spamMarkedAt: null,
+    spamMarkedBy: userId,
+  });
   
   return updated;
 };
@@ -1046,6 +1097,14 @@ export const updateConversationHidden = async (conversationId, userId, isHidden)
   if (error) {
     throw new AppError(`Failed to update hidden state: ${error.message}`, 500);
   }
+
+  const memberIds = (conversation.members || []).map((m) => m.profile_id).filter(Boolean);
+  emitConversationUpdate(memberIds, {
+    conversationId,
+    action: isHidden ? 'hide' : 'show',
+    isHidden: Boolean(isHidden),
+    hiddenBy: userId,
+  });
   
   return updated;
 };

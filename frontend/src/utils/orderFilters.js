@@ -108,24 +108,74 @@ const ACCEPTED_ORDER_STATUSES = [
   "delivered",
 ];
 
-export const paymentStatusLabel = (paymentStatus, orderStatus, paymentMethod) => {
-  // For COD orders that are delivered and paid, show "เก็บเงินแล้ว"
-  if (
-    paymentMethod === 'cod' &&
-    orderStatus === 'delivered' &&
-    paymentStatus === 'paid'
-  ) {
-    return 'เก็บเงินแล้ว';
-  }
-  if (
-    paymentStatus === 'awaiting_review' &&
-    orderStatus &&
-    ACCEPTED_ORDER_STATUSES.includes(orderStatus)
-  ) {
-    return 'ตรวจสอบแล้ว';
-  }
-  return PAYMENT_STATUS_LABELS[paymentStatus] || paymentStatus || '-';
+const PAYMENT_STATUS_CLASSES = {
+  pending: "pay-pending",
+  awaiting_review: "pay-awaiting_review",
+  paid: "pay-paid",
+  failed: "pay-failed",
+  refunded: "pay-refunded",
+  partially_refunded: "pay-partially_refunded",
+  verified: "pay-verified",
 };
+
+export const getPaymentStatusDisplay = (paymentStatus, orderStatus, paymentMethod) => {
+  let label;
+  let statusClass;
+
+  // Cancelled/refunded/failed orders don't need payment
+  if (["cancelled", "refunded", "failed"].includes(orderStatus)) {
+    label = "ไม่ต้องชำระ";
+    statusClass = PAYMENT_STATUS_CLASSES.refunded;
+    return { label, statusClass };
+  }
+
+  // COD orders
+  if (paymentMethod === "cod") {
+    if (orderStatus === "delivered" && paymentStatus === "paid") {
+      label = "เก็บเงินแล้ว";
+      statusClass = PAYMENT_STATUS_CLASSES.paid;
+    } else {
+      label = "รอชำระปลายทาง";
+      statusClass = PAYMENT_STATUS_CLASSES.pending;
+    }
+    return { label, statusClass };
+  }
+
+  // KBZPay and other slip-based methods
+  if (paymentMethod === "kbzpay" || paymentMethod === "promptpay" || paymentMethod === "transfer") {
+    if (paymentStatus === "paid") {
+      label = "ชำระแล้ว";
+      statusClass = PAYMENT_STATUS_CLASSES.paid;
+    } else if (paymentStatus === "awaiting_review" && orderStatus && ACCEPTED_ORDER_STATUSES.includes(orderStatus)) {
+      label = "ตรวจสอบแล้ว";
+      statusClass = PAYMENT_STATUS_CLASSES.verified;
+    } else if (paymentStatus === "awaiting_review") {
+      label = "รอตรวจสอบสลิป";
+      statusClass = PAYMENT_STATUS_CLASSES.awaiting_review;
+    } else if (paymentStatus === "expired") {
+      label = "หมดอายุ";
+      statusClass = PAYMENT_STATUS_CLASSES.failed;
+    } else if (paymentStatus === "failed") {
+      label = PAYMENT_STATUS_LABELS.failed;
+      statusClass = PAYMENT_STATUS_CLASSES.failed;
+    } else if (paymentStatus === "refunded" || paymentStatus === "partially_refunded") {
+      label = PAYMENT_STATUS_LABELS[paymentStatus];
+      statusClass = PAYMENT_STATUS_CLASSES[paymentStatus];
+    } else {
+      label = "รอชำระ";
+      statusClass = PAYMENT_STATUS_CLASSES.pending;
+    }
+    return { label, statusClass };
+  }
+
+  // Fallback to generic labels
+  label = PAYMENT_STATUS_LABELS[paymentStatus] || paymentStatus || "-";
+  statusClass = PAYMENT_STATUS_CLASSES[paymentStatus] || `pay-${paymentStatus}`;
+  return { label, statusClass };
+};
+
+export const paymentStatusLabel = (paymentStatus, orderStatus, paymentMethod) =>
+  getPaymentStatusDisplay(paymentStatus, orderStatus, paymentMethod).label;
 
 export const paymentMethodLabel = (method) => PAYMENT_METHOD_LABELS[method] || method || "-";
 

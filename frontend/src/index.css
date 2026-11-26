@@ -1,4 +1,4 @@
-* {
+﻿* {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
@@ -1017,6 +1017,23 @@ textarea.form-input {
   background: var(--primary-light);
   font-size: 20px;
   font-weight: 800;
+  position: relative;
+  overflow: hidden;
+}
+
+.store-avatar img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+
+.store-avatar-fallback {
+  display: inline-block;
+  line-height: 1;
 }
 
 .store-profile-page {
@@ -2810,7 +2827,7 @@ textarea.form-input {
   font-size: 14px;
 }
 
-/* ── Users toolbar: status filter tabs + search ─────────────────────────── */
+/* โ”€โ”€ Users toolbar: status filter tabs + search โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€ */
 .users-toolbar {
   display: flex;
   align-items: center;
@@ -2905,7 +2922,7 @@ textarea.form-input {
   flex-shrink: 0;
 }
 
-/* "Remove from list" action — only shown for already-inactive accounts. */
+/* "Remove from list" action โ€” only shown for already-inactive accounts. */
 .btn-remove {
   display: inline-flex;
   align-items: center;
@@ -4033,7 +4050,7 @@ textarea.form-input {
   }
 }
 
-/* Image viewer (ดูรูปขยายจาก thumbnail) */
+/* Image viewer (เธ”เธนเธฃเธนเธเธเธขเธฒเธขเธเธฒเธ thumbnail) */
 .image-viewer-overlay {
   position: fixed;
   inset: 0;
@@ -5143,19 +5160,14 @@ textarea.form-input {
   background: var(--primary-light);
 }
 
-.product-detail-seller-avatar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
+.product-detail-seller-avatar img {
   width: 38px;
   height: 38px;
+  max-width: 38px;
+  max-height: 38px;
+  object-fit: cover;
   border-radius: 50%;
-  background: var(--primary-light);
-  color: var(--primary);
-  font-size: 17px;
-  font-weight: 800;
-  text-transform: uppercase;
+  display: block;
 }
 
 .product-detail-seller-text {
@@ -7331,6 +7343,13 @@ textarea.form-input {
   text-transform: uppercase;
 }
 
+.acct-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .acct-profile-text {
   min-width: 0;
 }
@@ -8194,7 +8213,7 @@ textarea.form-input {
   font-size: 30px;
   font-weight: 800;
   text-transform: uppercase;
-  color: #fff;
+  overflow: hidden;
 }
 
 .admin-account-logo {
@@ -9063,4 +9082,1458 @@ textarea.form-input {
 .users-alert {
   cursor: pointer;
   margin-bottom: 12px;
+}
+
+/* ============================================================================
+   Security Modal (เธเธงเธฒเธกเธเธฅเธญเธ”เธ เธฑเธข / เธเธฑเธเธเธตเธ—เธตเนเน€เธเธทเนเธญเธกเธ•เนเธญ)
+   ============================================================================ */
+.security-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+}
+
+.security-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.security-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: -0.2px;
+}
+
+.security-subtitle {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.security-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  margin-bottom: 2px;
+  scrollbar-width: none;
+}
+
+.security-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.security-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: #fff;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition);
+}
+
+.security-tab-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.security-tab-btn-active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.security-tab-icon {
+  display: inline-flex;
+}
+
+.security-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  margin-left: 6px;
+}
+
+.security-section {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.security-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.security-section-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.security-section-desc {
+  margin: 0 14px 12px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.security-hint-success {
+  margin: 0 14px 10px;
+  font-size: 13px;
+  color: var(--success);
+  font-weight: 600;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.security-empty {
+  margin: 14px;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ---------- Change password ---------- */
+.security-section-password .form-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+/* ---------- Connected accounts ---------- */
+.security-account-list {
+  padding: 0 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.security-account-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fafafa;
+}
+
+.security-account-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.security-account-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.security-account-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid var(--border);
+}
+
+.security-account-name {
+  font-weight: 700;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.security-account-id {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.security-account-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.security-unlink-btn {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ---------- Sessions ---------- */
+.security-session-list {
+  padding: 0 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.security-session-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.security-session-card.security-session-current {
+  border-color: var(--primary);
+  background: #f0f7ff;
+}
+
+.security-session-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.security-session-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.security-session-device {
+  font-weight: 700;
+  color: var(--text);
+  font-size: 13.5px;
+}
+
+.security-session-badge {
+  font-size: 10.5px;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.security-badge-current {
+  background: var(--primary);
+  color: #fff;
+}
+
+.security-session-location {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.security-session-time {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+
+.security-session-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.security-session-value {
+  font-size: 11.5px;
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.security-session-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.security-session-ip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.security-session-user-agent {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.security-revoke-btn {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ---------- Login history ---------- */
+.security-history-list {
+  padding: 0 14px 14px;
+  overflow-x: auto;
+}
+
+.security-history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  min-width: 620px;
+}
+
+.security-history-table th {
+  text-align: left;
+  padding: 8px 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  border-bottom: 2px solid var(--border);
+  white-space: nowrap;
+}
+
+.security-history-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: middle;
+}
+
+.security-history-row.security-history-fail {
+  background: #fdf3f3;
+}
+
+.security-history-event {
+  font-weight: 600;
+}
+
+.security-history-col-status { width: 90px; }
+.security-history-col-device { width: 170px; }
+.security-history-col-loc { width: 130px; }
+.security-history-col-time { width: 150px; }
+
+.security-history-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.security-history-success {
+  background: #f0fdf4;
+  color: var(--success);
+}
+
+.security-history-fail-badge {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.security-history-reason {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #b91c1c;
+}
+
+/* ---------- Security alerts ---------- */
+.security-alert-list {
+  padding: 0 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.security-alert-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.security-alert-card.security-alert-unread {
+  border-color: var(--primary);
+  background: #f0f7ff;
+}
+
+.security-alert-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.security-alert-type {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #f3f4f6;
+  color: var(--text-muted);
+}
+
+.security-alert-type.security-alert-high {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.security-alert-severity {
+  font-size: 10.5px;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #e5e7eb;
+  color: var(--text-muted);
+}
+
+.security-alert-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--primary);
+  flex-shrink: 0;
+}
+
+.security-alert-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.security-alert-title {
+  font-weight: 800;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.security-alert-desc {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.security-alert-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.security-alert-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.security-alert-time {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.security-alert-read-btn {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.security-alert-read-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+/* ---------- Logout all ---------- */
+.security-logoutall-actions {
+  padding: 0 14px 14px;
+  display: flex;
+  gap: 8px;
+  flex-direction: column;
+}
+
+.security-logoutall-btn {
+  height: 42px;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.security-hint-note {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: #fbfbfb;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  line-height: 1.5;
+}
+
+.security-alerts-unread {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 700;
+  color: #b91c1c;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .security-tab-btn {
+    height: 30px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+  .security-session-foot {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .security-session-user-agent {
+    max-width: none;
+    white-space: normal;
+  }
+  .security-logoutall-btn {
+    height: 40px;
+    font-size: 14px;
+  }
+}
+
+/* ============================================================================ */
+
+/* ============================================================================
+   Wallet & Finance Modals
+   ============================================================================ */
+
+.wallet-modal-loading,
+.wallet-modal-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  gap: 16px;
+  text-align: center;
+}
+
+.loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--acct-orange);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.wallet-balance-card {
+  background: linear-gradient(135deg, #fff7f3 0%, #ffe9e0 100%);
+  border: 1px solid #ffd9c9;
+  border-radius: 16px;
+  padding: 24px;
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.wallet-balance-amount {
+  font-size: 36px;
+  font-weight: 800;
+  color: var(--acct-orange);
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.wallet-balance-label {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.wallet-disabled-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 10px 14px;
+  background: #fff3e0;
+  border: 1px solid #ffcc80;
+  border-radius: 8px;
+  color: #e65100;
+  font-size: 12px;
+}
+
+.wallet-balance-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.wallet-summary {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  padding: 16px;
+  background: var(--bg-secondary, #f8f9fa);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.wallet-summary-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.wallet-summary-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.wallet-summary-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--acct-orange);
+}
+
+.wallet-coins-card {
+  background: linear-gradient(135deg, #fffde7 0%, #fff9c4 100%);
+  border: 1px solid #fff176;
+  border-radius: 16px;
+  padding: 24px;
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.wallet-coins-amount {
+  font-size: 48px;
+  font-weight: 800;
+  color: #f9a825;
+  line-height: 1;
+}
+
+.wallet-coins-label {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.wallet-coins-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 12px;
+  line-height: 1.5;
+}
+
+.wallet-coins-history {
+  margin-top: 16px;
+}
+
+.wallet-coins-history h4 {
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0 0 12px;
+  color: var(--text);
+}
+
+.wallet-empty,
+.wallet-empty-state {
+  text-align: center;
+  padding: 32px 16px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.voucher-section {
+  margin-bottom: 20px;
+}
+
+.voucher-section h4 {
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0 0 12px;
+  color: var(--text);
+}
+
+.voucher-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.voucher-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+  transition: all 0.2s ease;
+}
+
+.voucher-card:hover {
+  border-color: var(--acct-orange);
+  box-shadow: 0 2px 8px rgba(220, 47, 236, 0.1);
+}
+
+.voucher-card.expired {
+  opacity: 0.6;
+  background: #fafafa;
+}
+
+.voucher-card-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.voucher-code {
+  font-family: monospace;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--acct-orange);
+  margin-bottom: 4px;
+}
+
+.voucher-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.voucher-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.voucher-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.voucher-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.voucher-card-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.voucher-expiry {
+  font-weight: 500;
+}
+
+.voucher-usage {
+  opacity: 0.8;
+}
+
+.modal-header-with-action {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.modal-header-with-action h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.btn-sm {
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.finance-card-item,
+.finance-bank-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+  margin-bottom: 10px;
+  transition: all 0.2s ease;
+}
+
+.finance-card-item:hover,
+.finance-bank-item:hover {
+  border-color: var(--acct-orange);
+  box-shadow: 0 2px 8px rgba(220, 47, 236, 0.1);
+}
+
+.finance-card-info,
+.finance-bank-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.finance-card-icon {
+  width: 40px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--acct-orange-soft);
+  color: var(--acct-orange);
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: monospace;
+}
+
+.finance-bank-icon {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--acct-orange-soft);
+  color: var(--acct-orange);
+  border-radius: 50%;
+  font-size: 18px;
+}
+
+.finance-card-details,
+.finance-bank-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.finance-card-name,
+.finance-bank-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finance-card-meta,
+.finance-bank-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.finance-card-holder {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.finance-card-actions,
+.finance-bank-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.finance-card-badge,
+.finance-bank-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.finance-card-badge.default,
+.finance-bank-badge.default {
+  background: var(--acct-orange-soft);
+  color: var(--acct-orange);
+}
+
+.finance-bank-badge.verified {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.finance-bank-badge.pending {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.finance-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 50vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.finance-history-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  transition: all 0.15s ease;
+}
+
+.finance-history-item:hover {
+  border-color: var(--acct-orange);
+  background: var(--acct-orange-soft);
+}
+
+.finance-history-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.finance-history-type {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 14px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.finance-history-type.success {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.finance-history-type.expense {
+  background: #fef0f0;
+  color: #c62828;
+}
+
+.finance-history-type.neutral {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.finance-history-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.finance-history-label {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finance-history-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finance-history-time {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.finance-history-amounts {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+  min-width: 80px;
+}
+
+.finance-history-amount {
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.finance-history-amount.positive {
+  color: #166534;
+}
+
+.finance-history-amount.negative {
+  color: #c62828;
+}
+
+.finance-history-coins {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.finance-history-coins.positive {
+  color: #f59e0b;
+}
+
+.finance-history-coins.negative {
+  color: #c62828;
+}
+
+/* Mee Card Wallet Registration Modal */
+.mee-card-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mee-card-form .form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.mee-card-form .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mee-card-form label {
+  font-weight: 500;
+  font-size: 14px;
+  color: #374151;
+}
+
+.mee-card-form .form-input {
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 14px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.mee-card-form .form-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.mee-card-form .form-input:disabled {
+  background-color: #f9fafb;
+  color: #9ca3af;
+}
+
+.mee-card-status-card {
+  background: #f9fafb;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.mee-card-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.mee-card-status-badge.success {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.mee-card-status-badge.warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.mee-card-status-badge.error {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.mee-card-status-badge.neutral {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.mee-card-status-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.mee-card-status-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mee-card-status-item.error {
+  grid-column: 1 / -1;
+  padding: 12px;
+  background: #fee2e2;
+  border-radius: 8px;
+  color: #991b1b;
+}
+
+.mee-card-status-label {
+  font-size: 12px;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.mee-card-status-value {
+  font-size: 14px;
+  color: #111827;
+  font-weight: 500;
+}
+
+/* Mee Card Approvals Modal (Admin) */
+.mee-card-approvals-modal {
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.mee-card-approvals-header {
+  margin-bottom: 20px;
+}
+
+.mee-card-approvals-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mee-card-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 1px solid #d1d5db;
+  border-radius: 20px;
+  background: white;
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.mee-card-tab-btn:hover:not(:disabled) {
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+
+.mee-card-tab-btn.active {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: white;
+}
+
+.mee-card-tab-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.mee-card-tab-badge {
+  background: #fef3c7;
+  color: #92400e;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mee-card-tab-btn.active .mee-card-tab-badge {
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+}
+
+.mee-card-loading,
+.mee-card-error,
+.mee-card-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.mee-card-loading .loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #e5e7eb;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 12px;
+}
+
+.mee-card-error p {
+  margin-bottom: 12px;
+}
+
+.mee-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mee-card-item {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.mee-card-item-main {
+  margin-bottom: 16px;
+}
+
+.mee-card-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mee-card-customer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mee-card-customer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.mee-card-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mee-card-detail-row {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.mee-card-detail-label {
+  color: #6b7280;
+  font-weight: 500;
+  min-width: 100px;
+}
+
+.mee-card-detail-value {
+  color: #111827;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.mee-card-item-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.mee-card-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-weight: 600;
+  font-size: 12px;
+  width: fit-content;
+}
+
+.mee-card-status-pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.mee-card-status-approved {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.mee-card-status-rejected {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.mee-card-status-expired {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.mee-card-action-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mee-card-rejection-reason {
+  font-size: 13px;
+  color: #991b1b;
+  padding: 8px 12px;
+  background: #fee2e2;
+  border-radius: 8px;
+}
+
+.mee-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.mee-card-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.mee-card-page-info {
+  font-size: 14px;
+  color: #374151;
+  font-weight: 500;
+}
+
+/* Responsive */
+@media (max-width: 480px) {
+  .wallet-balance-amount {
+    font-size: 28px;
+  }
+  
+  .wallet-coins-amount {
+    font-size: 36px;
+  }
+  
+  .voucher-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .voucher-card-side {
+    align-items: flex-start;
+    width: 100%;
+  }
+  
+  .finance-card-item,
+  .finance-bank-item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .finance-card-actions,
+  .finance-bank-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  
+  .finance-history-item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .finance-history-amounts {
+    align-items: flex-start;
+    width: 100%;
+    margin-top: 8px;
+  }
 }

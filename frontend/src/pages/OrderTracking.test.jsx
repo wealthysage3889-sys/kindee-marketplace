@@ -195,7 +195,7 @@ describe("OrderTracking — KBZPay slip submission", () => {
     await waitFor(() =>
       expect(screen.getByText("ส่งสลิปเรียบร้อยแล้ว รอร้านค้าตรวจสอบ")).toBeTruthy()
     );
-    await waitFor(() => expect(screen.getByText("รอตรวจสอบ")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("รอตรวจสอบสลิป")).toBeTruthy());
     expect(loadCount).toBe(2);
   });
 

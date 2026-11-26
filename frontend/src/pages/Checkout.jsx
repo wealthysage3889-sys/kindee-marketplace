@@ -165,7 +165,7 @@ const coordinatesFromAddress = (address) => {
 };
 
 const fullAddressFromAddress = (address) =>
-  [address?.street, address?.district, address?.province, address?.postal_code]
+  [address?.street, address?.subdistrict, address?.district, address?.province, address?.postal_code]
     .map((part) => String(part || "").trim())
     .filter(Boolean)
     .join(" ");
@@ -286,9 +286,13 @@ export default function Checkout({ orderSummary, initialStep = 1, initialPayment
     name: user?.name || "",
     phone: user?.phone || "",
     address: "",
+    subdistrict: "",
     district: "",
     province: "",
-    postalCode: ""
+    postalCode: "",
+    country: "TH",
+    additionalDetails: "",
+    label: ""
   });
   const [paymentMethod, setPaymentMethod] = useState(initialPaymentMethod);
   const [exchangeRate, setExchangeRate] = useState(null);
@@ -320,9 +324,12 @@ export default function Checkout({ orderSummary, initialStep = 1, initialPayment
       name: address?.recipient_name || "",
       phone: address?.phone || "",
       address: fullAddressFromAddress(address) || address?.street || "",
+      subdistrict: address?.subdistrict || "",
       district: address?.district || "",
       province: address?.province || "",
       postalCode: address?.postal_code || "",
+      country: address?.country || "TH",
+      additionalDetails: address?.additional_details || "",
       label: address?.label || "",
     });
     setSelectedAddressId(address?.id || null);
@@ -361,9 +368,12 @@ export default function Checkout({ orderSummary, initialStep = 1, initialPayment
       name: user?.name || "",
       phone: user?.phone || "",
       address: "",
+      subdistrict: "",
       district: "",
       province: "",
       postalCode: "",
+      country: "TH",
+      additionalDetails: "",
       label: "",
     });
     setError("");
@@ -534,9 +544,12 @@ export default function Checkout({ orderSummary, initialStep = 1, initialPayment
       name: deliveryAddress.name,
       phone: deliveryAddress.phone,
       address: deliveryAddress.address,
+      subdistrict: deliveryAddress.subdistrict,
       district: deliveryAddress.district,
       province: deliveryAddress.province,
       postalCode: deliveryAddress.postalCode,
+      country: deliveryAddress.country,
+      additionalDetails: deliveryAddress.additionalDetails,
       ...(selectedAddress
         ? {
             label: selectedAddress.label || "",

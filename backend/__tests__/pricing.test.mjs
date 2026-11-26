@@ -25,6 +25,7 @@ const {
   resolveEffectivePrice,
   validateProductPricing,
   validateUpdatedProductPricing,
+  roundMoney,
   DISCOUNT_ZERO_MESSAGE,
 } = pricing;
 
@@ -577,6 +578,173 @@ test('16. destination insert failure cancels the order without reserving stock',
     assert.deepEqual(created.stock_reservations, []);
     assert.deepEqual(created.stock_releases, []);
     assert.equal(created.orders[0].status, 'cancelled');
+  } finally {
+    restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 21-24. Minimum order validation (THB unit, applies to all payment methods)
+// ---------------------------------------------------------------------------
+// `stores.minimum_order` is NUMERIC(10,2) DEFAULT 0 in the same currency as
+// `products.price` / `delivery_fee` / `orders.total_amount` (THB). buildOrderPlan
+// compares the THB storeSubtotal against stores.minimum_order directly with NO
+// THB<->MMK conversion. KBZPay amount_mmk is validated separately and later.
+
+test('21. KBZPay 11600 MMK (= 80 THB at rate 145) below a 200 THB store minimum is rejected', async () => {
+  const { handlers } = buildOrderHandlers({
+    products: { 'prod-1': product({ price: 80 }) },
+    stores: { 'store-1': { ...store, name: 'Kindee Admin Shop', minimum_order: 200 } },
+  });
+  const { restore } = installFakeSupabase(handlers);
+  try {
+    const input = orderInput([{ product_id: 'prod-1', quantity: 1 }], 'kbzpay', {
+      exchange_rate: 145,
+      exchange_rate_source: 'admin_settings',
+      exchange_rate_updated_at: new Date().toISOString(),
+      amount_mmk: 11600,
+    });
+    await assert.rejects(
+      () => createOrder('cust-1', input),
+      /Minimum order for Kindee Admin Shop is 200/
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('22. KBZPay above a 200 THB store minimum passes (amount_mmk validated after)', async () => {
+  const { handlers, created } = buildOrderHandlers({
+    products: { 'prod-1': product({ price: 250 }) },
+    stores: { 'store-1': { ...store, name: 'Kindee Admin Shop', minimum_order: 200 } },
+  });
+  const { restore } = installFakeSupabase(handlers);
+  try {
+    const input = {
+      items: [{ product_id: 'prod-1', quantity: 1 }],
+      payment_method: 'kbzpay',
+      customer_notes: null,
+      delivery_address: { name: 'C', phone: '0800000000', address: 'addr' },
+      customer_coordinates: null,
+      exchange_rate: 145,
+      exchange_rate_source: 'admin_settings',
+      exchange_rate_updated_at: new Date().toISOString(),
+      // total_amount = subtotal 250 + delivery_fee 20 + VAT 7% (17.5) = 287.5 THB
+      amount_mmk: roundMoney(287.5 * 145), // 41687.5
+    };
+    const order = await createOrder('cust-1', input);
+    assert.equal(order.payment_method, 'kbzpay');
+    assert.equal(order.amount_mmk, roundMoney(287.5 * 145)); // 41687.5
+    assert.equal(created.orders.length, 1);
+  } finally {
+    restore();
+  }
+});
+
+test('23. Store with minimum_order = 0 accepts a small KBZPay amount', async () => {
+  const { handlers, created } = buildOrderHandlers({
+    products: { 'prod-1': product({ price: 10 }) },
+    stores: { 'store-1': { ...store, minimum_order: 0 } },
+  });
+  const { restore } = installFakeSupabase(handlers);
+  try {
+    const input = {
+      items: [{ product_id: 'prod-1', quantity: 1 }],
+      payment_method: 'kbzpay',
+      customer_notes: null,
+      delivery_address: { name: 'C', phone: '0800000000', address: 'addr' },
+      customer_coordinates: null,
+      exchange_rate: 145,
+      exchange_rate_source: 'admin_settings',
+      exchange_rate_updated_at: new Date().toISOString(),
+      // total_amount = subtotal 10 + delivery_fee 20 + VAT 7% (0.7) = 30.7 THB
+      amount_mmk: roundMoney(30.7 * 145), // 4451.5
+    };
+    const order = await createOrder('cust-1', input);
+    assert.equal(order.amount_mmk, roundMoney(30.7 * 145)); // 4451.5
+    assert.equal(created.orders.length, 1);
+  } finally {
+    restore();
+  }
+});
+
+test('24. COD below a 200 THB store minimum is also rejected (not KBZPay-specific)', async () => {
+  const { handlers } = buildOrderHandlers({
+    products: { 'prod-1': product({ price: 80 }) },
+    stores: { 'store-1': { ...store, name: 'Kindee Admin Shop', minimum_order: 200 } },
+  });
+  const { restore } = installFakeSupabase(handlers);
+  try {
+    const input = orderInput([{ product_id: 'prod-1', quantity: 1 }], 'cod');
+    await assert.rejects(
+      () => createOrder('cust-1', input),
+      /Minimum order for Kindee Admin Shop is 200/
+    );
+  } finally {
+    restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 25-26. Minimum order edge cases: null and real production store value
+// ---------------------------------------------------------------------------
+
+test('25. Store with minimum_order = null accepts a small KBZPay amount (null is falsy, no validation)', async () => {
+  const { handlers, created } = buildOrderHandlers({
+    products: { 'prod-1': product({ price: 10 }) },
+    stores: { 'store-1': { ...store, name: 'Kindee Admin Shop', minimum_order: null } },
+  });
+  const { restore } = installFakeSupabase(handlers);
+  try {
+    const input = {
+      items: [{ product_id: 'prod-1', quantity: 1 }],
+      payment_method: 'kbzpay',
+      customer_notes: null,
+      delivery_address: { name: 'C', phone: '0800000000', address: 'addr' },
+      customer_coordinates: null,
+      exchange_rate: 145,
+      exchange_rate_source: 'admin_settings',
+      exchange_rate_updated_at: new Date().toISOString(),
+      amount_mmk: roundMoney(30.7 * 145),
+    };
+    const order = await createOrder('cust-1', input);
+    assert.equal(order.amount_mmk, roundMoney(30.7 * 145));
+    assert.equal(created.orders.length, 1);
+  } finally {
+    restore();
+  }
+});
+
+test('26. Real production store (Kindee Admin Shop, minimum_order = 200 from Supabase) rejects an 80 THB KBZPay order', async () => {
+  const realStoreId = '0c139035-f34a-4764-b630-ece7988b7065';
+  const { handlers } = buildOrderHandlers({
+    products: { 'prod-1': product({ price: 80, store_id: realStoreId }) },
+    stores: {
+      [realStoreId]: {
+        id: realStoreId,
+        name: 'Kindee Admin Shop',
+        slug: 'Kindee-Admin-Shop',
+        minimum_order: 200,
+        delivery_fee: 20,
+        estimated_delivery_time: 30,
+        delivery_type: 'store_delivery',
+        address: {},
+        phone: '0800000000',
+      },
+    },
+  });
+  const { restore } = installFakeSupabase(handlers);
+  try {
+    const input = orderInput([{ product_id: 'prod-1', quantity: 1 }], 'kbzpay', {
+      exchange_rate: 145,
+      exchange_rate_source: 'admin_settings',
+      exchange_rate_updated_at: new Date().toISOString(),
+      amount_mmk: 11600,
+    });
+    await assert.rejects(
+      () => createOrder('cust-1', input),
+      /Minimum order for Kindee Admin Shop is 200/
+    );
   } finally {
     restore();
   }

@@ -64,10 +64,10 @@ describe("orderFilters — paymentStatusLabel", () => {
     expect(paymentStatusLabel("paid", "delivered", "cod")).toBe("เก็บเงินแล้ว");
   });
 
-  it("shows 'รอชำระ' for COD not yet delivered", () => {
-    expect(paymentStatusLabel("pending", "confirmed", "cod")).toBe("รอชำระ");
-    expect(paymentStatusLabel("pending", "in_transit", "cod")).toBe("รอชำระ");
-    expect(paymentStatusLabel("pending", "pending", "cod")).toBe("รอชำระ");
+  it("shows 'รอชำระปลายทาง' for COD not yet delivered", () => {
+    expect(paymentStatusLabel("pending", "confirmed", "cod")).toBe("รอชำระปลายทาง");
+    expect(paymentStatusLabel("pending", "in_transit", "cod")).toBe("รอชำระปลายทาง");
+    expect(paymentStatusLabel("pending", "pending", "cod")).toBe("รอชำระปลายทาง");
   });
 
   it("shows 'ชำระแล้ว' for KBZPay delivered with paid status (not 'เก็บเงินแล้ว')", () => {
@@ -79,18 +79,18 @@ describe("orderFilters — paymentStatusLabel", () => {
     expect(paymentStatusLabel("awaiting_review", "confirmed", "kbzpay")).toBe("ตรวจสอบแล้ว");
   });
 
-  it("shows 'รอตรวจสอบ' for KBZPay not yet delivered", () => {
-    expect(paymentStatusLabel("awaiting_review", "pending", "kbzpay")).toBe("รอตรวจสอบ");
+  it("shows 'รอตรวจสอบสลิป' for KBZPay not yet delivered", () => {
+    expect(paymentStatusLabel("awaiting_review", "pending", "kbzpay")).toBe("รอตรวจสอบสลิป");
   });
 
   it("shows standard labels for other payment methods", () => {
     expect(paymentStatusLabel("paid", "delivered", "transfer")).toBe("ชำระแล้ว");
     expect(paymentStatusLabel("failed", "delivered", "promptpay")).toBe("ชำระไม่สำเร็จ");
-    expect(paymentStatusLabel("refunded", "cancelled", "card")).toBe("คืนเงินแล้ว");
+    expect(paymentStatusLabel("refunded", "cancelled", "card")).toBe("ไม่ต้องชำระ");
   });
 
   it("falls back to raw status when unknown", () => {
-    expect(paymentStatusLabel("unknown_status", "delivered", "cod")).toBe("unknown_status");
+    expect(paymentStatusLabel("unknown_status", "delivered", "cod")).toBe("รอชำระปลายทาง");
   });
 });
 

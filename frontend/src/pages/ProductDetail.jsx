@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, useLocation, Link } from "react-router-dom";
-import { productAPI } from "../api/product";
+import { productAPI, storeAPI } from "../api/product";
 import { extractList, resolveProductPricing } from "../utils/helpers";
 import { useCart } from "../context/CartContext";
 
@@ -81,6 +81,7 @@ export default function ProductDetail() {
   const [searchQuery, setSearchQuery] = useState("");
   const [relatedProducts, setRelatedProducts] = useState([]);
   const [relatedLoading, setRelatedLoading] = useState(false);
+  const [storeProfile, setStoreProfile] = useState(null);
   const toastTimer = useRef(null);
 
   const categoryName = product
@@ -116,6 +117,32 @@ export default function ProductDetail() {
     setSelectedImage(0);
     setQuantity(1);
   }, [id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const storeIdFromProduct =
+      product?.store?.id ||
+      product?.store?._id ||
+      product?.store_id ||
+      (typeof product?.storeId === "string" ? product.storeId : product?.storeId?.id || product?.storeId?._id) ||
+      null;
+    const joinedStore = typeof product?.store === "object" ? product.store : null;
+    if (joinedStore && (joinedStore.name || joinedStore.logo || joinedStore.logoUrl || joinedStore.logo_url)) {
+      if (!cancelled) setStoreProfile(joinedStore);
+      return () => { cancelled = true; };
+    }
+    if (!storeIdFromProduct) return () => { cancelled = true; };
+    const loadStore = async () => {
+      try {
+        const data = await storeAPI.getStoreById(storeIdFromProduct);
+        if (!cancelled) setStoreProfile(data?.data || data || null);
+      } catch (err) {
+        if (!cancelled) setStoreProfile(null);
+      }
+    };
+    loadStore();
+    return () => { cancelled = true; };
+  }, [product]);
 
   useEffect(() => {
     let cancelled = false;
@@ -198,13 +225,17 @@ export default function ProductDetail() {
       : `คงเหลือ: ${stock.toLocaleString()} ชิ้น`;
   const stockClass = isOutOfStock ? " out" : stock != null && stock <= 5 ? " low" : "";
 
-  const sellerName = typeof product.seller === "object" ? product.seller?.name : null;
+  const storeData = (typeof product?.store === "object" ? product.store : null) || storeProfile;
+  const sellerName = storeData?.name || null;
   const storeId =
+    storeData?.id ||
+    storeData?._id ||
     product?.store?.id ||
     product?.store?._id ||
     product?.store_id ||
     (typeof product?.storeId === "string" ? product.storeId : product?.storeId?.id || product?.storeId?._id) ||
     null;
+  const storeLogo = storeData?.logo || storeData?.logoUrl || storeData?.logo_url || null;
   const rating = Number(product.ratingsAverage) || 0;
   const ratingCount = Number(product.ratingsQuantity) || 0;
 
@@ -403,11 +434,15 @@ const handleShare = async () => {
           {(sellerName || storeId) && storeId && (
             <Link to={`/stores/${storeId}`} className="product-detail-seller">
               <span className="product-detail-seller-avatar">
-                {(sellerName || (typeof product.store === "object" ? product.store?.name : "") || "ร").charAt(0).toUpperCase()}
+                {storeLogo ? (
+                  <img src={storeLogo} alt={sellerName || "ร้านค้า"} onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                ) : (
+                  (sellerName || "ร").charAt(0).toUpperCase()
+                )}
               </span>
               <span className="product-detail-seller-text">
                 <small>ร้านค้า</small>
-                <strong>{sellerName || (typeof product.store === "object" ? product.store?.name : "") || "ร้านค้า"}</strong>
+                <strong>{sellerName || "ร้านค้า"}</strong>
               </span>
               <span className="product-detail-seller-link">ดูร้าน ›</span>
             </Link>

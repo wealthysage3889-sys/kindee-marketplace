@@ -177,6 +177,83 @@ export const toThaiDomesticPhone = (phone) => {
   return cleaned;
 };
 
+export const formatPhoneForDisplay = (phone) => {
+  if (!phone) return '';
+  const cleaned = phone.replace(/[-\s]/g, '');
+  if (cleaned.startsWith('+66')) {
+    return cleaned.replace('+66', '0');
+  }
+  return cleaned;
+};
+
+let toastContainer = null;
+let toastId = 0;
+
+const createToastContainer = () => {
+  if (toastContainer) return toastContainer;
+  toastContainer = document.createElement('div');
+  toastContainer.id = 'toast-container';
+  toastContainer.style.cssText = `
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+  `;
+  document.body.appendChild(toastContainer);
+  return toastContainer;
+};
+
+export const showToast = (message, type = 'success') => {
+  const container = createToastContainer();
+  const id = ++toastId;
+  const toast = document.createElement('div');
+  toast.dataset.toastId = id;
+  const bgColor = type === 'success' ? '#166534' : '#991b1b';
+  const borderColor = type === 'success' ? '#22c55e' : '#ef4444';
+  toast.style.cssText = `
+    background: ${bgColor};
+    color: white;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    border: 1px solid ${borderColor};
+    min-width: 200px;
+    max-width: 320px;
+    text-align: center;
+    pointer-events: auto;
+    animation: toastSlideIn 0.3s ease;
+  `;
+  toast.textContent = message;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.style.animation = 'toastSlideOut 0.3s ease forwards';
+    setTimeout(() => toast.remove(), 300);
+  }, 3000);
+  return id;
+};
+
+if (typeof document !== 'undefined' && !document.getElementById('toast-styles')) {
+  const style = document.createElement('style');
+  style.id = 'toast-styles';
+  style.textContent = `
+    @keyframes toastSlideIn {
+      from { opacity: 0; transform: translateX(100px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+    @keyframes toastSlideOut {
+      from { opacity: 1; transform: translateX(0); }
+      to { opacity: 0; transform: translateX(100px); }
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 // Validate phone number for a specific country
 export const validatePhoneForCountry = (phone, countryCode) => {
   if (!phone) return false;

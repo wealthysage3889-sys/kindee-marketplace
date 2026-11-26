@@ -123,7 +123,7 @@ describe("AdminOrders — order detail modal", () => {
     render(<AdminOrders />);
     await screen.findByText("#ORD-1001");
     fireEvent.click(screen.getByText("รายละเอียด"));
-    await waitFor(() => expect(getById).toHaveBeenCalledWith("order-1"));
+    await waitFor(() => expect(getById).toHaveBeenCalledWith("order-1", "admin"));
     await waitFor(() => {
       const dialog = screen.getByRole("dialog");
       expect(dialog.textContent).toContain("รายละเอียดคำสั่งซื้อ");
@@ -918,13 +918,13 @@ describe("AdminOrders — COD delivered payment status regression", () => {
     expect(screen.getByText("เก็บเงินแล้ว")).toBeTruthy();
   });
 
-  it("shows 'รอชำระ' for COD order that is NOT yet delivered", async () => {
+  it("shows 'รอชำระปลายทาง' for COD order that is NOT yet delivered", async () => {
     getAllOrders.mockResolvedValue({
       data: { orders: [regressionCodOrder({ status: "confirmed", payment_status: "pending", order_number: "ORD-COD-PENDING" })] },
     });
     render(<AdminOrders />);
     await screen.findByText("#ORD-COD-PENDING");
-    expect(screen.getByText("รอชำระ")).toBeTruthy();
+    expect(screen.getByText("รอชำระปลายทาง")).toBeTruthy();
     expect(screen.queryByText("เก็บเงินแล้ว")).toBeNull();
   });
 

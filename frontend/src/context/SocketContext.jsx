@@ -27,6 +27,32 @@ export function SocketProvider({ children }) {
   const [typingUsers, setTypingUsers] = useState({});
   const [activeCall, setActiveCall] = useState(null);
 
+  // Notification sound preference, persisted so it survives refreshes.
+  const SOUND_STORAGE_KEY = 'kindee:chat:sound';
+  const [soundEnabled, setSoundEnabled] = useState(() => {
+    try {
+      const stored = localStorage.getItem(SOUND_STORAGE_KEY);
+      return stored === null ? true : stored === 'true';
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleSound = useCallback(() => {
+    setSoundEnabled((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(SOUND_STORAGE_KEY, String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  // Read the latest sound preference inside socket handlers without re-binding
+  // them (attachHandlers runs once per socket with empty deps).
+  const soundEnabledRef = useRef(soundEnabled);
+  useEffect(() => { soundEnabledRef.current = soundEnabled; }, [soundEnabled]);
+
   const playedMessageIdsRef = useRef(new Set());
   const audioRef = useRef(null);
   const authRef = useRef({ customer, admin });
@@ -46,7 +72,7 @@ export function SocketProvider({ children }) {
     });
   }, []);
 
-  const attachHandlers = useCallback((socket) => {
+  const attachHandlers = useCallback((socket, namespace) => {
     // Apply any component-registered handlers to this socket
     applyHandlersToSocket(socket);
     const onConnect = () => {
@@ -89,22 +115,39 @@ export function SocketProvider({ children }) {
       if (!message?.id) return;
       socket.emit('messageReceived', message.id);
 
+      const senderId = message.sender_id || message.sender?.id || message.senderId;
+      // Self-check is scoped to THIS socket's namespace only. A browser can be
+      // signed in to both customer and admin at once (two sockets); a message
+      // the customer sent must still ring for the admin socket, so we must only
+      // suppress it on the socket that belongs to the sender — never on the
+      // other namespace's socket.
+      const { customer: c, admin: a } = authRef.current || {};
+      const selfId = namespace === "admin"
+        ? (a?.user?.id || a?.user?._id)
+        : namespace === "customer"
+          ? (c?.user?.id || c?.user?._id)
+          : null;
+      if (senderId && selfId && String(senderId) === String(selfId)) return;
+
+      // De-dupe per message id so the conversation-room and user-room copies of
+      // the same event (and any reconnect replay) ring only once. This runs AFTER
+      // the self-check so a sender's own socket never consumes the id first and
+      // starves the recipient's socket of its single ring.
       const msgId = message.id || message._id;
       if (playedMessageIdsRef.current.has(msgId)) return;
       playedMessageIdsRef.current.add(msgId);
 
-      const senderId = message.sender_id || message.sender?.id || message.senderId;
-      const { customer: c, admin: a } = authRef.current || {};
-      const currentIds = [c?.user?.id, c?.user?._id, a?.user?.id, a?.user?._id].filter(Boolean);
-      if (senderId && currentIds.includes(senderId)) return;
-
-      try {
-        if (!audioRef.current) audioRef.current = new Audio('/freepalestine_loverespect-notification-sound-29-585505.mp3');
-        const audio = audioRef.current;
-        audio.currentTime = 0;
-        const p = audio.play();
-        if (p && typeof p.catch === 'function') p.catch(() => {});
-      } catch (e) {}
+      // Notification sound: respect the user's on/off choice and never play for
+      // messages the current user sent (already filtered above).
+      if (soundEnabledRef.current) {
+        try {
+          if (!audioRef.current) audioRef.current = new Audio('/freepalestine_loverespect-notification-sound-29-585505.mp3');
+          const audio = audioRef.current;
+          audio.currentTime = 0;
+          const p = audio.play();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        } catch (e) {}
+      }
     };
 
     const onMessagesRead = () => {
@@ -190,6 +233,9 @@ export function SocketProvider({ children }) {
     // Drop sockets whose session disappeared (logout).
     for (const [token, socket] of [...socketsRef.current.entries()]) {
       if (!tokens.includes(token)) {
+        const namespace = token === customerToken ? "customer" : token === adminToken ? "admin" : "unknown";
+        const fingerprint = token ? `***${token.slice(-6)}` : "none";
+        console.log("[SocketContext] dropping socket (token removed/logout)", { namespace, tokenFingerprint: fingerprint });
         detachRef.current.get(token)?.();
         detachRef.current.delete(token);
         socketsRef.current.delete(token);
@@ -199,9 +245,12 @@ export function SocketProvider({ children }) {
 
     tokens.forEach((token) => {
       if (socketsRef.current.has(token)) return;
+      const namespace = token === customerToken ? "customer" : token === adminToken ? "admin" : "unknown";
+      const fingerprint = token ? `***${token.slice(-6)}` : "none";
+      console.log("[SocketContext] creating socket", { namespace, tokenFingerprint: fingerprint, reason: "token-present-and-not-yet-connected" });
       const socket = createSocket(token);
       socketsRef.current.set(token, socket);
-      detachRef.current.set(token, attachHandlers(socket));
+      detachRef.current.set(token, attachHandlers(socket, namespace));
     });
 
     setConnected(anyConnected());
@@ -223,12 +272,18 @@ export function SocketProvider({ children }) {
   // (including ones still mid-handshake) on every token refresh, producing
   // "WebSocket is closed before the connection is established". Sockets are
   // torn down only when their token is removed (logout) or when the page unloads.
+  // NOTE: there is deliberately no effect cleanup here. This effect is above the
+  // routes and must survive React StrictMode's development-only mount/unmount
+  // probe and every token refresh. The browser closes sockets on a real unload.
   useEffect(() => {
     connect();
-    return () => {
-      disconnectAll();
-    };
   }, [connect]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => disconnectAll();
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [disconnectAll]);
 
   useEffect(() => {
     const unlock = () => {
@@ -352,7 +407,9 @@ export function SocketProvider({ children }) {
     emit,
     typingUsers,
     activeCall,
-    setActiveCall
+    setActiveCall,
+    soundEnabled,
+    toggleSound,
   };
 
   return <SocketContext.Provider value={value}>{children}</SocketContext.Provider>;

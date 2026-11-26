@@ -199,12 +199,12 @@ describe("OrderDetailModal", () => {
 
   it("uses admin mode by default", async () => {
     render(<OrderDetailModal isOpen={true} onClose={vi.fn()} orderId="order-1" />);
-    await waitFor(() => expect(getById).toHaveBeenCalledWith("order-1"), { timeout: 3000 });
+    await waitFor(() => expect(getById).toHaveBeenCalledWith("order-1", "admin"), { timeout: 3000 });
   });
 
   it("passes mode to API", async () => {
     render(<OrderDetailModal isOpen={true} onClose={vi.fn()} orderId="order-1" mode="customer" />);
-    await waitFor(() => expect(getById).toHaveBeenCalledWith("order-1"), { timeout: 3000 });
+    await waitFor(() => expect(getById).toHaveBeenCalledWith("order-1", "customer"), { timeout: 3000 });
   });
 
   it("renders a legacy slip using slip_view_url", async () => {

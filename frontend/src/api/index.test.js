@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { request, getToken, setToken } from "./index.js";
+import { request, getToken, setToken, authAPI } from "./index.js";
 
 // Build a minimal fetch Response stand-in. The production code only reads
 // `.status`, `.ok` and `.json()`, so that is all we need to emulate.
@@ -223,5 +223,79 @@ describe("request() header / FormData behaviour", () => {
     await request("/things", { headers: { "X-Custom": "abc" } });
 
     expect(headersOfCall(globalThis.fetch, 0).get("X-Custom")).toBe("abc");
+  });
+});
+
+describe("authAPI security endpoints", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    setToken("tok-customer", "customer");
+    globalThis.fetch = vi.fn();
+  });
+
+  it("getSessions -> GET /auth/sessions", async () => {
+    globalThis.fetch.mockResolvedValueOnce(fakeResponse(200, { data: { sessions: [] } }));
+    await authAPI.getSessions();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toBe("/api/auth/sessions");
+    // GET ไม่ตั้ง method (fetch default = GET)
+    expect(init.method).toBeUndefined();
+    expect(headersOfCall(globalThis.fetch, 0).get("Authorization")).toBe("Bearer tok-customer");
+  });
+
+  it("revokeSession -> POST /auth/sessions/revoke with session_id", async () => {
+    globalThis.fetch.mockResolvedValueOnce(fakeResponse(200, { success: true }));
+    await authAPI.revokeSession("sess-123");
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toBe("/api/auth/sessions/revoke");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ session_id: "sess-123" });
+  });
+
+  it("revokeAllSessions -> POST /auth/sessions/revoke with all=true", async () => {
+    globalThis.fetch.mockResolvedValueOnce(fakeResponse(200, { success: true }));
+    await authAPI.revokeAllSessions();
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toBe("/api/auth/sessions/revoke");
+    expect(JSON.parse(init.body)).toEqual({ all: true });
+  });
+
+  it("getLoginHistory -> GET /auth/login-history", async () => {
+    globalThis.fetch.mockResolvedValueOnce(fakeResponse(200, { data: { login_history: [] } }));
+    await authAPI.getLoginHistory();
+    const [url] = globalThis.fetch.mock.calls[0];
+    expect(url).toBe("/api/auth/login-history");
+  });
+
+  it("getSecurityAlerts -> GET /auth/security-alerts", async () => {
+    globalThis.fetch.mockResolvedValueOnce(fakeResponse(200, { data: { security_alerts: [] } }));
+    await authAPI.getSecurityAlerts();
+    const [url] = globalThis.fetch.mock.calls[0];
+    expect(url).toBe("/api/auth/security-alerts");
+  });
+
+  it("markAlertRead -> PATCH /auth/security-alerts/:id/read", async () => {
+    globalThis.fetch.mockResolvedValueOnce(fakeResponse(200, { success: true }));
+    await authAPI.markAlertRead("alert-1");
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toBe("/api/auth/security-alerts/alert-1/read");
+    expect(init.method).toBe("PATCH");
+  });
+
+  it("unlinkSocial -> POST /auth/social/unlink with provider", async () => {
+    globalThis.fetch.mockResolvedValueOnce(fakeResponse(200, { success: true }));
+    await authAPI.unlinkSocial("google");
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toBe("/api/auth/social/unlink");
+    expect(JSON.parse(init.body)).toEqual({ provider: "google" });
+  });
+
+  it("logout sends revokeAllSessions + scope when provided", async () => {
+    globalThis.fetch.mockResolvedValueOnce(fakeResponse(200, { success: true }));
+    await authAPI.logout({ refreshToken: "rt-abc", revokeAllSessions: true, scope: "global" });
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toBe("/api/auth/logout");
+    expect(JSON.parse(init.body)).toEqual({ refreshToken: "rt-abc", revokeAllSessions: true, scope: "global" });
   });
 });

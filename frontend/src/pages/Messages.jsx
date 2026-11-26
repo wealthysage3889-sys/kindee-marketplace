@@ -78,6 +78,8 @@ export default function Messages() {
   const mountedRef = useRef(true);
   const seenMessageIdsRef = useRef(new Set());
   const menuRef = useRef(null);
+  // Previous socket connection state, to detect reconnect (false -> true).
+  const wasConnectedRef = useRef(false);
 
   const rememberSeen = useCallback((id) => {
     if (id == null) return;
@@ -167,6 +169,12 @@ export default function Messages() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // Handle backend conversationUpdated events (spam / restore / hide) by
+  // refreshing the list so visibility and ordering stay in sync.
+  const handleConversationUpdated = useCallback(() => {
+    loadConversations();
+  }, [loadConversations]);
+
   // Realtime: update chat list on new messages
   useEffect(() => {
     if (!connected) return;
@@ -206,12 +214,24 @@ export default function Messages() {
 
     on("newMessage", handleNewMessage);
     on("messagesRead", handleMessagesRead);
+    on("conversationUpdated", handleConversationUpdated);
 
     return () => {
       off("newMessage", handleNewMessage);
       off("messagesRead", handleMessagesRead);
+      off("conversationUpdated", handleConversationUpdated);
     };
-  }, [connected, currentUserId, on, off, loadConversations, rememberSeen]);
+  }, [connected, currentUserId, on, off, loadConversations, rememberSeen, handleConversationUpdated]);
+
+  // Reconnect refetch: when the socket re-establishes (connected false -> true),
+  // refresh the chat list so unread badges and previews caught up while offline.
+  useEffect(() => {
+    const wasConnected = wasConnectedRef.current;
+    wasConnectedRef.current = connected;
+    if (!wasConnected && connected) {
+      loadConversations();
+    }
+  }, [connected, loadConversations]);
 
   const fromStore = new URLSearchParams(location.search).get("fromStore");
   const openStore = new URLSearchParams(location.search).get("openStore");

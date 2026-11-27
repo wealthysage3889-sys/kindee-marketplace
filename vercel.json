@@ -13,10 +13,6 @@
       "destination": "https://kindee-marketplace-api.onrender.com/uploads/:path*"
     },
     {
-      "source": "/socket.io/:path*",
-      "destination": "https://kindee-marketplace-api.onrender.com/socket.io/:path*"
-    },
-    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

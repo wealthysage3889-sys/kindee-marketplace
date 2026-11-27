@@ -171,6 +171,12 @@ export const authAPI = {
       body: JSON.stringify({ code, redirectUri }),
     }, mode),
 
+  // Public social login config (Google / Facebook / LINE client ids).
+  // อ่านจาก /settings/public/social-config ซึ่งดึงจาก DB/settings หรือ env ของเซิร์ฟเวอร์;
+  // Local และ Production ต้องเห็นรายการปุ่มโซเชียลชุดเดียวกัน.
+  getSocialConfig: () =>
+    request("/settings/public/social-config"),
+
   getProfile: (mode = "customer") =>
     request("/auth/profile", undefined, mode),
 

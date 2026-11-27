@@ -205,8 +205,10 @@ export function SocketProvider({ children }) {
   }, []);
 
   const createSocket = useCallback((token) => {
-    const API_BASE = import.meta.env.VITE_API_BASE || "/api";
-    const socketUrl = API_BASE.replace(/\/api$/, "") || "";
+    // Use VITE_SOCKET_URL for direct backend connection (bypasses Vercel proxy for WebSockets)
+    // Falls back to VITE_API_BASE (without /api) for local development
+    const socketBase = import.meta.env.VITE_SOCKET_URL || import.meta.env.VITE_API_BASE || "/api";
+    const socketUrl = socketBase.replace(/\/api$/, "") || "";
 
     return io(socketUrl || undefined, {
       path: "/socket.io",
